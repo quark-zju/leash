@@ -68,11 +68,17 @@ fn flush_command(flush: FlushCommand) -> Result<()> {
         })?
     };
 
-    bail!(
-        "flush is not implemented yet (record path: {}, dry-run: {})",
+    let stats = flush_record(&record_path, flush.dry_run)?;
+    println!(
+        "record: {} | total={} pending={} skipped={} marked={} dry_run={}",
         record_path.display(),
+        stats.total,
+        stats.pending,
+        stats.skipped,
+        stats.marked,
         flush.dry_run
-    )
+    );
+    Ok(())
 }
 
 fn load_profile(profile_path: &Path) -> Result<profile::Profile> {
@@ -113,7 +119,8 @@ fn newest_record_path() -> Result<Option<PathBuf>> {
     for entry in fs_err::read_dir(&dir)
         .with_context(|| format!("failed to list record directory: {}", dir.display()))?
     {
-        let entry = entry.with_context(|| format!("failed to read entry under {}", dir.display()))?;
+        let entry =
+            entry.with_context(|| format!("failed to read entry under {}", dir.display()))?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("cjr") {
             continue;
@@ -135,4 +142,90 @@ fn newest_record_path() -> Result<Option<PathBuf>> {
     }
 
     Ok(newest.map(|(_, path)| path))
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct FlushStats {
+    total: usize,
+    pending: usize,
+    skipped: usize,
+    marked: usize,
+}
+
+fn flush_record(path: &Path, dry_run: bool) -> Result<FlushStats> {
+    let frames = record::read_frames(path)?;
+    let mut stats = FlushStats {
+        total: frames.len(),
+        ..FlushStats::default()
+    };
+
+    for frame in frames {
+        if frame.flushed {
+            stats.skipped += 1;
+            continue;
+        }
+        if frame.tag != record::TAG_WRITE_OP {
+            stats.skipped += 1;
+            continue;
+        }
+
+        stats.pending += 1;
+        if !dry_run && record::mark_flushed(path, frame.offset)? {
+            stats.marked += 1;
+        }
+    }
+
+    Ok(stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_record_path(name: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be monotonic")
+            .as_nanos();
+        p.push(format!("cowjail-main-{name}-{now}.cjr"));
+        p
+    }
+
+    #[test]
+    fn flush_dry_run_does_not_mark() {
+        let path = temp_record_path("dry-run");
+        let mut writer = record::Writer::open_append(&path).expect("writer open");
+        writer
+            .append_cbor(record::TAG_WRITE_OP, &1u32)
+            .expect("append");
+        writer.sync().expect("sync");
+
+        let stats = flush_record(&path, true).expect("flush dry-run");
+        assert_eq!(stats.total, 1);
+        assert_eq!(stats.pending, 1);
+        assert_eq!(stats.marked, 0);
+
+        let frames = record::read_frames(&path).expect("read frames");
+        assert!(!frames[0].flushed);
+    }
+
+    #[test]
+    fn flush_marks_and_becomes_idempotent() {
+        let path = temp_record_path("mark");
+        let mut writer = record::Writer::open_append(&path).expect("writer open");
+        writer
+            .append_cbor(record::TAG_WRITE_OP, &1u32)
+            .expect("append");
+        writer.sync().expect("sync");
+
+        let first = flush_record(&path, false).expect("first flush");
+        assert_eq!(first.pending, 1);
+        assert_eq!(first.marked, 1);
+
+        let second = flush_record(&path, false).expect("second flush");
+        assert_eq!(second.pending, 0);
+        assert_eq!(second.marked, 0);
+        assert_eq!(second.skipped, 1);
+    }
 }
