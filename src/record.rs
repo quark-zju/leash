@@ -1,6 +1,7 @@
 use std::hash::Hasher;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,7 +26,9 @@ pub struct Frame {
 
 pub struct Writer {
     inner: Arc<Mutex<WriterInner>>,
+    shutdown: Arc<AtomicBool>,
     flusher_thread: thread::Thread,
+    flusher_join: Option<thread::JoinHandle<()>>,
 }
 
 struct WriterInner {
@@ -56,11 +59,15 @@ impl Writer {
             last_write: None,
             background_error: None,
         }));
+        let shutdown = Arc::new(AtomicBool::new(false));
 
-        let flusher_thread = spawn_flusher(Arc::downgrade(&inner));
+        let flusher_join = spawn_flusher(Arc::downgrade(&inner), shutdown.clone());
+        let flusher_thread = flusher_join.thread().clone();
         Ok(Self {
             inner,
+            shutdown,
             flusher_thread,
+            flusher_join: Some(flusher_join),
         })
     }
 
@@ -118,19 +125,27 @@ impl Writer {
 
 impl Drop for Writer {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.inner) != 1 {
-            return;
-        }
         if let Ok(mut inner) = self.inner.lock() {
             let _ = flush_inner(&mut inner, true);
+        }
+        self.shutdown.store(true, Ordering::Relaxed);
+        self.flusher_thread.unpark();
+        if let Some(join) = self.flusher_join.take() {
+            let _ = join.join();
         }
     }
 }
 
-fn spawn_flusher(inner: Weak<Mutex<WriterInner>>) -> thread::Thread {
-    let handle = thread::spawn(move || {
+fn spawn_flusher(
+    inner: Weak<Mutex<WriterInner>>,
+    shutdown: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
         loop {
             thread::park_timeout(AUTO_FLUSH_INTERVAL);
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
             let Some(shared) = inner.upgrade() else {
                 break;
             };
@@ -151,8 +166,7 @@ fn spawn_flusher(inner: Weak<Mutex<WriterInner>>) -> thread::Thread {
                 guard.background_error = Some(format!("{err:#}"));
             }
         }
-    });
-    handle.thread().clone()
+    })
 }
 
 fn flush_inner(inner: &mut WriterInner, sync_data: bool) -> Result<()> {
