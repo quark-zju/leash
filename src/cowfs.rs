@@ -70,6 +70,25 @@ impl CowFs {
         })
     }
 
+    pub unsafe fn mount_background(
+        self,
+        mountpoint: &Path,
+    ) -> Result<fuse::BackgroundSession<'static>> {
+        let options = [
+            OsStr::new("-o"),
+            OsStr::new("default_permissions"),
+            OsStr::new("-o"),
+            OsStr::new("fsname=cowjail"),
+        ];
+        // SAFETY: We keep the returned BackgroundSession alive for the entire mounted lifetime.
+        unsafe { fuse::spawn_mount(self, mountpoint, &options) }.with_context(|| {
+            format!(
+                "failed to mount fuse filesystem in background at {}",
+                mountpoint.display()
+            )
+        })
+    }
+
     fn ensure_ino(&mut self, path: &Path) -> u64 {
         if let Some(ino) = self.path_to_ino.get(path) {
             return *ino;
@@ -315,7 +334,8 @@ impl CowFs {
         } else {
             self.overlay.insert(to.to_path_buf(), src_node);
         }
-        self.overlay.insert(from.to_path_buf(), OverlayNode::Deleted);
+        self.overlay
+            .insert(from.to_path_buf(), OverlayNode::Deleted);
         Ok(())
     }
 
@@ -756,7 +776,14 @@ impl Filesystem for CowFs {
         reply.ok();
     }
 
-    fn mkdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, _mode: u32, reply: ReplyEntry) {
+    fn mkdir(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        _mode: u32,
+        reply: ReplyEntry,
+    ) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
             reply.error(ENOENT);
             return;
@@ -1118,11 +1145,9 @@ mod tests {
             },
         );
 
-        fs.apply_rename_paths(&from, &to).expect("rename should succeed");
-        assert!(matches!(
-            fs.overlay.get(&from),
-            Some(OverlayNode::Deleted)
-        ));
+        fs.apply_rename_paths(&from, &to)
+            .expect("rename should succeed");
+        assert!(matches!(fs.overlay.get(&from), Some(OverlayNode::Deleted)));
         assert!(matches!(fs.overlay.get(&to), Some(OverlayNode::Dir)));
         assert!(matches!(
             fs.overlay.get(&to.join("child.txt")),

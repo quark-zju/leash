@@ -8,7 +8,10 @@ use anyhow::{Context, Result, bail};
 use cli::{Command, FlushCommand, MountCommand, RunCommand};
 use fs_err as fs;
 use std::collections::{HashMap, HashSet};
+use std::ffi::CString;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
 fn main() {
     if let Err(err) = try_main() {
@@ -36,18 +39,41 @@ fn run_command(run: RunCommand) -> Result<()> {
         );
     }
 
-    let _profile = load_profile(Path::new(&run.profile))?;
+    let cwd = std::env::current_dir().context("failed to resolve current working directory")?;
     let record_path = run
         .record
+        .clone()
         .unwrap_or(default_record_path().context("failed to build default record path")?);
     ensure_record_parent_dir(&record_path)?;
 
-    let _writer = record::Writer::open_append(&record_path)?;
+    let writer = record::Writer::open_append(&record_path)?;
+    let profile = load_profile(Path::new(&run.profile))?;
+    let cowfs = cowfs::CowFs::new(profile, writer);
 
-    bail!(
-        "run is not implemented yet (profile ok, record path: {})",
-        record_path.display()
-    )
+    let mountpoint = make_run_mountpoint()?;
+    fs::create_dir_all(&mountpoint).with_context(|| {
+        format!(
+            "failed to create run mountpoint directory: {}",
+            mountpoint.display()
+        )
+    })?;
+
+    let bg = {
+        // SAFETY: session object is held until command exits; drop unmounts after wait.
+        unsafe { cowfs.mount_background(&mountpoint) }?
+    };
+
+    let status = run_child_in_chroot(&run, &mountpoint, &cwd);
+
+    drop(bg);
+    let _ = fs::remove_dir(&mountpoint);
+
+    let status = status?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("command exited with status: {status}")
+    }
 }
 
 fn mount_command(mount: MountCommand) -> Result<()> {
@@ -57,6 +83,36 @@ fn mount_command(mount: MountCommand) -> Result<()> {
 
     let fs = cowfs::CowFs::new(profile, writer);
     fs.mount(&mount.path)
+}
+
+fn run_child_in_chroot(
+    run: &RunCommand,
+    mountpoint: &Path,
+    old_cwd: &Path,
+) -> Result<std::process::ExitStatus> {
+    let mount_c = CString::new(mountpoint.as_os_str().as_encoded_bytes())
+        .context("mount path contains interior NUL byte")?;
+    let cwd_c = CString::new(old_cwd.as_os_str().as_encoded_bytes())
+        .context("cwd contains interior NUL byte")?;
+
+    let mut cmd = ProcessCommand::new(&run.program);
+    cmd.args(&run.args);
+    // SAFETY: libc chroot/chdir are async-signal-safe enough for pre_exec setup.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::chroot(mount_c.as_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::chdir(cwd_c.as_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd
+        .spawn()
+        .context("failed to spawn child command in jail")?;
+    child.wait().context("failed waiting for child command")
 }
 
 fn flush_command(flush: FlushCommand) -> Result<()> {
@@ -95,6 +151,15 @@ fn load_profile(profile_path: &Path) -> Result<profile::Profile> {
 
 fn default_record_dir() -> PathBuf {
     PathBuf::from(".cache/cowjail")
+}
+
+fn make_run_mountpoint() -> Result<PathBuf> {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock is before unix epoch")?
+        .as_nanos();
+    Ok(PathBuf::from(format!("/tmp/cowjail-run-{pid}-{nanos}")))
 }
 
 fn default_record_path() -> Result<PathBuf> {
