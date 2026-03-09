@@ -291,7 +291,10 @@ fn append_profile_header(writer: &record::Writer, normalized_source: &str) -> Re
     writer
         .append_cbor(record::TAG_PROFILE_HEADER, &header)
         .map(|_| ())
-        .context("failed to append profile header frame")
+        .context("failed to append profile header frame")?;
+    writer
+        .sync()
+        .context("failed to flush profile header frame")
 }
 
 fn load_profile(profile_path: &Path) -> Result<LoadedProfile> {

@@ -242,6 +242,7 @@ impl Drop for LockedRecord {
     }
 }
 
+#[cfg(test)]
 pub fn read_frames(path: &Path) -> Result<Vec<Frame>> {
     let data = match fs::read(path) {
         Ok(data) => data,
@@ -303,6 +304,7 @@ pub fn decode_cbor<T: serde::de::DeserializeOwned>(frame: &Frame) -> Result<T> {
     serde_cbor::from_slice(&frame.payload).context("failed to decode cbor payload")
 }
 
+#[cfg(test)]
 pub fn mark_flushed(path: &Path, offset: u64) -> Result<bool> {
     let mut file = fs::OpenOptions::new()
         .read(true)
@@ -352,6 +354,7 @@ fn mark_flushed_on_file(file: &mut fs::File, path: &Path, offset: u64) -> Result
     Ok(true)
 }
 
+#[cfg(test)]
 pub fn truncate_tail(path: &Path, keep_len: u64) -> Result<()> {
     let file = fs::OpenOptions::new()
         .write(true)
@@ -366,6 +369,7 @@ pub fn truncate_tail(path: &Path, keep_len: u64) -> Result<()> {
         .with_context(|| format!("failed to truncate record file: {}", path.display()))
 }
 
+#[cfg(test)]
 pub fn corrupt_byte(path: &Path, offset: u64, value: u8) -> Result<()> {
     let mut data = fs::read(path).with_context(|| {
         format!(
