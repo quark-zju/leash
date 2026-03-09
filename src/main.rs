@@ -50,6 +50,8 @@ fn run_command(run: RunCommand) -> Result<i32> {
     }
 
     let cwd = std::env::current_dir().context("failed to resolve current working directory")?;
+    let ruid = unsafe { libc::getuid() };
+    let rgid = unsafe { libc::getgid() };
     let record_path = run
         .record
         .clone()
@@ -90,7 +92,7 @@ fn run_command(run: RunCommand) -> Result<i32> {
             cwd.display()
         ),
     );
-    let status = run_child_in_chroot(&run, &mountpoint, &cwd);
+    let status = run_child_in_chroot(&run, &mountpoint, &cwd, ruid, rgid);
 
     vlog(run.verbose, "run: waiting for child completion done".to_string());
     vlog(
@@ -131,6 +133,8 @@ fn run_child_in_chroot(
     run: &RunCommand,
     mountpoint: &Path,
     old_cwd: &Path,
+    ruid: libc::uid_t,
+    rgid: libc::gid_t,
 ) -> Result<std::process::ExitStatus> {
     let mount_c = CString::new(mountpoint.as_os_str().as_encoded_bytes())
         .context("mount path contains interior NUL byte")?;
@@ -146,6 +150,12 @@ fn run_child_in_chroot(
                 return Err(std::io::Error::last_os_error());
             }
             if libc::chdir(cwd_c.as_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::setgid(rgid) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::setuid(ruid) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
