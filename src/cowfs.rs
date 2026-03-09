@@ -3,7 +3,7 @@ use std::fs::Metadata;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
@@ -22,8 +22,17 @@ const ROOT_INO: u64 = 1;
 pub struct CowFs {
     profile: Profile,
     next_ino: u64,
-    ino_to_path: std::collections::HashMap<u64, std::path::PathBuf>,
-    path_to_ino: std::collections::HashMap<std::path::PathBuf, u64>,
+    ino_to_path: std::collections::HashMap<u64, PathBuf>,
+    path_to_ino: std::collections::HashMap<PathBuf, u64>,
+    overlay: std::collections::HashMap<PathBuf, OverlayNode>,
+}
+
+#[derive(Debug, Clone)]
+enum OverlayNode {
+    Deleted,
+    Dir,
+    Regular { data: Vec<u8>, executable: bool },
+    Symlink { target: PathBuf },
 }
 
 impl CowFs {
@@ -38,6 +47,7 @@ impl CowFs {
             next_ino: ROOT_INO + 1,
             ino_to_path,
             path_to_ino,
+            overlay: std::collections::HashMap::new(),
         }
     }
 
@@ -103,6 +113,127 @@ impl CowFs {
             flags: 0,
         }
     }
+
+    fn attr_for_overlay(&mut self, path: &Path, node: &OverlayNode) -> FileAttr {
+        let now = SystemTime::now();
+        let ino = self.ensure_ino(path);
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
+        let (kind, perm, size) = match node {
+            OverlayNode::Deleted => (FileType::RegularFile, 0o000, 0),
+            OverlayNode::Dir => (FileType::Directory, 0o755, 0),
+            OverlayNode::Regular { data, executable } => {
+                let perm = if *executable { 0o755 } else { 0o644 };
+                (FileType::RegularFile, perm, data.len() as u64)
+            }
+            OverlayNode::Symlink { target } => {
+                (FileType::Symlink, 0o777, target.as_os_str().len() as u64)
+            }
+        };
+
+        FileAttr {
+            ino,
+            size,
+            blocks: 1,
+            atime: now,
+            mtime: now,
+            ctime: now,
+            crtime: now,
+            kind,
+            perm,
+            nlink: 1,
+            uid,
+            gid,
+            rdev: 0,
+            flags: 0,
+        }
+    }
+
+    fn effective_node(&self, path: &Path) -> Result<Option<NodeRef>, i32> {
+        if let Some(node) = self.overlay.get(path) {
+            return match node {
+                OverlayNode::Deleted => Ok(None),
+                _ => Ok(Some(NodeRef::Overlay(node.clone()))),
+            };
+        }
+        match fs::symlink_metadata(path) {
+            Ok(meta) => Ok(Some(NodeRef::Host(meta))),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(EIO),
+        }
+    }
+
+    fn list_children(
+        &mut self,
+        parent: &Path,
+    ) -> Result<Vec<(u64, FileType, std::ffi::OsString)>, i32> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        if let Ok(rd) = fs::read_dir(parent) {
+            for child in rd {
+                let Ok(child) = child else { continue };
+                let name = child.file_name();
+                let child_path = parent.join(&name);
+                if !self.is_visible(&child_path) {
+                    continue;
+                }
+                if matches!(self.overlay.get(&child_path), Some(OverlayNode::Deleted)) {
+                    continue;
+                }
+                let child_type = if let Some(node) = self.overlay.get(&child_path) {
+                    overlay_filetype(node)
+                } else {
+                    match child.metadata() {
+                        Ok(meta) => filetype_from_metadata(&meta),
+                        Err(_) => continue,
+                    }
+                };
+                let child_ino = self.ensure_ino(&child_path);
+                out.push((child_ino, child_type, name.clone()));
+                seen.insert(name);
+            }
+        }
+
+        let snapshot: Vec<(PathBuf, OverlayNode)> = self
+            .overlay
+            .iter()
+            .map(|(p, n)| (p.clone(), n.clone()))
+            .collect();
+        for (path, node) in snapshot {
+            if matches!(node, OverlayNode::Deleted) {
+                continue;
+            }
+            if path.parent() != Some(parent) {
+                continue;
+            }
+            if !self.is_visible(&path) {
+                continue;
+            }
+            let Some(name) = path.file_name() else {
+                continue;
+            };
+            let name = name.to_os_string();
+            if seen.contains(&name) {
+                continue;
+            }
+            let child_type = overlay_filetype(&node);
+            let child_ino = self.ensure_ino(&path);
+            out.push((child_ino, child_type, name));
+        }
+
+        Ok(out)
+    }
+
+    #[cfg(test)]
+    fn overlay_set(&mut self, path: PathBuf, node: OverlayNode) {
+        self.overlay.insert(path, node);
+    }
+}
+
+enum NodeRef {
+    Host(Metadata),
+    Overlay(OverlayNode),
 }
 
 impl Filesystem for CowFs {
@@ -118,13 +249,17 @@ impl Filesystem for CowFs {
             return;
         }
 
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) => {
+        match self.effective_node(&path) {
+            Ok(Some(NodeRef::Host(metadata))) => {
                 let attr = self.attr_for_path(&path, &metadata);
                 reply.entry(&TTL, &attr, 0);
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => reply.error(ENOENT),
-            Err(_) => reply.error(EIO),
+            Ok(Some(NodeRef::Overlay(node))) => {
+                let attr = self.attr_for_overlay(&path, &node);
+                reply.entry(&TTL, &attr, 0);
+            }
+            Ok(None) => reply.error(ENOENT),
+            Err(code) => reply.error(code),
         }
     }
 
@@ -137,13 +272,17 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         }
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) => {
+        match self.effective_node(&path) {
+            Ok(Some(NodeRef::Host(metadata))) => {
                 let attr = self.attr_for_path(&path, &metadata);
                 reply.attr(&TTL, &attr);
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => reply.error(ENOENT),
-            Err(_) => reply.error(EIO),
+            Ok(Some(NodeRef::Overlay(node))) => {
+                let attr = self.attr_for_overlay(&path, &node);
+                reply.attr(&TTL, &attr);
+            }
+            Ok(None) => reply.error(ENOENT),
+            Err(code) => reply.error(code),
         }
     }
 
@@ -164,16 +303,27 @@ impl Filesystem for CowFs {
             return;
         }
 
-        let meta = match fs::symlink_metadata(&path) {
-            Ok(meta) => meta,
-            Err(_) => {
+        match self.effective_node(&path) {
+            Ok(Some(NodeRef::Host(meta))) => {
+                if !meta.file_type().is_dir() {
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+            Ok(Some(NodeRef::Overlay(node))) => {
+                if !matches!(node, OverlayNode::Dir) {
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+            Ok(None) => {
                 reply.error(ENOENT);
                 return;
             }
-        };
-        if !meta.file_type().is_dir() {
-            reply.error(ENOENT);
-            return;
+            Err(code) => {
+                reply.error(code);
+                return;
+            }
         }
 
         let mut entries: Vec<(u64, FileType, std::ffi::OsString)> = Vec::new();
@@ -191,25 +341,15 @@ impl Filesystem for CowFs {
             std::ffi::OsString::from(".."),
         ));
 
-        let rd = match fs::read_dir(&path) {
-            Ok(rd) => rd,
-            Err(_) => {
-                reply.error(EIO);
+        let overlay_entries = match self.list_children(&path) {
+            Ok(entries) => entries,
+            Err(code) => {
+                reply.error(code);
                 return;
             }
         };
-        for child in rd {
-            let Ok(child) = child else { continue };
-            let child_path = child.path();
-            if !self.is_visible(&child_path) {
-                continue;
-            }
-            let Ok(metadata) = child.metadata() else {
-                continue;
-            };
-            let child_ino = self.ensure_ino(&child_path);
-            let child_type = filetype_from_metadata(&metadata);
-            entries.push((child_ino, child_type, child.file_name()));
+        for entry in overlay_entries {
+            entries.push(entry);
         }
 
         for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
@@ -227,8 +367,10 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         }
-        // deny write opens for now, mount mode is read-only passthrough in this phase.
-        if flags & libc::O_ACCMODE as u32 != libc::O_RDONLY as u32 {
+        // allow write open only for rw rules; actual writes land in overlay.
+        if flags & libc::O_ACCMODE as u32 != libc::O_RDONLY as u32
+            && self.profile.first_match_action(path) != Some(RuleAction::ReadWrite)
+        {
             reply.error(EACCES);
             return;
         }
@@ -251,6 +393,33 @@ impl Filesystem for CowFs {
         if !self.is_visible(&path) {
             reply.error(ENOENT);
             return;
+        }
+
+        if let Some(node) = self.overlay.get(&path) {
+            match node {
+                OverlayNode::Deleted | OverlayNode::Dir => {
+                    reply.error(ENOENT);
+                    return;
+                }
+                OverlayNode::Symlink { .. } => {
+                    reply.error(EIO);
+                    return;
+                }
+                OverlayNode::Regular { data, .. } => {
+                    if offset < 0 {
+                        reply.error(EIO);
+                        return;
+                    }
+                    let off = offset as usize;
+                    if off >= data.len() {
+                        reply.data(&[]);
+                        return;
+                    }
+                    let end = std::cmp::min(data.len(), off + size as usize);
+                    reply.data(&data[off..end]);
+                    return;
+                }
+            }
         }
 
         let mut file = match fs::File::open(&path) {
@@ -293,6 +462,16 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         }
+        if let Some(node) = self.overlay.get(&path) {
+            match node {
+                OverlayNode::Symlink { target } => {
+                    reply.data(target.as_os_str().as_bytes());
+                }
+                OverlayNode::Deleted => reply.error(ENOENT),
+                _ => reply.error(EIO),
+            }
+            return;
+        }
         match fs::read_link(&path) {
             Ok(target) => reply.data(target.as_os_str().as_bytes()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => reply.error(ENOENT),
@@ -322,9 +501,101 @@ fn filetype_from_metadata(metadata: &Metadata) -> FileType {
     }
 }
 
+fn overlay_filetype(node: &OverlayNode) -> FileType {
+    match node {
+        OverlayNode::Deleted => FileType::RegularFile,
+        OverlayNode::Dir => FileType::Directory,
+        OverlayNode::Regular { .. } => FileType::RegularFile,
+        OverlayNode::Symlink { .. } => FileType::Symlink,
+    }
+}
+
 fn system_time_from_unix(sec: i64, nsec: i64) -> SystemTime {
     if sec < 0 || nsec < 0 {
         return SystemTime::UNIX_EPOCH;
     }
     SystemTime::UNIX_EPOCH + Duration::new(sec as u64, nsec as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_profile(src: &str) -> Profile {
+        Profile::parse(src, Path::new("/")).expect("profile parse")
+    }
+
+    #[test]
+    fn overlay_deleted_hides_host_file() {
+        let mut fs = CowFs::new(parse_profile("/tmp/** rw"));
+        let path = PathBuf::from("/tmp/cowjail-overlay-deleted");
+        std::fs::write(&path, b"host").expect("seed host");
+        fs.overlay_set(path.clone(), OverlayNode::Deleted);
+        let got = fs.effective_node(&path).expect("effective node");
+        assert!(got.is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn overlay_regular_overrides_host_file() {
+        let mut fs = CowFs::new(parse_profile("/tmp/** rw"));
+        let path = PathBuf::from("/tmp/cowjail-overlay-regular");
+        std::fs::write(&path, b"host").expect("seed host");
+        fs.overlay_set(
+            path.clone(),
+            OverlayNode::Regular {
+                data: b"overlay".to_vec(),
+                executable: false,
+            },
+        );
+        let got = fs.effective_node(&path).expect("effective node");
+        match got {
+            Some(NodeRef::Overlay(OverlayNode::Regular { data, .. })) => {
+                assert_eq!(data, b"overlay")
+            }
+            _ => panic!("expected overlay regular node"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn overlay_readdir_includes_new_children() {
+        let mut fs = CowFs::new(parse_profile("/tmp/** rw"));
+        let dir = PathBuf::from("/tmp/cowjail-overlay-dir");
+        let _ = std::fs::create_dir_all(&dir);
+        let new_file = dir.join("from-overlay");
+        let new_dir = dir.join("overlay-subdir");
+        let new_link = dir.join("overlay-link");
+        fs.overlay_set(
+            new_file.clone(),
+            OverlayNode::Regular {
+                data: b"x".to_vec(),
+                executable: false,
+            },
+        );
+        fs.overlay_set(new_dir, OverlayNode::Dir);
+        fs.overlay_set(
+            new_link,
+            OverlayNode::Symlink {
+                target: PathBuf::from("/tmp/target"),
+            },
+        );
+        let entries = fs.list_children(&dir).expect("list children");
+        assert!(
+            entries
+                .iter()
+                .any(|(_, _, name)| name == &std::ffi::OsString::from("from-overlay"))
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|(_, _, name)| name == &std::ffi::OsString::from("overlay-subdir"))
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|(_, _, name)| name == &std::ffi::OsString::from("overlay-link"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
