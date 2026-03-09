@@ -1,6 +1,6 @@
 use std::hash::Hasher;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
@@ -38,6 +38,11 @@ struct WriterInner {
     dirty: bool,
     last_write: Option<Instant>,
     background_error: Option<String>,
+}
+
+pub struct LockedRecord {
+    file: fs::File,
+    path: PathBuf,
 }
 
 impl Writer {
@@ -114,7 +119,7 @@ impl Writer {
         if let Some(err) = inner.background_error.take() {
             bail!("background record flush failed previously: {err}");
         }
-        flush_inner(&mut inner, true)
+        flush_inner(&mut inner)
     }
 
     fn lock_inner(&self) -> Result<std::sync::MutexGuard<'_, WriterInner>> {
@@ -127,7 +132,7 @@ impl Writer {
 impl Drop for Writer {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.inner.lock() {
-            let _ = flush_inner(&mut inner, true);
+            let _ = flush_inner(&mut inner);
         }
         self.shutdown.store(true, Ordering::Relaxed);
         self.flusher_thread.unpark();
@@ -163,25 +168,78 @@ fn spawn_flusher(
             if !should_flush {
                 continue;
             }
-            if let Err(err) = flush_inner(&mut guard, false) {
+            if let Err(err) = flush_inner(&mut guard) {
                 guard.background_error = Some(format!("{err:#}"));
             }
         }
     })
 }
 
-fn flush_inner(inner: &mut WriterInner, sync_data: bool) -> Result<()> {
+fn flush_inner(inner: &mut WriterInner) -> Result<()> {
     if !inner.dirty {
-        let _ = sync_data;
         return Ok(());
     }
 
     inner
         .buf
+        .get_mut()
+        .lock()
+        .context("failed to lock record file for flush")?;
+    let flush_result = inner
+        .buf
         .flush()
-        .context("failed to flush buffered record writes")?;
+        .context("failed to flush buffered record writes");
+    let unlock_result = inner
+        .buf
+        .get_mut()
+        .unlock()
+        .context("failed to unlock record file after flush");
+    flush_result?;
+    unlock_result?;
     inner.dirty = false;
     Ok(())
+}
+
+pub fn lock_record(path: &Path) -> Result<LockedRecord> {
+    LockedRecord::open(path)
+}
+
+impl LockedRecord {
+    pub fn open(path: &Path) -> Result<Self> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path)
+            .with_context(|| format!("failed to open record file for lock: {}", path.display()))?;
+        file.lock()
+            .with_context(|| format!("failed to lock record file: {}", path.display()))?;
+        Ok(Self {
+            file,
+            path: path.to_path_buf(),
+        })
+    }
+
+    pub fn read_frames(&mut self) -> Result<Vec<Frame>> {
+        self.file
+            .seek(SeekFrom::Start(0))
+            .with_context(|| format!("failed to seek record file: {}", self.path.display()))?;
+        let mut data = Vec::new();
+        self.file
+            .read_to_end(&mut data)
+            .with_context(|| format!("failed to read record file: {}", self.path.display()))?;
+        Ok(read_frames_from_bytes(&data))
+    }
+
+    pub fn mark_flushed(&mut self, offset: u64) -> Result<bool> {
+        mark_flushed_on_file(&mut self.file, &self.path, offset)
+    }
+}
+
+impl Drop for LockedRecord {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 pub fn read_frames(path: &Path) -> Result<Vec<Frame>> {
@@ -257,6 +315,10 @@ pub fn mark_flushed(path: &Path, offset: u64) -> Result<bool> {
             )
         })?;
 
+    mark_flushed_on_file(&mut file, path, offset)
+}
+
+fn mark_flushed_on_file(file: &mut fs::File, path: &Path, offset: u64) -> Result<bool> {
     file.seek(SeekFrom::Start(offset)).with_context(|| {
         format!(
             "failed to seek to record offset {} in {}",

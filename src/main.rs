@@ -333,7 +333,8 @@ struct FlushStats {
 }
 
 fn flush_record(path: &Path, dry_run: bool, profile_override: Option<&str>) -> Result<FlushStats> {
-    let frames = record::read_frames(path)?;
+    let mut record_lock = record::lock_record(path)?;
+    let frames = record_lock.read_frames()?;
     let replay_profile = resolve_flush_profile(profile_override, &frames)?;
     let mut stats = FlushStats {
         total: frames.len(),
@@ -377,7 +378,7 @@ fn flush_record(path: &Path, dry_run: bool, profile_override: Option<&str>) -> R
             }
             apply_operation(&item.op)?;
         }
-        if !dry_run && record::mark_flushed(path, item.offset)? {
+        if !dry_run && record_lock.mark_flushed(item.offset)? {
             stats.marked += 1;
         }
     }
