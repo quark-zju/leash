@@ -31,8 +31,8 @@ mkdir -p "${MNT}"
 echo "before" > "${TARGET}"
 
 cat > "${PROFILE}" <<PROFILE
-/tmp ro
 ${WORK} rw
+/tmp ro
 PROFILE
 
 echo "[1/6] building cowjail via cargo"
