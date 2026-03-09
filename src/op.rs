@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub enum Operation {
     WriteFile {
         path: PathBuf,
-        data: Vec<u8>,
+        data: Option<Vec<u8>>,
         #[serde(default)]
         executable: bool,
     },

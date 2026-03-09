@@ -6,6 +6,7 @@ mod record;
 use anyhow::{Context, Result, bail};
 use cli::{Command, FlushCommand, MountCommand, RunCommand};
 use fs_err as fs;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 fn main() {
@@ -72,11 +73,12 @@ fn flush_command(flush: FlushCommand) -> Result<()> {
 
     let stats = flush_record(&record_path, flush.dry_run)?;
     println!(
-        "record: {} | total={} pending={} skipped={} marked={} dry_run={}",
+        "record: {} | total={} pending={} skipped={} optimized={} marked={} dry_run={}",
         record_path.display(),
         stats.total,
         stats.pending,
         stats.skipped,
+        stats.optimized,
         stats.marked,
         flush.dry_run
     );
@@ -151,6 +153,7 @@ struct FlushStats {
     total: usize,
     pending: usize,
     skipped: usize,
+    optimized: usize,
     marked: usize,
 }
 
@@ -161,6 +164,7 @@ fn flush_record(path: &Path, dry_run: bool) -> Result<FlushStats> {
         ..FlushStats::default()
     };
 
+    let mut pending = Vec::new();
     for frame in frames {
         if frame.flushed {
             stats.skipped += 1;
@@ -179,16 +183,64 @@ fn flush_record(path: &Path, dry_run: bool) -> Result<FlushStats> {
             }
         };
 
-        stats.pending += 1;
-        if !dry_run {
-            apply_operation(&op)?;
+        pending.push(PendingOp {
+            offset: frame.offset,
+            op,
+        });
+    }
+
+    stats.pending = pending.len();
+    let apply_offsets = plan_apply_offsets(&pending);
+    stats.optimized = pending.len().saturating_sub(apply_offsets.len());
+
+    for item in pending {
+        if !dry_run && apply_offsets.contains(&item.offset) {
+            apply_operation(&item.op)?;
         }
-        if !dry_run && record::mark_flushed(path, frame.offset)? {
+        if !dry_run && record::mark_flushed(path, item.offset)? {
             stats.marked += 1;
         }
     }
 
     Ok(stats)
+}
+
+#[derive(Debug, Clone)]
+struct PendingOp {
+    offset: u64,
+    op: op::Operation,
+}
+
+fn plan_apply_offsets(items: &[PendingOp]) -> HashSet<u64> {
+    if items.iter().any(|item| matches!(item.op, op::Operation::Rename { .. })) {
+        return items.iter().map(|item| item.offset).collect();
+    }
+
+    let mut by_path: HashMap<&Path, u64> = HashMap::new();
+    let mut without_path: HashSet<u64> = HashSet::new();
+    for item in items {
+        if let Some(path) = op_primary_path(&item.op) {
+            by_path.insert(path, item.offset);
+        } else {
+            without_path.insert(item.offset);
+        }
+    }
+
+    let mut out: HashSet<u64> = by_path.into_values().collect();
+    out.extend(without_path);
+    out
+}
+
+fn op_primary_path(op: &op::Operation) -> Option<&Path> {
+    match op {
+        op::Operation::WriteFile { path, .. }
+        | op::Operation::CreateDir { path }
+        | op::Operation::RemoveFile { path }
+        | op::Operation::RemoveDir { path }
+        | op::Operation::CreateSymlink { path, .. }
+        | op::Operation::Truncate { path, .. } => Some(path.as_path()),
+        op::Operation::Rename { .. } => None,
+    }
 }
 
 fn apply_operation(op: &op::Operation) -> Result<()> {
@@ -199,14 +251,26 @@ fn apply_operation(op: &op::Operation) -> Result<()> {
             executable,
         } => {
             validate_abs(path)?;
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("failed to create parent directories for {}", path.display())
-                })?;
+            match data {
+                Some(data) => {
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent).with_context(|| {
+                            format!("failed to create parent directories for {}", path.display())
+                        })?;
+                    }
+                    fs::write(path, data).with_context(|| {
+                        format!("failed to write file from record: {}", path.display())
+                    })?;
+                    set_executable_bit(path, *executable)
+                }
+                None => match fs::remove_file(path) {
+                    Ok(()) => Ok(()),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(err) => {
+                        Err(err).with_context(|| format!("failed to remove file: {}", path.display()))
+                    }
+                },
             }
-            fs::write(path, data)
-                .with_context(|| format!("failed to write file from record: {}", path.display()))?;
-            set_executable_bit(path, *executable)
         }
         op::Operation::CreateDir { path } => {
             validate_abs(path)?;
@@ -368,7 +432,7 @@ mod tests {
         let mut writer = record::Writer::open_append(&path).expect("writer open");
         let op = op::Operation::WriteFile {
             path: temp_record_path("target"),
-            data: b"hello".to_vec(),
+            data: Some(b"hello".to_vec()),
             executable: false,
         };
         writer
@@ -392,7 +456,7 @@ mod tests {
         let mut writer = record::Writer::open_append(&path).expect("writer open");
         let op = op::Operation::WriteFile {
             path: out_path.clone(),
-            data: b"world".to_vec(),
+            data: Some(b"world".to_vec()),
             executable: false,
         };
         writer
@@ -469,7 +533,7 @@ mod tests {
             op::Operation::CreateDir { path: dir.clone() },
             op::Operation::WriteFile {
                 path: file.clone(),
-                data: b"x".to_vec(),
+                data: Some(b"x".to_vec()),
                 executable: false,
             },
             op::Operation::RemoveFile { path: file.clone() },
@@ -499,7 +563,7 @@ mod tests {
 
         let op = op::Operation::WriteFile {
             path: target.clone(),
-            data: b"#!/bin/sh\necho hi\n".to_vec(),
+            data: Some(b"#!/bin/sh\necho hi\n".to_vec()),
             executable: true,
         };
         writer
@@ -541,5 +605,42 @@ mod tests {
         assert_eq!(stats.marked, 1);
         let resolved = fs::read_link(&link).expect("read link");
         assert_eq!(resolved, target);
+    }
+
+    #[test]
+    fn flush_compacts_multiple_writes_then_delete() {
+        let path = temp_record_path("compact-delete-record");
+        let target = temp_record_path("compact-delete-target");
+        let mut writer = record::Writer::open_append(&path).expect("writer open");
+
+        let ops = [
+            op::Operation::WriteFile {
+                path: target.clone(),
+                data: Some(b"v1".to_vec()),
+                executable: false,
+            },
+            op::Operation::WriteFile {
+                path: target.clone(),
+                data: Some(b"v2".to_vec()),
+                executable: false,
+            },
+            op::Operation::WriteFile {
+                path: target.clone(),
+                data: None,
+                executable: false,
+            },
+        ];
+        for op in ops {
+            writer
+                .append_cbor(record::TAG_WRITE_OP, &op)
+                .expect("append op");
+        }
+        writer.sync().expect("sync");
+
+        let stats = flush_record(&path, false).expect("flush");
+        assert_eq!(stats.pending, 3);
+        assert_eq!(stats.optimized, 2);
+        assert_eq!(stats.marked, 3);
+        assert!(!target.exists());
     }
 }
