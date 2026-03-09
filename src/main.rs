@@ -26,6 +26,10 @@ fn main() {
 
 fn try_main() -> Result<i32> {
     match cli::parse_env()? {
+        Command::Help(topic) => {
+            println!("{}", cli::help_text(topic));
+            Ok(0)
+        }
         Command::Run(run) => run_command(run).context("run subcommand failed"),
         Command::Mount(mount) => {
             mount_command(mount).context("mount subcommand failed")?;

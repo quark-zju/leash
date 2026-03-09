@@ -9,9 +9,18 @@ pub const DEFAULT_PROFILE: &str = "default";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    Help(HelpTopic),
     Run(RunCommand),
     Mount(MountCommand),
     Flush(FlushCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HelpTopic {
+    Root,
+    Run,
+    Mount,
+    Flush,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +52,15 @@ pub fn parse_from<I>(argv: I) -> Result<Command>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let mut args = Arguments::from_vec(argv.into_iter().collect());
+    let raw: Vec<OsString> = argv.into_iter().collect();
+    if raw.is_empty() {
+        return Ok(Command::Help(HelpTopic::Root));
+    }
+    if raw[0] == "-h" || raw[0] == "--help" {
+        return Ok(Command::Help(HelpTopic::Root));
+    }
+
+    let mut args = Arguments::from_vec(raw);
     let subcmd = args
         .subcommand()?
         .ok_or_else(|| anyhow::anyhow!("missing subcommand (expected: run, mount, flush)"))?;
@@ -64,6 +81,9 @@ pub fn parse_env() -> Result<Command> {
 }
 
 fn parse_run(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(Command::Help(HelpTopic::Run));
+    }
     let verbose = args.contains(["-v", "--verbose"]);
     let profile = args
         .opt_value_from_str("--profile")?
@@ -86,6 +106,9 @@ fn parse_run(mut args: Arguments) -> Result<Command> {
 }
 
 fn parse_mount(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(Command::Help(HelpTopic::Mount));
+    }
     let verbose = args.contains(["-v", "--verbose"]);
     let profile = args
         .value_from_str("--profile")
@@ -111,6 +134,9 @@ fn parse_mount(mut args: Arguments) -> Result<Command> {
 }
 
 fn parse_flush(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(Command::Help(HelpTopic::Flush));
+    }
     let verbose = args.contains(["-v", "--verbose"]);
     let dry_run = args.contains("--dry-run");
     let profile = args.opt_value_from_str("--profile")?;
@@ -131,6 +157,23 @@ fn parse_flush(mut args: Arguments) -> Result<Command> {
 
 fn parse_pathbuf(raw: &std::ffi::OsStr) -> Result<PathBuf, Infallible> {
     Ok(PathBuf::from(raw))
+}
+
+pub fn help_text(topic: HelpTopic) -> &'static str {
+    match topic {
+        HelpTopic::Root => {
+            "cowjail\n\nUSAGE:\n  cowjail run [--profile <profile>] [--record <record_path>] [-v|--verbose] command ...\n  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n  cowjail flush [--record <record_path>] [--profile <profile>] [--dry-run] [-v|--verbose]\n\nRun `cowjail <subcommand> --help` for details."
+        }
+        HelpTopic::Run => {
+            "cowjail run\n\nUSAGE:\n  cowjail run [--profile <profile>] [--record <record_path>] [-v|--verbose] command ...\n\nOPTIONS:\n  --profile <profile>   Profile path. Default: default\n  --record <record>     Record output path. Default: .cache/cowjail/<timestamp>.cjr\n  -v, --verbose         Print progress logs"
+        }
+        HelpTopic::Mount => {
+            "cowjail mount\n\nUSAGE:\n  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n\nOPTIONS:\n  --profile <profile>   Profile path (required)\n  --record <record>     Record output path (required)\n  -v, --verbose         Print progress logs"
+        }
+        HelpTopic::Flush => {
+            "cowjail flush\n\nUSAGE:\n  cowjail flush [--record <record_path>] [--profile <profile>] [--dry-run] [-v|--verbose]\n\nOPTIONS:\n  --record <record>     Record path. Default: newest under .cache/cowjail\n  --profile <profile>   Replay policy profile override\n  --dry-run             Preview without applying or marking flushed\n  -v, --verbose         Print progress logs"
+        }
+    }
 }
 
 #[cfg(test)]
@@ -183,5 +226,17 @@ mod tests {
             other => panic!("expected run, got {other:?}"),
         };
         assert!(run.verbose);
+    }
+
+    #[test]
+    fn parse_root_help_flag() {
+        let cmd = parse_from(os(&["--help"])).expect("help should parse");
+        assert_eq!(cmd, Command::Help(HelpTopic::Root));
+    }
+
+    #[test]
+    fn parse_subcommand_help_flag() {
+        let cmd = parse_from(os(&["run", "--help"])).expect("run help should parse");
+        assert_eq!(cmd, Command::Help(HelpTopic::Run));
     }
 }
