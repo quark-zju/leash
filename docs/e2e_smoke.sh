@@ -35,8 +35,8 @@ cat > "${PROFILE}" <<PROFILE
 ${WORK} rw
 PROFILE
 
-echo "[1/6] checking cowjail command path via cargo run"
-"${RUN_COWJAIL[@]}" --help >/dev/null
+echo "[1/6] building cowjail via cargo"
+cargo build --manifest-path "${ROOT_DIR}/Cargo.toml" --bin cowjail >/dev/null
 
 echo "[2/6] starting mount"
 "${RUN_COWJAIL[@]}" mount --profile "${PROFILE}" --record "${RECORD}" "${MNT}" &
