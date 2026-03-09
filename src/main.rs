@@ -235,9 +235,7 @@ fn op_primary_path(op: &op::Operation) -> Option<&Path> {
     match op {
         op::Operation::WriteFile { path, .. }
         | op::Operation::CreateDir { path }
-        | op::Operation::RemoveFile { path }
         | op::Operation::RemoveDir { path }
-        | op::Operation::CreateSymlink { path, .. }
         | op::Operation::Truncate { path, .. } => Some(path.as_path()),
         op::Operation::Rename { .. } => None,
     }
@@ -245,14 +243,17 @@ fn op_primary_path(op: &op::Operation) -> Option<&Path> {
 
 fn apply_operation(op: &op::Operation) -> Result<()> {
     match op {
-        op::Operation::WriteFile {
-            path,
-            data,
-            executable,
-        } => {
+        op::Operation::WriteFile { path, state } => {
             validate_abs(path)?;
-            match data {
-                Some(data) => {
+            match state {
+                op::FileState::Deleted => match fs::remove_file(path) {
+                    Ok(()) => Ok(()),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(err) => {
+                        Err(err).with_context(|| format!("failed to remove file: {}", path.display()))
+                    }
+                },
+                op::FileState::Regular(data) => {
                     if let Some(parent) = path.parent() {
                         fs::create_dir_all(parent).with_context(|| {
                             format!("failed to create parent directories for {}", path.display())
@@ -261,30 +262,36 @@ fn apply_operation(op: &op::Operation) -> Result<()> {
                     fs::write(path, data).with_context(|| {
                         format!("failed to write file from record: {}", path.display())
                     })?;
-                    set_executable_bit(path, *executable)
+                    set_executable_bit(path, false)
                 }
-                None => match fs::remove_file(path) {
-                    Ok(()) => Ok(()),
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                    Err(err) => {
-                        Err(err).with_context(|| format!("failed to remove file: {}", path.display()))
+                op::FileState::Executable(data) => {
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent).with_context(|| {
+                            format!("failed to create parent directories for {}", path.display())
+                        })?;
                     }
-                },
+                    fs::write(path, data).with_context(|| {
+                        format!("failed to write file from record: {}", path.display())
+                    })?;
+                    set_executable_bit(path, true)
+                }
+                op::FileState::Symlink(target) => {
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent).with_context(|| {
+                            format!(
+                                "failed to create parent directories for symlink {}",
+                                path.display()
+                            )
+                        })?;
+                    }
+                    create_symlink(path, target)
+                }
             }
         }
         op::Operation::CreateDir { path } => {
             validate_abs(path)?;
             fs::create_dir_all(path)
                 .with_context(|| format!("failed to create directory: {}", path.display()))
-        }
-        op::Operation::RemoveFile { path } => {
-            validate_abs(path)?;
-            match fs::remove_file(path) {
-                Ok(()) => Ok(()),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(err) => Err(err)
-                    .with_context(|| format!("failed to remove file: {}", path.display())),
-            }
         }
         op::Operation::RemoveDir { path } => {
             validate_abs(path)?;
@@ -294,18 +301,6 @@ fn apply_operation(op: &op::Operation) -> Result<()> {
                 Err(err) => Err(err)
                     .with_context(|| format!("failed to remove directory: {}", path.display())),
             }
-        }
-        op::Operation::CreateSymlink { path, target } => {
-            validate_abs(path)?;
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!(
-                        "failed to create parent directories for symlink {}",
-                        path.display()
-                    )
-                })?;
-            }
-            create_symlink(path, target)
         }
         op::Operation::Rename { from, to } => {
             validate_abs(from)?;
@@ -432,8 +427,7 @@ mod tests {
         let mut writer = record::Writer::open_append(&path).expect("writer open");
         let op = op::Operation::WriteFile {
             path: temp_record_path("target"),
-            data: Some(b"hello".to_vec()),
-            executable: false,
+            state: op::FileState::Regular(b"hello".to_vec()),
         };
         writer
             .append_cbor(record::TAG_WRITE_OP, &op)
@@ -456,8 +450,7 @@ mod tests {
         let mut writer = record::Writer::open_append(&path).expect("writer open");
         let op = op::Operation::WriteFile {
             path: out_path.clone(),
-            data: Some(b"world".to_vec()),
-            executable: false,
+            state: op::FileState::Regular(b"world".to_vec()),
         };
         writer
             .append_cbor(record::TAG_WRITE_OP, &op)
@@ -533,10 +526,12 @@ mod tests {
             op::Operation::CreateDir { path: dir.clone() },
             op::Operation::WriteFile {
                 path: file.clone(),
-                data: Some(b"x".to_vec()),
-                executable: false,
+                state: op::FileState::Regular(b"x".to_vec()),
             },
-            op::Operation::RemoveFile { path: file.clone() },
+            op::Operation::WriteFile {
+                path: file.clone(),
+                state: op::FileState::Deleted,
+            },
             op::Operation::RemoveDir { path: dir.clone() },
         ];
         for op in ops {
@@ -563,8 +558,7 @@ mod tests {
 
         let op = op::Operation::WriteFile {
             path: target.clone(),
-            data: Some(b"#!/bin/sh\necho hi\n".to_vec()),
-            executable: true,
+            state: op::FileState::Executable(b"#!/bin/sh\necho hi\n".to_vec()),
         };
         writer
             .append_cbor(record::TAG_WRITE_OP, &op)
@@ -592,9 +586,9 @@ mod tests {
         fs::write(&target, b"link-target").expect("seed target");
 
         let mut writer = record::Writer::open_append(&path).expect("writer open");
-        let op = op::Operation::CreateSymlink {
+        let op = op::Operation::WriteFile {
             path: link.clone(),
-            target: target.clone(),
+            state: op::FileState::Symlink(target.clone()),
         };
         writer
             .append_cbor(record::TAG_WRITE_OP, &op)
@@ -616,18 +610,15 @@ mod tests {
         let ops = [
             op::Operation::WriteFile {
                 path: target.clone(),
-                data: Some(b"v1".to_vec()),
-                executable: false,
+                state: op::FileState::Regular(b"v1".to_vec()),
             },
             op::Operation::WriteFile {
                 path: target.clone(),
-                data: Some(b"v2".to_vec()),
-                executable: false,
+                state: op::FileState::Regular(b"v2".to_vec()),
             },
             op::Operation::WriteFile {
                 path: target.clone(),
-                data: None,
-                executable: false,
+                state: op::FileState::Deleted,
             },
         ];
         for op in ops {
