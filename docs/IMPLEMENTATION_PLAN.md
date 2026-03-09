@@ -2,6 +2,13 @@
 
 This document breaks down the `cowjail` project into small, reviewable, and runnable commits.
 
+## Dependency Constraints
+
+- CLI parsing: use `pico-args` (or manual parsing), not `clap`.
+- Error handling: use `anyhow` (`bail!` etc.), not `thiserror`.
+- Paths: use `std::path` and `fs-err`, not `camino`.
+- Async runtime: do not add `tokio` unless discussed first.
+
 ## Scope Recap
 
 - Command interface:
