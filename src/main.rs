@@ -26,13 +26,13 @@ fn main() {
 
 fn try_main() -> Result<i32> {
     match cli::parse_env()? {
-        Command::Run(run) => run_command(run),
+        Command::Run(run) => run_command(run).context("run subcommand failed"),
         Command::Mount(mount) => {
-            mount_command(mount)?;
+            mount_command(mount).context("mount subcommand failed")?;
             Ok(0)
         }
         Command::Flush(flush) => {
-            flush_command(flush)?;
+            flush_command(flush).context("flush subcommand failed")?;
             Ok(0)
         }
     }
@@ -58,9 +58,20 @@ fn run_command(run: RunCommand) -> Result<i32> {
         .unwrap_or(default_record_path().context("failed to build default record path")?);
     ensure_record_parent_dir(&record_path)?;
 
-    let loaded = load_profile(Path::new(&run.profile))?;
-    let writer = record::Writer::open_append(&record_path)?;
-    append_profile_header(&writer, &loaded.normalized_source)?;
+    let loaded = load_profile(Path::new(&run.profile))
+        .with_context(|| format!("failed to load run profile '{}'", run.profile))?;
+    let writer = record::Writer::open_append(&record_path).with_context(|| {
+        format!(
+            "failed to open run record writer at {}",
+            record_path.display()
+        )
+    })?;
+    append_profile_header(&writer, &loaded.normalized_source).with_context(|| {
+        format!(
+            "failed to append run profile header into {}",
+            record_path.display()
+        )
+    })?;
     let cowfs = cowfs::CowFs::new(loaded.profile, writer);
 
     let mountpoint = make_run_mountpoint()?;
@@ -81,7 +92,12 @@ fn run_command(run: RunCommand) -> Result<i32> {
             run.verbose,
             format!("run: mounting fuse filesystem at {}", mountpoint.display()),
         );
-        unsafe { cowfs.mount_background(&mountpoint) }?
+        unsafe { cowfs.mount_background(&mountpoint) }.with_context(|| {
+            format!(
+                "failed to mount run filesystem at temporary mountpoint {}",
+                mountpoint.display()
+            )
+        })?
     };
 
     vlog(
@@ -92,7 +108,8 @@ fn run_command(run: RunCommand) -> Result<i32> {
             cwd.display()
         ),
     );
-    let status = run_child_in_chroot(&run, &mountpoint, &cwd, ruid, rgid);
+    let status = run_child_in_chroot(&run, &mountpoint, &cwd, ruid, rgid)
+        .with_context(|| format!("failed to execute jailed command {:?}", run.program));
 
     vlog(run.verbose, "run: waiting for child completion done".to_string());
     vlog(
@@ -112,10 +129,21 @@ fn run_command(run: RunCommand) -> Result<i32> {
 }
 
 fn mount_command(mount: MountCommand) -> Result<()> {
-    let loaded = load_profile(Path::new(&mount.profile))?;
+    let loaded = load_profile(Path::new(&mount.profile))
+        .with_context(|| format!("failed to load mount profile '{}'", mount.profile))?;
     ensure_record_parent_dir(&mount.record)?;
-    let writer = record::Writer::open_append(&mount.record)?;
-    append_profile_header(&writer, &loaded.normalized_source)?;
+    let writer = record::Writer::open_append(&mount.record).with_context(|| {
+        format!(
+            "failed to open mount record writer at {}",
+            mount.record.display()
+        )
+    })?;
+    append_profile_header(&writer, &loaded.normalized_source).with_context(|| {
+        format!(
+            "failed to append mount profile header into {}",
+            mount.record.display()
+        )
+    })?;
 
     let fs = cowfs::CowFs::new(loaded.profile, writer);
     vlog(
@@ -147,16 +175,32 @@ fn run_child_in_chroot(
     unsafe {
         cmd.pre_exec(move || {
             if libc::chroot(mount_c.as_ptr()) != 0 {
-                return Err(std::io::Error::last_os_error());
+                let err = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    err.kind(),
+                    format!("chroot failed: {err}"),
+                ));
             }
             if libc::chdir(cwd_c.as_ptr()) != 0 {
-                return Err(std::io::Error::last_os_error());
+                let err = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    err.kind(),
+                    format!("chdir failed: {err}"),
+                ));
             }
             if libc::setgid(rgid) != 0 {
-                return Err(std::io::Error::last_os_error());
+                let err = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    err.kind(),
+                    format!("setgid({rgid}) failed: {err}"),
+                ));
             }
             if libc::setuid(ruid) != 0 {
-                return Err(std::io::Error::last_os_error());
+                let err = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    err.kind(),
+                    format!("setuid({ruid}) failed: {err}"),
+                ));
             }
             Ok(())
         });
@@ -193,7 +237,8 @@ fn flush_command(flush: FlushCommand) -> Result<()> {
         })?
     };
 
-    let stats = flush_record(&record_path, flush.dry_run, flush.profile.as_deref())?;
+    let stats = flush_record(&record_path, flush.dry_run, flush.profile.as_deref())
+        .with_context(|| format!("failed to flush record file {}", record_path.display()))?;
     vlog(
         flush.verbose,
         format!(
@@ -343,9 +388,13 @@ struct FlushStats {
 }
 
 fn flush_record(path: &Path, dry_run: bool, profile_override: Option<&str>) -> Result<FlushStats> {
-    let mut record_lock = record::lock_record(path)?;
-    let frames = record_lock.read_frames()?;
-    let replay_profile = resolve_flush_profile(profile_override, &frames)?;
+    let mut record_lock = record::lock_record(path)
+        .with_context(|| format!("failed to lock record {}", path.display()))?;
+    let frames = record_lock
+        .read_frames()
+        .with_context(|| format!("failed to read frames from {}", path.display()))?;
+    let replay_profile = resolve_flush_profile(profile_override, &frames)
+        .with_context(|| format!("failed to resolve flush profile for {}", path.display()))?;
     let mut stats = FlushStats {
         total: frames.len(),
         ..FlushStats::default()
