@@ -1,18 +1,20 @@
 use std::hash::Hasher;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use twox_hash::XxHash64;
 
 pub const HEADER_LEN: usize = 17;
 pub const TAG_WRITE_OP: u8 = 0x01;
+pub const FLUSHED_BIT: u8 = 0x80;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
     pub offset: u64,
     pub tag: u8,
+    pub flushed: bool,
     pub payload: Vec<u8>,
 }
 
@@ -38,6 +40,10 @@ impl Writer {
     }
 
     pub fn append_payload(&mut self, tag: u8, payload: &[u8]) -> Result<u64> {
+        if tag & FLUSHED_BIT != 0 {
+            bail!("invalid record tag {tag:#x}: high bit is reserved for flush marker");
+        }
+
         let len = payload.len() as u64;
         let checksum = checksum64(payload);
         let mut header = [0u8; HEADER_LEN];
@@ -88,7 +94,9 @@ fn read_frames_from_bytes(data: &[u8]) -> Vec<Frame> {
             break;
         }
 
-        let tag = data[cursor];
+        let raw_tag = data[cursor];
+        let tag = raw_tag & !FLUSHED_BIT;
+        let flushed = raw_tag & FLUSHED_BIT != 0;
         let len = u64::from_le_bytes(data[cursor + 1..cursor + 9].try_into().unwrap()) as usize;
         let expected_checksum =
             u64::from_le_bytes(data[cursor + 9..cursor + 17].try_into().unwrap());
@@ -106,6 +114,7 @@ fn read_frames_from_bytes(data: &[u8]) -> Vec<Frame> {
         frames.push(Frame {
             offset: (cursor - HEADER_LEN) as u64,
             tag,
+            flushed,
             payload: payload.to_vec(),
         });
         cursor += len;
@@ -122,6 +131,57 @@ fn checksum64(data: &[u8]) -> u64 {
 
 pub fn decode_cbor<T: serde::de::DeserializeOwned>(frame: &Frame) -> Result<T> {
     serde_cbor::from_slice(&frame.payload).context("failed to decode cbor payload")
+}
+
+pub fn mark_flushed(path: &Path, offset: u64) -> Result<bool> {
+    let mut file = fs_err::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| {
+            format!(
+                "failed to open record file for mark_flushed: {}",
+                path.display()
+            )
+        })?;
+
+    file.seek(SeekFrom::Start(offset)).with_context(|| {
+        format!(
+            "failed to seek to record offset {} in {}",
+            offset,
+            path.display()
+        )
+    })?;
+
+    let mut tag = [0u8; 1];
+    file.read_exact(&mut tag).with_context(|| {
+        format!(
+            "failed to read record tag at {} in {}",
+            offset,
+            path.display()
+        )
+    })?;
+    if tag[0] & FLUSHED_BIT != 0 {
+        return Ok(false);
+    }
+
+    tag[0] |= FLUSHED_BIT;
+    file.seek(SeekFrom::Start(offset)).with_context(|| {
+        format!(
+            "failed to seek to rewrite tag at {} in {}",
+            offset,
+            path.display()
+        )
+    })?;
+    file.write_all(&tag)
+        .with_context(|| format!("failed to rewrite tag at {} in {}", offset, path.display()))?;
+    file.sync_data().with_context(|| {
+        format!(
+            "failed to sync record file after mark_flushed: {}",
+            path.display()
+        )
+    })?;
+    Ok(true)
 }
 
 pub fn truncate_tail(path: &Path, keep_len: u64) -> Result<()> {
@@ -182,6 +242,7 @@ mod tests {
         let frames = read_frames(&path).expect("read frames");
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].tag, TAG_WRITE_OP);
+        assert!(!frames[0].flushed);
         let payload: (String, u32) = decode_cbor(&frames[0]).expect("decode payload");
         assert_eq!(payload.0, "path");
         assert_eq!(payload.1, 7);
@@ -215,5 +276,20 @@ mod tests {
         assert_eq!(frames.len(), 1);
         let v: u32 = decode_cbor(&frames[0]).expect("decode value");
         assert_eq!(v, 1);
+    }
+
+    #[test]
+    fn mark_flushed_is_idempotent() {
+        let path = temp_record_path("mark-flushed");
+        let mut writer = Writer::open_append(&path).expect("writer open");
+        let offset = writer.append_cbor(TAG_WRITE_OP, &123u32).expect("append");
+        writer.sync().expect("sync");
+
+        assert!(mark_flushed(&path, offset).expect("first mark"));
+        assert!(!mark_flushed(&path, offset).expect("second mark"));
+
+        let frames = read_frames(&path).expect("read frames");
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].flushed);
     }
 }
