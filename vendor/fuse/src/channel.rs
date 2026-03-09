@@ -123,14 +123,14 @@ pub fn unmount(mountpoint: &Path) -> io::Result<()> {
     // to the real path when we first mounted.
 
     #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "dragonfly",
-              target_os = "openbsd", target_os = "bitrig", target_os = "netbsd"))]
+              target_os = "openbsd", target_os = "netbsd"))]
     #[inline]
     fn libc_umount(mnt: &CStr) -> c_int {
         unsafe { libc::unmount(mnt.as_ptr(), 0) }
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "dragonfly",
-                  target_os = "openbsd", target_os = "bitrig", target_os = "netbsd")))]
+                  target_os = "openbsd", target_os = "netbsd")))]
     #[inline]
     fn libc_umount(mnt: &CStr) -> c_int {
         use fuse_sys::fuse_unmount_compat22;
