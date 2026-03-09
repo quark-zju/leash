@@ -8,13 +8,13 @@ set -euo pipefail
 # - current user can mount FUSE
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${ROOT_DIR}/target/debug/cowjail"
 WORK="$(mktemp -d /tmp/cowjail-e2e-XXXXXX)"
 MNT="${WORK}/mnt"
 RECORD="${WORK}/record.cjr"
 PROFILE="${WORK}/profile"
 TARGET="${WORK}/host.txt"
 MOUNT_PID=""
+RUN_COWJAIL=(cargo run --manifest-path "${ROOT_DIR}/Cargo.toml" --bin cowjail --)
 
 cleanup() {
   set +e
@@ -35,11 +35,11 @@ cat > "${PROFILE}" <<PROFILE
 ${WORK} rw
 PROFILE
 
-echo "[1/6] building binary"
-cargo build --manifest-path "${ROOT_DIR}/Cargo.toml"
+echo "[1/6] checking cowjail command path via cargo run"
+"${RUN_COWJAIL[@]}" --help >/dev/null
 
 echo "[2/6] starting mount"
-"${BIN}" mount --profile "${PROFILE}" --record "${RECORD}" "${MNT}" &
+"${RUN_COWJAIL[@]}" mount --profile "${PROFILE}" --record "${RECORD}" "${MNT}" &
 MOUNT_PID="$!"
 sleep 1
 
@@ -56,7 +56,7 @@ echo "[5/6] unmount and flush"
 fusermount -u "${MNT}"
 wait "${MOUNT_PID}" || true
 MOUNT_PID=""
-"${BIN}" flush --record "${RECORD}"
+"${RUN_COWJAIL[@]}" flush --record "${RECORD}"
 
 echo "[6/6] verifying host changed after flush"
 if [[ "$(cat "${TARGET}")" != "after" ]]; then
