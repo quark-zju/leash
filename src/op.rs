@@ -4,7 +4,12 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Operation {
-    WriteFile { path: PathBuf, data: Vec<u8> },
+    WriteFile {
+        path: PathBuf,
+        data: Vec<u8>,
+        #[serde(default)]
+        executable: bool,
+    },
     CreateDir { path: PathBuf },
     RemoveFile { path: PathBuf },
     RemoveDir { path: PathBuf },

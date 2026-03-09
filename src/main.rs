@@ -193,7 +193,11 @@ fn flush_record(path: &Path, dry_run: bool) -> Result<FlushStats> {
 
 fn apply_operation(op: &op::Operation) -> Result<()> {
     match op {
-        op::Operation::WriteFile { path, data } => {
+        op::Operation::WriteFile {
+            path,
+            data,
+            executable,
+        } => {
             validate_abs(path)?;
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).with_context(|| {
@@ -201,7 +205,8 @@ fn apply_operation(op: &op::Operation) -> Result<()> {
                 })?;
             }
             fs::write(path, data)
-                .with_context(|| format!("failed to write file from record: {}", path.display()))
+                .with_context(|| format!("failed to write file from record: {}", path.display()))?;
+            set_executable_bit(path, *executable)
         }
         op::Operation::CreateDir { path } => {
             validate_abs(path)?;
@@ -265,6 +270,31 @@ fn validate_abs(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn set_executable_bit(path: &Path, executable: bool) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perm = fs::metadata(path)
+        .with_context(|| format!("failed to stat file after write: {}", path.display()))?
+        .permissions();
+    let mode = perm.mode();
+    let next = if executable {
+        mode | 0o111
+    } else {
+        mode & !0o111
+    };
+    if next != mode {
+        perm.set_mode(next);
+        fs::set_permissions(path, perm)
+            .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_executable_bit(_path: &Path, _executable: bool) -> Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +316,7 @@ mod tests {
         let op = op::Operation::WriteFile {
             path: temp_record_path("target"),
             data: b"hello".to_vec(),
+            executable: false,
         };
         writer
             .append_cbor(record::TAG_WRITE_OP, &op)
@@ -309,6 +340,7 @@ mod tests {
         let op = op::Operation::WriteFile {
             path: out_path.clone(),
             data: b"world".to_vec(),
+            executable: false,
         };
         writer
             .append_cbor(record::TAG_WRITE_OP, &op)
@@ -385,6 +417,7 @@ mod tests {
             op::Operation::WriteFile {
                 path: file.clone(),
                 data: b"x".to_vec(),
+                executable: false,
             },
             op::Operation::RemoveFile { path: file.clone() },
             op::Operation::RemoveDir { path: dir.clone() },
@@ -400,5 +433,34 @@ mod tests {
         assert_eq!(stats.marked, 4);
         assert!(!file.exists());
         assert!(!dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn flush_applies_executable_bit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_record_path("chmod-record");
+        let target = temp_record_path("chmod-target");
+        let mut writer = record::Writer::open_append(&path).expect("writer open");
+
+        let op = op::Operation::WriteFile {
+            path: target.clone(),
+            data: b"#!/bin/sh\necho hi\n".to_vec(),
+            executable: true,
+        };
+        writer
+            .append_cbor(record::TAG_WRITE_OP, &op)
+            .expect("append");
+        writer.sync().expect("sync");
+
+        let stats = flush_record(&path, false).expect("flush");
+        assert_eq!(stats.marked, 1);
+
+        let mode = fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o111, 0);
     }
 }
