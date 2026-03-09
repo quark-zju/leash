@@ -194,9 +194,7 @@ fn flush_record(path: &Path, dry_run: bool) -> Result<FlushStats> {
 fn apply_operation(op: &op::Operation) -> Result<()> {
     match op {
         op::Operation::WriteFile { path, data } => {
-            if !path.is_absolute() {
-                bail!("operation path must be absolute: {}", path.display());
-            }
+            validate_abs(path)?;
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).with_context(|| {
                     format!("failed to create parent directories for {}", path.display())
@@ -205,7 +203,66 @@ fn apply_operation(op: &op::Operation) -> Result<()> {
             fs::write(path, data)
                 .with_context(|| format!("failed to write file from record: {}", path.display()))
         }
+        op::Operation::CreateDir { path } => {
+            validate_abs(path)?;
+            fs::create_dir_all(path)
+                .with_context(|| format!("failed to create directory: {}", path.display()))
+        }
+        op::Operation::RemoveFile { path } => {
+            validate_abs(path)?;
+            match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(err) => Err(err)
+                    .with_context(|| format!("failed to remove file: {}", path.display())),
+            }
+        }
+        op::Operation::RemoveDir { path } => {
+            validate_abs(path)?;
+            match fs::remove_dir(path) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(err) => Err(err)
+                    .with_context(|| format!("failed to remove directory: {}", path.display())),
+            }
+        }
+        op::Operation::Rename { from, to } => {
+            validate_abs(from)?;
+            validate_abs(to)?;
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "failed to create parent directories for rename target {}",
+                        to.display()
+                    )
+                })?;
+            }
+            fs::rename(from, to).with_context(|| {
+                format!(
+                    "failed to rename {} -> {}",
+                    from.display(),
+                    to.display()
+                )
+            })
+        }
+        op::Operation::Truncate { path, size } => {
+            validate_abs(path)?;
+            let file = fs::OpenOptions::new()
+                .create(false)
+                .write(true)
+                .open(path)
+                .with_context(|| format!("failed to open file for truncate: {}", path.display()))?;
+            file.set_len(*size)
+                .with_context(|| format!("failed to truncate file: {}", path.display()))
+        }
     }
+}
+
+fn validate_abs(path: &Path) -> Result<()> {
+    if !path.is_absolute() {
+        bail!("operation path must be absolute: {}", path.display());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -268,5 +325,80 @@ mod tests {
         assert_eq!(second.pending, 0);
         assert_eq!(second.marked, 0);
         assert_eq!(second.skipped, 1);
+    }
+
+    #[test]
+    fn flush_applies_rename() {
+        let path = temp_record_path("rename-record");
+        let from = temp_record_path("rename-from");
+        let to = temp_record_path("rename-to");
+        fs::write(&from, b"rename-me").expect("seed source");
+
+        let mut writer = record::Writer::open_append(&path).expect("writer open");
+        let op = op::Operation::Rename {
+            from: from.clone(),
+            to: to.clone(),
+        };
+        writer
+            .append_cbor(record::TAG_WRITE_OP, &op)
+            .expect("append");
+        writer.sync().expect("sync");
+
+        let stats = flush_record(&path, false).expect("flush");
+        assert_eq!(stats.marked, 1);
+        assert!(!from.exists());
+        let bytes = fs::read(&to).expect("renamed target");
+        assert_eq!(bytes, b"rename-me");
+    }
+
+    #[test]
+    fn flush_applies_truncate() {
+        let path = temp_record_path("truncate-record");
+        let target = temp_record_path("truncate-target");
+        fs::write(&target, b"abcdef").expect("seed target");
+
+        let mut writer = record::Writer::open_append(&path).expect("writer open");
+        let op = op::Operation::Truncate {
+            path: target.clone(),
+            size: 3,
+        };
+        writer
+            .append_cbor(record::TAG_WRITE_OP, &op)
+            .expect("append");
+        writer.sync().expect("sync");
+
+        let stats = flush_record(&path, false).expect("flush");
+        assert_eq!(stats.marked, 1);
+        let bytes = fs::read(&target).expect("truncated target");
+        assert_eq!(bytes, b"abc");
+    }
+
+    #[test]
+    fn flush_applies_create_and_remove_ops() {
+        let path = temp_record_path("create-remove-record");
+        let dir = temp_record_path("ops-dir");
+        let file = dir.join("f.txt");
+
+        let mut writer = record::Writer::open_append(&path).expect("writer open");
+        let ops = [
+            op::Operation::CreateDir { path: dir.clone() },
+            op::Operation::WriteFile {
+                path: file.clone(),
+                data: b"x".to_vec(),
+            },
+            op::Operation::RemoveFile { path: file.clone() },
+            op::Operation::RemoveDir { path: dir.clone() },
+        ];
+        for op in ops {
+            writer
+                .append_cbor(record::TAG_WRITE_OP, &op)
+                .expect("append op");
+        }
+        writer.sync().expect("sync");
+
+        let stats = flush_record(&path, false).expect("flush");
+        assert_eq!(stats.marked, 4);
+        assert!(!file.exists());
+        assert!(!dir.exists());
     }
 }
