@@ -1,5 +1,5 @@
 use std::hash::Hasher;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -20,7 +20,8 @@ pub struct Frame {
 }
 
 pub struct Writer {
-    file: fs::File,
+    buf: BufWriter<fs::File>,
+    next_offset: u64,
 }
 
 impl Writer {
@@ -32,7 +33,14 @@ impl Writer {
             .with_context(|| {
                 format!("failed to open record file for append: {}", path.display())
             })?;
-        Ok(Self { file })
+        let next_offset = file
+            .metadata()
+            .with_context(|| format!("failed to stat record file: {}", path.display()))?
+            .len();
+        Ok(Self {
+            buf: BufWriter::new(file),
+            next_offset,
+        })
     }
 
     pub fn append_cbor<T: Serialize>(&mut self, tag: u8, value: &T) -> Result<u64> {
@@ -52,22 +60,23 @@ impl Writer {
         header[1..9].copy_from_slice(&len.to_le_bytes());
         header[9..17].copy_from_slice(&checksum.to_le_bytes());
 
-        let offset = self
-            .file
-            .metadata()
-            .context("failed to stat record file")?
-            .len();
-        self.file
+        let offset = self.next_offset;
+        self.buf
             .write_all(&header)
             .context("failed to write record header")?;
-        self.file
+        self.buf
             .write_all(payload)
             .context("failed to write record payload")?;
+        self.next_offset += HEADER_LEN as u64 + len;
         Ok(offset)
     }
 
-    pub fn sync(&self) -> Result<()> {
-        self.file
+    pub fn sync(&mut self) -> Result<()> {
+        self.buf
+            .flush()
+            .context("failed to flush buffered record writes")?;
+        self.buf
+            .get_ref()
             .sync_data()
             .context("failed to sync record file data")
     }
