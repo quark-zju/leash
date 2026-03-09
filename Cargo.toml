@@ -12,5 +12,4 @@ libc = "0.2"
 pico-args = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_cbor = "0.11"
-tracing = "0.1"
 twox-hash = "2"
