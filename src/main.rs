@@ -14,6 +14,20 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
+const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
+. rw
+/tmp rw
+/bin ro
+/sbin ro
+/usr ro
+/lib ro
+/lib64 ro
+/etc ro
+/dev ro
+/proc ro
+/sys ro
+";
+
 fn main() {
     match try_main() {
         Ok(code) => std::process::exit(code),
@@ -302,13 +316,22 @@ fn append_profile_header(writer: &record::Writer, normalized_source: &str) -> Re
 }
 
 fn load_profile(profile_path: &Path) -> Result<LoadedProfile> {
-    let source = fs::read_to_string(profile_path)
-        .with_context(|| format!("failed to read profile file: {}", profile_path.display()))?;
     let cwd = std::env::current_dir().context("failed to get current directory")?;
+    let source = if profile_path == Path::new(cli::DEFAULT_PROFILE) {
+        BUILTIN_DEFAULT_PROFILE_SOURCE.to_string()
+    } else {
+        fs::read_to_string(profile_path)
+            .with_context(|| format!("failed to read profile file: {}", profile_path.display()))?
+    };
+    let source_name = if profile_path == Path::new(cli::DEFAULT_PROFILE) {
+        "built-in default profile".to_string()
+    } else {
+        format!("profile file: {}", profile_path.display())
+    };
     let profile = profile::Profile::parse(&source, &cwd)
-        .with_context(|| format!("failed to parse profile file: {}", profile_path.display()))?;
+        .with_context(|| format!("failed to parse {source_name}"))?;
     let normalized_source = profile::normalize_source(&source, &cwd)
-        .with_context(|| format!("failed to normalize profile file: {}", profile_path.display()))?;
+        .with_context(|| format!("failed to normalize {source_name}"))?;
     Ok(LoadedProfile {
         profile,
         normalized_source,
@@ -1049,5 +1072,18 @@ mod tests {
         assert_eq!(second.blocked, 0);
         assert_eq!(second.marked, 1);
         assert_eq!(fs::read(&target).expect("read target"), b"allowed");
+    }
+
+    #[test]
+    fn load_profile_uses_builtin_default_profile() {
+        let loaded = load_profile(Path::new(cli::DEFAULT_PROFILE)).expect("load builtin default");
+        assert_eq!(
+            loaded.profile.first_match_action(Path::new("/bin/sh")),
+            Some(profile::RuleAction::ReadOnly)
+        );
+        assert_eq!(
+            loaded.profile.first_match_action(Path::new("/tmp")),
+            Some(profile::RuleAction::ReadWrite)
+        );
     }
 }
