@@ -89,8 +89,10 @@ Persistent state that survives reboot:
 
 Runtime state under tmpfs:
 
-- `/run/cowjail/NAME/ipc`
-- `/run/cowjail/NAME/mnt`
+- `/run/cowjail/NAME/ipcns`
+- `/run/cowjail/NAME/mntns`
+
+These are namespace-handle paths, not the final visible filesystem mountpoint inside the jail.
 
 User-managed profile definitions:
 
@@ -110,7 +112,7 @@ The proposal to use a mount namespace is correct.
 Recommended behavior:
 
 1. Create a new mount namespace for the jail.
-2. Bind-mount a namespace handle into `/run/cowjail/<name>/mnt` so it can be reopened later.
+2. Bind-mount a namespace handle into `/run/cowjail/<name>/mntns` so it can be reopened later.
 3. Mount the jail FUSE filesystem inside that namespace.
 4. Enter the namespace when running commands or attaching debug mounts.
 
