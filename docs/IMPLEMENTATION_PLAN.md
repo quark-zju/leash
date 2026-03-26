@@ -339,10 +339,6 @@ Completed:
 - [x] Phase 5 step `17` public `flush` uses selector-based UX
 - [x] Phase 5 step `18` hidden low-level `_fuse` / `_mount` / `_flush` commands
 
-Not started:
-
-- [ ] Phase 5 step `19` README workflow rewrite for named runtime reuse
-
 ### Phase 1: Jail identity and selector model
 
 1. `state: add named jail metadata model`
@@ -415,9 +411,6 @@ Not started:
 18. `debug: preserve hidden _fuse, _mount and _flush commands`
 - Keep low-level commands for recovery and advanced debugging.
 - Do not write named-jail metadata from these code paths.
-
-19. `docs: update README around run/add/rm/list workflow`
-- Replace lifecycle-heavy examples with selector-driven usage.
 
 ## Key Risks
 
