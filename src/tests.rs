@@ -556,3 +556,88 @@ fn flush_rename_over_non_empty_directory_fails_without_marking() {
     let frames = record::read_frames(&record).expect("read frames");
     assert!(!frames[0].flushed);
 }
+
+#[test]
+fn flush_truncate_directory_fails_without_marking() {
+    let temp = tempdir().expect("tempdir");
+    let record = temp.path().join("record.cjr");
+    let target_dir = temp.path().join("target");
+    fs::create_dir_all(&target_dir).expect("mkdir");
+
+    let writer = record::Writer::open_append(&record).expect("writer open");
+    writer
+        .append_cbor(
+            record::TAG_WRITE_OP,
+            &op::Operation::Truncate {
+                path: target_dir.clone(),
+                size: 1,
+            },
+        )
+        .expect("append truncate");
+    writer.sync().expect("sync");
+
+    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    assert!(
+        err.to_string().contains("failed to open file for truncate")
+            || err.to_string().contains("Is a directory")
+    );
+    assert!(target_dir.is_dir());
+    let frames = record::read_frames(&record).expect("read frames");
+    assert!(!frames[0].flushed);
+}
+
+#[test]
+fn flush_remove_dir_on_regular_file_fails_without_marking() {
+    let temp = tempdir().expect("tempdir");
+    let record = temp.path().join("record.cjr");
+    let target_file = temp.path().join("target");
+    fs::write(&target_file, b"keep").expect("seed file");
+
+    let writer = record::Writer::open_append(&record).expect("writer open");
+    writer
+        .append_cbor(
+            record::TAG_WRITE_OP,
+            &op::Operation::RemoveDir {
+                path: target_file.clone(),
+            },
+        )
+        .expect("append rmdir");
+    writer.sync().expect("sync");
+
+    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    assert!(
+        err.to_string().contains("failed to remove directory")
+            || err.to_string().contains("Not a directory")
+    );
+    assert!(target_file.is_file());
+    let frames = record::read_frames(&record).expect("read frames");
+    assert!(!frames[0].flushed);
+}
+
+#[test]
+fn flush_create_dir_on_existing_file_fails_without_marking() {
+    let temp = tempdir().expect("tempdir");
+    let record = temp.path().join("record.cjr");
+    let target_file = temp.path().join("target");
+    fs::write(&target_file, b"keep").expect("seed file");
+
+    let writer = record::Writer::open_append(&record).expect("writer open");
+    writer
+        .append_cbor(
+            record::TAG_WRITE_OP,
+            &op::Operation::CreateDir {
+                path: target_file.clone(),
+            },
+        )
+        .expect("append mkdir");
+    writer.sync().expect("sync");
+
+    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    assert!(
+        err.to_string().contains("failed to create directory")
+            || err.to_string().contains("File exists")
+    );
+    assert!(target_file.is_file());
+    let frames = record::read_frames(&record).expect("read frames");
+    assert!(!frames[0].flushed);
+}
