@@ -17,33 +17,59 @@ Out of scope:
 - full process/container sandboxing
 - cross-platform support (Linux only)
 
-## Quick Usage
+## Usage
 
-Start from the simplest flow (default profile + current directory identity):
+### Simple
+
+Use `cowjail run` to run a command. It uses the default profile - only the current directory is writable, and various parts of the filesystem like `~/.ssh` is hidden.
 
 ```bash
 cowjail run -- your-command arg1 arg2  # run inside jail
+```
+
+Changes by the command won't affect the real filesystem directly. Use `cowjail flush` to view and apply changes:
+
+```
 cowjail flush --dry-run                # review pending changes
 cowjail flush                          # apply pending changes to host
 ```
 
-Use an explicit profile:
+Changes are designed to survive reboots. But it's still recommended to flush early to keep changes.
 
-```bash
-cowjail run --profile default -- your-command        # select jail by profile identity
-cowjail flush --profile default --dry-run            # review pending changes for that profile
-cowjail flush --profile default                      # apply pending changes for that profile
+### Custom profile
+
+Create a custom profile file:
+
+```text
+# ~/my-profile
+/bin ro
+/lib ro
+/lib64 ro
+/usr ro
+/etc ro
+/tmp rw
+/home/*/.ssh deny
+. rw
 ```
 
-Use named jail management when you want stable explicit identities:
+```bash
+cowjail run --profile ~/my-profile -- your-command   # select jail by profile
+cowjail flush --profile ~/my-profile --dry-run       # review pending changes
+cowjail flush --profile ~/my-profile                 # apply pending changes
+```
+
+### Named jails
+
+Similar to `ip netns`, `cowjail` supports naming the jails:
 
 ```bash
-cowjail add --name agent --profile default           # create/pin explicit jail metadata
-cowjail run --name agent -- your-command arg1 arg2   # run in named jail
-cowjail flush --name agent --dry-run                 # review pending changes for named jail
-cowjail flush --name agent                           # apply pending changes for named jail
+cowjail add --name agent --profile default           # create a named jail
+cowjail run --name agent -- your-command arg1 arg2   # run in the jail
+cowjail run --name agent -- another-command args     # run in the same jail
+cowjail flush --name agent --dry-run                 # review pending changes
+cowjail flush --name agent                           # apply pending changes
 cowjail list                                         # list known jails
-cowjail rm --name agent                              # remove jail metadata/runtime state
+cowjail rm --name agent                              # remove jail
 ```
 
 ## More Docs
