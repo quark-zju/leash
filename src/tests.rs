@@ -46,6 +46,7 @@ fn auto_jail_name_uses_reserved_prefix() {
 #[test]
 fn cowjail_path_helpers_are_testable_without_process_home() {
     let home = Path::new("/tmp/cowjail-home");
+    let layout = jail::layout_from_home(home);
     assert_eq!(
         jail::config_root_from_home(home),
         home.join(".config/cowjail")
@@ -58,6 +59,75 @@ fn cowjail_path_helpers_are_testable_without_process_home() {
         profile_loader::default_record_dir_from_home(home),
         home.join(".cache/cowjail")
     );
+    assert_eq!(
+        jail::profile_definition_path_in(&layout, "default"),
+        home.join(".config/cowjail/profiles/default")
+    );
+    assert_eq!(
+        jail::jail_paths_in(&layout, "demo").record_path,
+        home.join(".local/state/cowjail/demo/record")
+    );
+}
+
+#[test]
+fn resolve_in_can_materialize_generated_jail_without_global_home() {
+    let temp = tempdir().expect("tempdir");
+    let mut layout = jail::layout_from_home(temp.path());
+    layout.runtime_root = temp.path().join("run");
+    let profile_path = temp.path().join("test.profile");
+    fs::write(&profile_path, ". rw\n/tmp ro\n").expect("write profile");
+
+    let resolved = jail::resolve_in(
+        &layout,
+        None,
+        Some(profile_path.to_str().expect("utf-8 path")),
+        jail::ResolveMode::EnsureExists,
+    )
+    .expect("resolve generated jail");
+
+    assert!(resolved.generated);
+    assert!(resolved.name.starts_with(jail::AUTO_NAME_PREFIX));
+    assert_eq!(
+        fs::read_to_string(&resolved.paths.profile_path).expect("read stored profile"),
+        resolved.normalized_profile
+    );
+    assert!(resolved.paths.record_path.exists());
+    assert_eq!(
+        resolved.paths.runtime_dir,
+        layout.runtime_root.join(&resolved.name)
+    );
+}
+
+#[test]
+fn remove_jail_can_follow_profile_selected_generated_identity() {
+    let temp = tempdir().expect("tempdir");
+    let mut layout = jail::layout_from_home(temp.path());
+    layout.runtime_root = temp.path().join("run");
+    let profile_path = temp.path().join("test.profile");
+    fs::write(&profile_path, ". rw\n/tmp ro\n").expect("write profile");
+    let profile_arg = profile_path.to_str().expect("utf-8 path");
+
+    let created = jail::resolve_in(
+        &layout,
+        None,
+        Some(profile_arg),
+        jail::ResolveMode::EnsureExists,
+    )
+    .expect("create generated jail");
+    fs::create_dir_all(&created.paths.runtime_dir).expect("create runtime dir");
+
+    let selected = jail::resolve_in(
+        &layout,
+        None,
+        Some(profile_arg),
+        jail::ResolveMode::MustExist,
+    )
+    .expect("reselect generated jail");
+    assert_eq!(selected.name, created.name);
+
+    jail::remove_jail(&selected.paths).expect("remove jail");
+    assert!(!selected.paths.state_dir.exists());
+    assert!(!selected.paths.runtime_dir.exists());
 }
 
 #[test]

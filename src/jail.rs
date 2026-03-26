@@ -11,6 +11,13 @@ use crate::profile_loader;
 pub(crate) const AUTO_NAME_PREFIX: &str = "unnamed-";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct JailLayout {
+    pub(crate) config_root: PathBuf,
+    pub(crate) state_root: PathBuf,
+    pub(crate) runtime_root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct JailPaths {
     pub(crate) name: String,
     pub(crate) state_dir: PathBuf,
@@ -77,7 +84,7 @@ pub(crate) fn is_generated_name(name: &str) -> bool {
 }
 
 pub(crate) fn config_root() -> Result<PathBuf> {
-    Ok(config_root_from_home(&home_dir()?))
+    Ok(layout()?.config_root)
 }
 
 pub(crate) fn profiles_dir() -> Result<PathBuf> {
@@ -85,11 +92,11 @@ pub(crate) fn profiles_dir() -> Result<PathBuf> {
 }
 
 pub(crate) fn profile_definition_path(name: &str) -> Result<PathBuf> {
-    Ok(profiles_dir()?.join(name))
+    Ok(profile_definition_path_in(&layout()?, name))
 }
 
 pub(crate) fn state_root() -> Result<PathBuf> {
-    Ok(state_root_from_home(&home_dir()?))
+    Ok(layout()?.state_root)
 }
 
 pub(crate) fn runtime_root() -> PathBuf {
@@ -97,9 +104,13 @@ pub(crate) fn runtime_root() -> PathBuf {
 }
 
 pub(crate) fn jail_paths(name: &str) -> Result<JailPaths> {
-    let state_dir = state_root()?.join(name);
-    let runtime_dir = runtime_root().join(name);
-    Ok(JailPaths {
+    Ok(jail_paths_in(&layout()?, name))
+}
+
+pub(crate) fn jail_paths_in(layout: &JailLayout, name: &str) -> JailPaths {
+    let state_dir = layout.state_root.join(name);
+    let runtime_dir = layout.runtime_root.join(name);
+    JailPaths {
         name: name.to_string(),
         profile_path: state_dir.join("profile"),
         record_path: state_dir.join("record"),
@@ -107,11 +118,15 @@ pub(crate) fn jail_paths(name: &str) -> Result<JailPaths> {
         mntns_path: runtime_dir.join("mntns"),
         state_dir,
         runtime_dir,
-    })
+    }
 }
 
 pub(crate) fn list_named_jails() -> Result<Vec<OsString>> {
-    let root = state_root()?;
+    list_named_jails_in(&layout()?)
+}
+
+pub(crate) fn list_named_jails_in(layout: &JailLayout) -> Result<Vec<OsString>> {
+    let root = &layout.state_root;
     if !root.exists() {
         return Ok(Vec::new());
     }
@@ -143,14 +158,28 @@ pub(crate) fn resolve(
     profile: Option<&str>,
     mode: ResolveMode,
 ) -> Result<ResolvedJail> {
+    resolve_in(&layout()?, name, profile, mode)
+}
+
+pub(crate) fn resolve_in(
+    layout: &JailLayout,
+    name: Option<&str>,
+    profile: Option<&str>,
+    mode: ResolveMode,
+) -> Result<ResolvedJail> {
     match name {
-        Some(name) => resolve_named(name, profile, mode),
-        None => resolve_generated(profile, mode),
+        Some(name) => resolve_named(layout, name, profile, mode),
+        None => resolve_generated(layout, profile, mode),
     }
 }
 
-fn resolve_named(name: &str, profile: Option<&str>, mode: ResolveMode) -> Result<ResolvedJail> {
-    let paths = jail_paths(name)?;
+fn resolve_named(
+    layout: &JailLayout,
+    name: &str,
+    profile: Option<&str>,
+    mode: ResolveMode,
+) -> Result<ResolvedJail> {
+    let paths = jail_paths_in(layout, name);
     if paths.state_dir.exists() {
         let normalized_profile = fs::read_to_string(&paths.profile_path).map_err(|err| {
             anyhow::anyhow!(
@@ -188,11 +217,15 @@ fn resolve_named(name: &str, profile: Option<&str>, mode: ResolveMode) -> Result
     })
 }
 
-fn resolve_generated(profile: Option<&str>, mode: ResolveMode) -> Result<ResolvedJail> {
+fn resolve_generated(
+    layout: &JailLayout,
+    profile: Option<&str>,
+    mode: ResolveMode,
+) -> Result<ResolvedJail> {
     let profile_name = profile.unwrap_or(cli::DEFAULT_PROFILE);
     let loaded = profile_loader::load_profile(std::path::Path::new(profile_name))?;
     let name = derive_auto_name(&loaded.normalized_source);
-    let paths = jail_paths(&name)?;
+    let paths = jail_paths_in(layout, &name);
     if !paths.state_dir.exists() {
         if mode == ResolveMode::MustExist {
             bail!("jail does not exist: {name}");
@@ -235,10 +268,32 @@ pub(crate) fn materialize_jail(paths: &JailPaths, normalized_profile: &str) -> R
     Ok(())
 }
 
+pub(crate) fn remove_jail(paths: &JailPaths) -> Result<()> {
+    let _ = fs::remove_dir_all(&paths.runtime_dir);
+    fs::remove_dir_all(&paths.state_dir).map_err(|err| {
+        anyhow::anyhow!(
+            "failed to remove jail state directory {}: {err}",
+            paths.state_dir.display()
+        )
+    })
+}
+
 fn home_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .ok_or_else(|| anyhow::anyhow!("HOME is not set; cannot resolve cowjail home paths"))?;
     Ok(PathBuf::from(home))
+}
+
+pub(crate) fn layout() -> Result<JailLayout> {
+    Ok(layout_from_home(&home_dir()?))
+}
+
+pub(crate) fn layout_from_home(home: &Path) -> JailLayout {
+    JailLayout {
+        config_root: config_root_from_home(home),
+        state_root: state_root_from_home(home),
+        runtime_root: runtime_root(),
+    }
 }
 
 pub(crate) fn config_root_from_home(home: &Path) -> PathBuf {
@@ -247,4 +302,8 @@ pub(crate) fn config_root_from_home(home: &Path) -> PathBuf {
 
 pub(crate) fn state_root_from_home(home: &Path) -> PathBuf {
     home.join(".local/state/cowjail")
+}
+
+pub(crate) fn profile_definition_path_in(layout: &JailLayout, name: &str) -> PathBuf {
+    layout.config_root.join("profiles").join(name)
 }
