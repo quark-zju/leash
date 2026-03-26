@@ -170,11 +170,24 @@ fn parse_add(mut args: Arguments) -> Result<Command> {
             verbose: false,
         });
     }
-    let name = args.opt_value_from_str("--name")?;
+    let name_flag = args.opt_value_from_str("--name")?;
     let profile = args.opt_value_from_str("--profile")?;
     let extra = args.finish();
-    if !extra.is_empty() {
+    if extra.len() > 1 {
         bail!("add got unexpected trailing arguments");
+    }
+    let positional_name = extra.first().map(|raw| {
+        raw.to_str()
+            .ok_or_else(|| anyhow::anyhow!("add NAME must be valid UTF-8"))
+            .map(ToOwned::to_owned)
+    });
+    let positional_name = positional_name.transpose()?;
+    if name_flag.is_some() && positional_name.is_some() {
+        bail!("add accepts only one NAME source: positional NAME or --name <name>");
+    }
+    let name = name_flag.or(positional_name);
+    if name.is_none() && profile.is_none() {
+        bail!("add requires NAME, --name <name>, or --profile <profile>");
     }
     Ok(Command::Add(AddCommand { name, profile }))
 }
@@ -200,14 +213,27 @@ fn parse_rm(mut args: Arguments) -> Result<Command> {
             verbose: false,
         });
     }
-    let name = args.opt_value_from_str("--name")?;
+    let name_flag = args.opt_value_from_str("--name")?;
     let profile = args.opt_value_from_str("--profile")?;
+    let extra = args.finish();
+    if extra.len() > 1 {
+        bail!("rm got unexpected trailing arguments");
+    }
+    let positional_name = extra.first().map(|raw| {
+        raw.to_str()
+            .ok_or_else(|| anyhow::anyhow!("rm NAME must be valid UTF-8"))
+            .map(ToOwned::to_owned)
+    });
+    let positional_name = positional_name.transpose()?;
+    if name_flag.is_some() && positional_name.is_some() {
+        bail!("rm accepts only one NAME source: positional NAME or --name <name>");
+    }
+    let name = name_flag.or(positional_name);
     if name.is_some() && profile.is_some() {
         bail!("rm accepts only one of --name <name> or --profile <profile>");
     }
-    let extra = args.finish();
-    if !extra.is_empty() {
-        bail!("rm got unexpected trailing arguments");
+    if name.is_none() && profile.is_none() {
+        bail!("rm requires NAME, --name <name>, or --profile <profile>");
     }
     Ok(Command::Rm(RmCommand { name, profile }))
 }
@@ -252,15 +278,24 @@ fn parse_flush(mut args: Arguments) -> Result<Command> {
     }
     let verbose = args.contains(["-v", "--verbose"]);
     let dry_run = args.contains("--dry-run");
-    let name = args.opt_value_from_str("--name")?;
+    let name_flag = args.opt_value_from_str("--name")?;
     let profile = args.opt_value_from_str("--profile")?;
+    let extra = args.finish();
+    if extra.len() > 1 {
+        bail!("flush got unexpected trailing arguments");
+    }
+    let positional_name = extra.first().map(|raw| {
+        raw.to_str()
+            .ok_or_else(|| anyhow::anyhow!("flush NAME must be valid UTF-8"))
+            .map(ToOwned::to_owned)
+    });
+    let positional_name = positional_name.transpose()?;
+    if name_flag.is_some() && positional_name.is_some() {
+        bail!("flush accepts only one NAME source: positional NAME or --name <name>");
+    }
+    let name = name_flag.or(positional_name);
     if name.is_some() && profile.is_some() {
         bail!("flush accepts only one of --name <name> or --profile <profile>");
-    }
-
-    let extra = args.finish();
-    if !extra.is_empty() {
-        bail!("flush got unexpected trailing arguments");
     }
 
     Ok(Command::Flush(FlushCommand {
@@ -342,11 +377,11 @@ pub fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
         HelpTopic::Root if verbose => concat!(
             "cowjail\n\n",
             "USAGE:\n",
-            "  cowjail add [--name <name> | --profile <profile>]\n",
+            "  cowjail add [--name <name> | <name>] [--profile <profile>]\n",
             "  cowjail list\n",
-            "  cowjail rm [--name <name> | --profile <profile>]\n",
+            "  cowjail rm [--name <name> | <name> | --profile <profile>]\n",
             "  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n",
-            "  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n",
+            "  cowjail flush [--name <name> | <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n",
             "  cowjail _mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n",
             "  cowjail _flush --record <record_path> [--profile <profile>] [--dry-run] [-v|--verbose]\n\n",
             "  cowjail _fuse --profile <profile> --record <record_path> \\\n",
@@ -356,29 +391,29 @@ pub fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
         HelpTopic::Root => concat!(
             "cowjail\n\n",
             "USAGE:\n",
-            "  cowjail add [--name <name> | --profile <profile>]\n",
+            "  cowjail add [--name <name> | <name>] [--profile <profile>]\n",
             "  cowjail list\n",
-            "  cowjail rm [--name <name> | --profile <profile>]\n",
+            "  cowjail rm [--name <name> | <name> | --profile <profile>]\n",
             "  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n",
-            "  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n\n",
+            "  cowjail flush [--name <name> | <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n\n",
             "Run `cowjail --help -v` to list low-level debugging commands.\n",
             "Run `cowjail <subcommand> --help` for details.",
         ),
         HelpTopic::Add => concat!(
             "cowjail add\n\n",
             "USAGE:\n",
-            "  cowjail add [--name <name> | --profile <profile>]\n\n",
+            "  cowjail add [--name <name> | <name>] [--profile <profile>]\n\n",
             "OPTIONS:\n",
-            "  --name <name>         Explicit jail name\n",
+            "  --name <name>         Explicit jail name (same as positional NAME)\n",
             "  --profile <profile>   Profile path. Default: default",
         ),
         HelpTopic::List => concat!("cowjail list\n\n", "USAGE:\n", "  cowjail list"),
         HelpTopic::Rm => concat!(
             "cowjail rm\n\n",
             "USAGE:\n",
-            "  cowjail rm [--name <name> | --profile <profile>]\n\n",
+            "  cowjail rm [--name <name> | <name> | --profile <profile>]\n\n",
             "OPTIONS:\n",
-            "  --name <name>         Remove an explicit or auto-generated jail by name\n",
+            "  --name <name>         Remove a jail by name (same as positional NAME)\n",
             "  --profile <profile>   Remove the jail selected by profile-derived identity",
         ),
         HelpTopic::Run => concat!(
@@ -402,9 +437,9 @@ pub fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
         HelpTopic::Flush => concat!(
             "cowjail flush\n\n",
             "USAGE:\n",
-            "  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n\n",
+            "  cowjail flush [--name <name> | <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n\n",
             "OPTIONS:\n",
-            "  --name <name>         Flush an explicit or auto-generated jail by name\n",
+            "  --name <name>         Flush a jail by name (same as positional NAME)\n",
             "  --profile <profile>   Flush the jail selected by profile-derived identity\n",
             "  --dry-run             Preview without applying or marking flushed\n",
             "  -v, --verbose         Print progress logs",
@@ -512,13 +547,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_add_allows_no_selector() {
-        let cmd = parse_from(os(&["add"])).expect("add without selector should parse");
+    fn parse_add_accepts_positional_name() {
+        let cmd = parse_from(os(&["add", "dev"])).expect("add with positional name should parse");
         let add = match cmd {
             Command::Add(add) => add,
             other => panic!("expected add, got {other:?}"),
         };
-        assert!(add.name.is_none());
+        assert_eq!(add.name.as_deref(), Some("dev"));
         assert!(add.profile.is_none());
     }
 
@@ -530,17 +565,35 @@ mod tests {
 
     #[test]
     fn parse_rm_requires_exactly_one_selector() {
-        let cmd = parse_from(os(&["rm"])).expect("rm without selector should parse");
-        let rm = match cmd {
-            Command::Rm(rm) => rm,
-            other => panic!("expected rm, got {other:?}"),
-        };
-        assert!(rm.name.is_none());
-        assert!(rm.profile.is_none());
+        let err = parse_from(os(&["rm"])).expect_err("rm without selector should fail");
+        assert!(err.to_string().contains("rm requires"));
 
         let err = parse_from(os(&["rm", "--name", "a", "--profile", "b"]))
             .expect_err("rm with two selectors should fail");
         assert!(err.to_string().contains("only one of"));
+    }
+
+    #[test]
+    fn parse_rm_accepts_positional_name() {
+        let cmd = parse_from(os(&["rm", "agent"])).expect("rm with positional name should parse");
+        let rm = match cmd {
+            Command::Rm(rm) => rm,
+            other => panic!("expected rm, got {other:?}"),
+        };
+        assert_eq!(rm.name.as_deref(), Some("agent"));
+        assert!(rm.profile.is_none());
+    }
+
+    #[test]
+    fn parse_flush_accepts_positional_name() {
+        let cmd = parse_from(os(&["flush", "agent"]))
+            .expect("flush with positional name should parse");
+        let flush = match cmd {
+            Command::Flush(flush) => flush,
+            other => panic!("expected flush, got {other:?}"),
+        };
+        assert_eq!(flush.name.as_deref(), Some("agent"));
+        assert!(flush.profile.is_none());
     }
 
     #[test]
