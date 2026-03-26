@@ -55,10 +55,12 @@ pub(crate) fn fuse_command(cmd: LowLevelFuseCommand) -> Result<()> {
     fs::write(&cmd.pid_path, format!("{pid}\n"))
         .with_context(|| format!("failed to write fuse pid file {}", cmd.pid_path.display()))?;
 
-    drop_privileges(cmd.uid, cmd.gid)?;
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+    drop_privileges(uid, gid)?;
     vlog(
         cmd.verbose,
-        format!("_fuse: running as uid={} gid={}", cmd.uid, cmd.gid),
+        format!("_fuse: running as uid={} gid={}", uid, gid),
     );
 
     loop {

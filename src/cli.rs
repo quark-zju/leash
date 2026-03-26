@@ -87,8 +87,6 @@ pub struct LowLevelFuseCommand {
     pub record: PathBuf,
     pub mountpoint: PathBuf,
     pub pid_path: PathBuf,
-    pub uid: u32,
-    pub gid: u32,
     pub verbose: bool,
 }
 
@@ -325,12 +323,6 @@ fn parse_low_level_fuse(mut args: Arguments) -> Result<Command> {
     let pid_path = args
         .value_from_os_str("--pid-path", parse_pathbuf)
         .context("_fuse requires --pid-path <path>")?;
-    let uid = args
-        .opt_value_from_str("--uid")?
-        .unwrap_or_else(|| unsafe { libc::getuid() });
-    let gid = args
-        .opt_value_from_str("--gid")?
-        .unwrap_or_else(|| unsafe { libc::getgid() });
 
     let extra = args.finish();
     if !extra.is_empty() {
@@ -342,8 +334,6 @@ fn parse_low_level_fuse(mut args: Arguments) -> Result<Command> {
         record,
         mountpoint,
         pid_path,
-        uid,
-        gid,
         verbose,
     }))
 }
@@ -438,14 +428,12 @@ pub fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "cowjail _fuse\n\n",
             "USAGE:\n",
             "  cowjail _fuse --profile <profile> --record <record_path> --mountpoint <path> \\\n",
-            "       --pid-path <path> [--uid <uid>] [--gid <gid>] [-v|--verbose]\n\n",
+            "       --pid-path <path> [-v|--verbose]\n\n",
             "OPTIONS:\n",
             "  --profile <profile>   Profile path (required)\n",
             "  --record <record>     Record output path (required)\n",
             "  --mountpoint <path>   Mountpoint inside target mntns (required)\n",
             "  --pid-path <path>     PID file path (required)\n",
-            "  --uid <uid>           UID to drop to after mount (default: current uid)\n",
-            "  --gid <gid>           GID to drop to after mount (default: current gid)\n",
             "  -v, --verbose         Print progress logs",
         ),
     }
