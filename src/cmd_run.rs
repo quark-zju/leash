@@ -47,6 +47,7 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         ),
     );
     ensure_fuse_server(
+        &resolved.paths,
         &runtime.ensured.paths,
         &resolved.paths.profile_path,
         &resolved.paths.record_path,
@@ -144,6 +145,7 @@ fn run_child_in_chroot(
 }
 
 fn ensure_fuse_server(
+    jail_paths: &crate::jail::JailPaths,
     runtime_paths: &ns_runtime::NsRuntimePaths,
     profile_path: &Path,
     record_path: &Path,
@@ -151,6 +153,7 @@ fn ensure_fuse_server(
     mntns_file: fs::File,
     ipcns_file: fs::File,
 ) -> Result<()> {
+    let _lock = ns_runtime::open_lock(jail_paths)?;
     if let Some(pid) = ns_runtime::read_fuse_pid(runtime_paths)?
         && ns_runtime::process_has_mount(pid, &runtime_paths.mount_dir)?
     {

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crate::jail::JailPaths;
 
 pub(crate) const LOCK_FILE_NAME: &str = "lock";
+pub(crate) const ROOT_LOCK_FILE_NAME: &str = ".lock";
 pub(crate) const MOUNT_DIR_NAME: &str = "mount";
 pub(crate) const FUSE_PID_NAME: &str = "fuse.pid";
 
@@ -69,6 +70,14 @@ pub(crate) fn paths_for(jail: &JailPaths) -> NsRuntimePaths {
 }
 
 pub(crate) fn ensure_runtime_dir(jail: &JailPaths) -> Result<NsRuntimePaths> {
+    let root = jail
+        .runtime_dir
+        .parent()
+        .ok_or_else(|| {
+            anyhow::anyhow!("runtime dir has no parent: {}", jail.runtime_dir.display())
+        })?
+        .to_path_buf();
+    let _root_lock = open_root_lock(&root)?;
     let paths = paths_for(jail);
     fs::create_dir_all(&paths.runtime_dir).with_context(|| {
         format!(
@@ -79,20 +88,15 @@ pub(crate) fn ensure_runtime_dir(jail: &JailPaths) -> Result<NsRuntimePaths> {
     Ok(paths)
 }
 
+fn open_root_lock(root: &Path) -> Result<RuntimeLock> {
+    fs::create_dir_all(&root)
+        .with_context(|| format!("failed to create runtime root directory {}", root.display()))?;
+    open_lock_file(root.join(ROOT_LOCK_FILE_NAME))
+}
+
 pub(crate) fn open_lock(jail: &JailPaths) -> Result<RuntimeLock> {
     let paths = ensure_runtime_dir(jail)?;
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .open(&paths.lock_path)
-        .with_context(|| format!("failed to open runtime lock {}", paths.lock_path.display()))?;
-    file.lock()
-        .with_context(|| format!("failed to lock runtime lock {}", paths.lock_path.display()))?;
-    Ok(RuntimeLock {
-        file,
-        path: paths.lock_path,
-    })
+    open_lock_file(paths.lock_path)
 }
 
 pub(crate) fn try_open_lock(jail: &JailPaths) -> Result<Option<RuntimeLock>> {
@@ -474,4 +478,16 @@ impl RuntimeLock {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
+}
+
+fn open_lock_file(path: PathBuf) -> Result<RuntimeLock> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("failed to open runtime lock {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("failed to lock runtime lock {}", path.display()))?;
+    Ok(RuntimeLock { file, path })
 }
