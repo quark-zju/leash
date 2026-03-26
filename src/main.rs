@@ -1,5 +1,6 @@
 mod cli;
 mod cmd_flush;
+mod cmd_fuse;
 mod cmd_jail;
 mod cmd_mount;
 mod cmd_run;
@@ -53,6 +54,10 @@ fn try_main() -> Result<i32> {
         }
         Command::LowLevelFlush(flush) => {
             cmd_flush::low_level_flush_command(flush).context("_flush subcommand failed")?;
+            Ok(0)
+        }
+        Command::LowLevelFuse(fuse) => {
+            cmd_fuse::fuse_command(fuse).context("_fuse subcommand failed")?;
             Ok(0)
         }
     }

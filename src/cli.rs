@@ -17,6 +17,7 @@ pub enum Command {
     Flush(FlushCommand),
     LowLevelMount(MountCommand),
     LowLevelFlush(LowLevelFlushCommand),
+    LowLevelFuse(LowLevelFuseCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,7 @@ pub enum HelpTopic {
     Flush,
     LowLevelMount,
     LowLevelFlush,
+    LowLevelFuse,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +81,17 @@ pub struct LowLevelFlushCommand {
     pub verbose: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LowLevelFuseCommand {
+    pub profile: String,
+    pub record: PathBuf,
+    pub mountpoint: PathBuf,
+    pub pid_path: PathBuf,
+    pub uid: u32,
+    pub gid: u32,
+    pub verbose: bool,
+}
+
 pub fn parse_from<I>(argv: I) -> Result<Command>
 where
     I: IntoIterator<Item = OsString>,
@@ -111,6 +124,7 @@ where
         "flush" => parse_flush(args)?,
         "_mount" => parse_mount(args)?,
         "_flush" => parse_low_level_flush(args)?,
+        "_fuse" => parse_low_level_fuse(args)?,
         other => bail!("unknown subcommand: {other}"),
     };
 
@@ -291,6 +305,49 @@ fn parse_low_level_flush(mut args: Arguments) -> Result<Command> {
     }))
 }
 
+fn parse_low_level_fuse(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(Command::Help {
+            topic: HelpTopic::LowLevelFuse,
+            verbose: true,
+        });
+    }
+    let verbose = args.contains(["-v", "--verbose"]);
+    let profile = args
+        .value_from_str("--profile")
+        .context("_fuse requires --profile <profile>")?;
+    let record = args
+        .value_from_os_str("--record", parse_pathbuf)
+        .context("_fuse requires --record <record_path>")?;
+    let mountpoint = args
+        .value_from_os_str("--mountpoint", parse_pathbuf)
+        .context("_fuse requires --mountpoint <path>")?;
+    let pid_path = args
+        .value_from_os_str("--pid-path", parse_pathbuf)
+        .context("_fuse requires --pid-path <path>")?;
+    let uid = args
+        .opt_value_from_str("--uid")?
+        .unwrap_or_else(|| unsafe { libc::getuid() });
+    let gid = args
+        .opt_value_from_str("--gid")?
+        .unwrap_or_else(|| unsafe { libc::getgid() });
+
+    let extra = args.finish();
+    if !extra.is_empty() {
+        bail!("_fuse got unexpected trailing arguments");
+    }
+
+    Ok(Command::LowLevelFuse(LowLevelFuseCommand {
+        profile,
+        record,
+        mountpoint,
+        pid_path,
+        uid,
+        gid,
+        verbose,
+    }))
+}
+
 fn parse_pathbuf(raw: &std::ffi::OsStr) -> Result<PathBuf, Infallible> {
     Ok(PathBuf::from(raw))
 }
@@ -307,6 +364,8 @@ pub fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n",
             "  cowjail _mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n",
             "  cowjail _flush --record <record_path> [--profile <profile>] [--dry-run] [-v|--verbose]\n\n",
+            "  cowjail _fuse --profile <profile> --record <record_path> \\\n",
+            "       --mountpoint <path> --pid-path <path> [--uid <uid>] [--gid <gid>] [-v|--verbose]\n\n",
             "Run `cowjail <subcommand> --help` for details.",
         ),
         HelpTopic::Root => concat!(
@@ -373,6 +432,20 @@ pub fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "  --record <record>     Record path (required)\n",
             "  --profile <profile>   Replay policy profile override\n",
             "  --dry-run             Preview without applying or marking flushed\n",
+            "  -v, --verbose         Print progress logs",
+        ),
+        HelpTopic::LowLevelFuse => concat!(
+            "cowjail _fuse\n\n",
+            "USAGE:\n",
+            "  cowjail _fuse --profile <profile> --record <record_path> --mountpoint <path> \\\n",
+            "       --pid-path <path> [--uid <uid>] [--gid <gid>] [-v|--verbose]\n\n",
+            "OPTIONS:\n",
+            "  --profile <profile>   Profile path (required)\n",
+            "  --record <record>     Record output path (required)\n",
+            "  --mountpoint <path>   Mountpoint inside target mntns (required)\n",
+            "  --pid-path <path>     PID file path (required)\n",
+            "  --uid <uid>           UID to drop to after mount (default: current uid)\n",
+            "  --gid <gid>           GID to drop to after mount (default: current gid)\n",
             "  -v, --verbose         Print progress logs",
         ),
     }
@@ -528,6 +601,15 @@ mod tests {
             flush_help,
             Command::Help {
                 topic: HelpTopic::LowLevelFlush,
+                verbose: true,
+            }
+        );
+
+        let fuse_help = parse_from(os(&["_fuse", "--help"])).expect("_fuse help should parse");
+        assert_eq!(
+            fuse_help,
+            Command::Help {
+                topic: HelpTopic::LowLevelFuse,
                 verbose: true,
             }
         );
