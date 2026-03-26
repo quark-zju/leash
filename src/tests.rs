@@ -4,48 +4,17 @@ use fs_err as fs;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
-struct TempPath {
-    path: PathBuf,
-    _root: tempfile::TempDir,
-}
-
-impl TempPath {
-    fn to_path_buf(&self) -> PathBuf {
-        self.path.clone()
-    }
-}
-
-impl std::ops::Deref for TempPath {
-    type Target = Path;
-
-    fn deref(&self) -> &Self::Target {
-        self.path.as_path()
-    }
-}
-
-impl AsRef<Path> for TempPath {
-    fn as_ref(&self) -> &Path {
-        self.path.as_path()
-    }
-}
-
-fn temp_record_path(name: &str) -> TempPath {
+fn temp_record_path(name: &str) -> (tempfile::TempDir, PathBuf) {
     let root = tempdir().expect("tempdir for record path");
     let p = root.path().join(format!("cowjail-main-{name}.cjr"));
-    TempPath {
-        path: p,
-        _root: root,
-    }
+    (root, p)
 }
 
-fn temp_profile_path(name: &str, content: &str) -> TempPath {
+fn temp_profile_path(name: &str, content: &str) -> (tempfile::TempDir, PathBuf) {
     let root = tempdir().expect("tempdir for profile path");
     let p = root.path().join(format!("cowjail-main-{name}.profile"));
     fs::write(&p, content).expect("write profile");
-    TempPath {
-        path: p,
-        _root: root,
-    }
+    (root, p)
 }
 
 #[test]
@@ -456,10 +425,11 @@ fn ns_runtime_mountinfo_parser_handles_escaped_mountpoints() {
 
 #[test]
 fn flush_dry_run_does_not_mark() {
-    let path = temp_record_path("dry-run");
+    let (_path_root, path) = temp_record_path("dry-run");
+    let (_target_root, target) = temp_record_path("target");
     let writer = record::Writer::open_append(&path).expect("writer open");
     let op = op::Operation::WriteFile {
-        path: temp_record_path("target").to_path_buf(),
+        path: target,
         state: op::FileState::Regular(b"hello".to_vec()),
     };
     writer
@@ -478,11 +448,11 @@ fn flush_dry_run_does_not_mark() {
 
 #[test]
 fn flush_marks_and_becomes_idempotent() {
-    let path = temp_record_path("mark");
-    let out_path = temp_record_path("write-target");
+    let (_path_root, path) = temp_record_path("mark");
+    let (_out_root, out_path) = temp_record_path("write-target");
     let writer = record::Writer::open_append(&path).expect("writer open");
     let op = op::Operation::WriteFile {
-        path: out_path.to_path_buf(),
+        path: out_path.clone(),
         state: op::FileState::Regular(b"world".to_vec()),
     };
     writer
@@ -504,15 +474,15 @@ fn flush_marks_and_becomes_idempotent() {
 
 #[test]
 fn flush_applies_rename() {
-    let path = temp_record_path("rename-record");
-    let from = temp_record_path("rename-from");
-    let to = temp_record_path("rename-to");
+    let (_path_root, path) = temp_record_path("rename-record");
+    let (_from_root, from) = temp_record_path("rename-from");
+    let (_to_root, to) = temp_record_path("rename-to");
     fs::write(&from, b"rename-me").expect("seed source");
 
     let writer = record::Writer::open_append(&path).expect("writer open");
     let op = op::Operation::Rename {
-        from: from.to_path_buf(),
-        to: to.to_path_buf(),
+        from: from.clone(),
+        to: to.clone(),
     };
     writer
         .append_cbor(record::TAG_WRITE_OP, &op)
@@ -528,13 +498,13 @@ fn flush_applies_rename() {
 
 #[test]
 fn flush_applies_truncate() {
-    let path = temp_record_path("truncate-record");
-    let target = temp_record_path("truncate-target");
+    let (_path_root, path) = temp_record_path("truncate-record");
+    let (_target_root, target) = temp_record_path("truncate-target");
     fs::write(&target, b"abcdef").expect("seed target");
 
     let writer = record::Writer::open_append(&path).expect("writer open");
     let op = op::Operation::Truncate {
-        path: target.to_path_buf(),
+        path: target.clone(),
         size: 3,
     };
     writer
@@ -550,15 +520,14 @@ fn flush_applies_truncate() {
 
 #[test]
 fn flush_applies_create_and_remove_ops() {
-    let path = temp_record_path("create-remove-record");
-    let dir = temp_record_path("ops-dir");
+    let (_path_root, path) = temp_record_path("create-remove-record");
+    let (dir_root, _dir_marker_path) = temp_record_path("ops-dir");
+    let dir = dir_root.path().join("ops-dir");
     let file = dir.join("f.txt");
 
     let writer = record::Writer::open_append(&path).expect("writer open");
     let ops = [
-        op::Operation::CreateDir {
-            path: dir.to_path_buf(),
-        },
+        op::Operation::CreateDir { path: dir.clone() },
         op::Operation::WriteFile {
             path: file.clone(),
             state: op::FileState::Regular(b"x".to_vec()),
@@ -567,9 +536,7 @@ fn flush_applies_create_and_remove_ops() {
             path: file.clone(),
             state: op::FileState::Deleted,
         },
-        op::Operation::RemoveDir {
-            path: dir.to_path_buf(),
-        },
+        op::Operation::RemoveDir { path: dir.clone() },
     ];
     for op in ops {
         writer
@@ -589,12 +556,12 @@ fn flush_applies_create_and_remove_ops() {
 fn flush_applies_executable_bit() {
     use std::os::unix::fs::PermissionsExt;
 
-    let path = temp_record_path("chmod-record");
-    let target = temp_record_path("chmod-target");
+    let (_path_root, path) = temp_record_path("chmod-record");
+    let (_target_root, target) = temp_record_path("chmod-target");
     let writer = record::Writer::open_append(&path).expect("writer open");
 
     let op = op::Operation::WriteFile {
-        path: target.to_path_buf(),
+        path: target.clone(),
         state: op::FileState::Executable(b"#!/bin/sh\necho hi\n".to_vec()),
     };
     writer
@@ -615,8 +582,9 @@ fn flush_applies_executable_bit() {
 #[cfg(unix)]
 #[test]
 fn flush_applies_symlink_creation() {
-    let path = temp_record_path("symlink-record");
-    let dir = temp_record_path("symlink-dir");
+    let (_path_root, path) = temp_record_path("symlink-record");
+    let (dir_root, _dir_marker_path) = temp_record_path("symlink-dir");
+    let dir = dir_root.path().join("symlink-dir");
     let target = dir.join("target.txt");
     let link = dir.join("link.txt");
     fs::create_dir_all(&dir).expect("mkdir");
@@ -640,21 +608,21 @@ fn flush_applies_symlink_creation() {
 
 #[test]
 fn flush_compacts_multiple_writes_then_delete() {
-    let path = temp_record_path("compact-delete-record");
-    let target = temp_record_path("compact-delete-target");
+    let (_path_root, path) = temp_record_path("compact-delete-record");
+    let (_target_root, target) = temp_record_path("compact-delete-target");
     let writer = record::Writer::open_append(&path).expect("writer open");
 
     let ops = [
         op::Operation::WriteFile {
-            path: target.to_path_buf(),
+            path: target.clone(),
             state: op::FileState::Regular(b"v1".to_vec()),
         },
         op::Operation::WriteFile {
-            path: target.to_path_buf(),
+            path: target.clone(),
             state: op::FileState::Regular(b"v2".to_vec()),
         },
         op::Operation::WriteFile {
-            path: target.to_path_buf(),
+            path: target.clone(),
             state: op::FileState::Deleted,
         },
     ];
@@ -674,26 +642,26 @@ fn flush_compacts_multiple_writes_then_delete() {
 
 #[test]
 fn flush_compaction_respects_rename_boundaries() {
-    let path = temp_record_path("compact-rename-boundary-record");
-    let a = temp_record_path("compact-rename-a");
-    let b = temp_record_path("compact-rename-b");
+    let (_path_root, path) = temp_record_path("compact-rename-boundary-record");
+    let (_a_root, a) = temp_record_path("compact-rename-a");
+    let (_b_root, b) = temp_record_path("compact-rename-b");
     let writer = record::Writer::open_append(&path).expect("writer open");
 
     let ops = [
         op::Operation::WriteFile {
-            path: a.to_path_buf(),
+            path: a.clone(),
             state: op::FileState::Regular(b"v1".to_vec()),
         },
         op::Operation::WriteFile {
-            path: a.to_path_buf(),
+            path: a.clone(),
             state: op::FileState::Regular(b"v2".to_vec()),
         },
         op::Operation::Rename {
-            from: a.to_path_buf(),
-            to: b.to_path_buf(),
+            from: a.clone(),
+            to: b.clone(),
         },
         op::Operation::WriteFile {
-            path: a.to_path_buf(),
+            path: a.clone(),
             state: op::FileState::Regular(b"v3".to_vec()),
         },
     ];
@@ -714,8 +682,8 @@ fn flush_compaction_respects_rename_boundaries() {
 
 #[test]
 fn flush_blocks_when_profile_header_disallows_write() {
-    let path = temp_record_path("profile-block-record");
-    let target = temp_record_path("profile-block-target");
+    let (_path_root, path) = temp_record_path("profile-block-record");
+    let (_target_root, target) = temp_record_path("profile-block-target");
     let writer = record::Writer::open_append(&path).expect("writer open");
 
     let header = ProfileHeaderFrame {
@@ -728,7 +696,7 @@ fn flush_blocks_when_profile_header_disallows_write() {
         .append_cbor(
             record::TAG_WRITE_OP,
             &op::Operation::WriteFile {
-                path: target.to_path_buf(),
+                path: target.clone(),
                 state: op::FileState::Regular(b"blocked".to_vec()),
             },
         )
@@ -744,8 +712,8 @@ fn flush_blocks_when_profile_header_disallows_write() {
 
 #[test]
 fn flush_profile_override_can_allow_previously_blocked_write() {
-    let path = temp_record_path("profile-override-record");
-    let target = temp_record_path("profile-override-target");
+    let (_path_root, path) = temp_record_path("profile-override-record");
+    let (_target_root, target) = temp_record_path("profile-override-target");
     let writer = record::Writer::open_append(&path).expect("writer open");
 
     let header = ProfileHeaderFrame {
@@ -758,7 +726,7 @@ fn flush_profile_override_can_allow_previously_blocked_write() {
         .append_cbor(
             record::TAG_WRITE_OP,
             &op::Operation::WriteFile {
-                path: target.to_path_buf(),
+                path: target.clone(),
                 state: op::FileState::Regular(b"allowed".to_vec()),
             },
         )
@@ -769,7 +737,7 @@ fn flush_profile_override_can_allow_previously_blocked_write() {
     assert_eq!(first.blocked, 1);
     assert_eq!(first.marked, 0);
 
-    let override_profile =
+    let (_profile_root, override_profile) =
         temp_profile_path("profile-override", &format!("{} rw\n", target.display()));
     let override_profile_str = override_profile.to_string_lossy().to_string();
     let second = cmd_flush::flush_record(&path, false, Some(&override_profile_str))
