@@ -221,22 +221,6 @@ def run_high_level_smoke() -> bool:
                 stderr=subprocess.DEVNULL,
             )
             return False
-        if (
-            "failed to bind namespace handle /proc/self/ns/mnt" in merged
-            or "namespace bootstrap process exited with code 103" in merged
-        ):
-            print(
-                "[high] SKIP: runtime does not support persistent mount-namespace "
-                "handle bind in this environment"
-            )
-            subprocess.run(
-                [str(suid_bin), "rm", "--name", HIGH_LEVEL_JAIL],
-                check=False,
-                text=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return False
         print(run_result.stdout, end="")
         print(run_result.stderr, end="", file=sys.stderr)
         fail(f"high-level run failed with exit code {run_result.returncode}")
