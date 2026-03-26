@@ -2,26 +2,26 @@ use super::{cli, cmd_flush, jail, ns_runtime, op, profile, profile_loader, recor
 use crate::profile_loader::ProfileHeaderFrame;
 use fs_err as fs;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use tempfile::tempdir;
 
+fn temp_roots() -> &'static Mutex<Vec<tempfile::TempDir>> {
+    static TEMP_ROOTS: OnceLock<Mutex<Vec<tempfile::TempDir>>> = OnceLock::new();
+    TEMP_ROOTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
 fn temp_record_path(name: &str) -> std::path::PathBuf {
-    let mut p = std::env::temp_dir();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock should be monotonic")
-        .as_nanos();
-    p.push(format!("cowjail-main-{name}-{now}.cjr"));
+    let root = tempdir().expect("tempdir for record path");
+    let p = root.path().join(format!("cowjail-main-{name}.cjr"));
+    temp_roots().lock().expect("temp roots mutex").push(root);
     p
 }
 
 fn temp_profile_path(name: &str, content: &str) -> std::path::PathBuf {
-    let mut p = std::env::temp_dir();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock should be monotonic")
-        .as_nanos();
-    p.push(format!("cowjail-main-{name}-{now}.profile"));
+    let root = tempdir().expect("tempdir for profile path");
+    let p = root.path().join(format!("cowjail-main-{name}.profile"));
     fs::write(&p, content).expect("write profile");
+    temp_roots().lock().expect("temp roots mutex").push(root);
     p
 }
 

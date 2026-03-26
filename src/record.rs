@@ -395,20 +395,17 @@ pub fn corrupt_byte(path: &Path, offset: u64, value: u8) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
-    fn temp_record_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        p.push(format!("cowjail-{name}-{now}.cjr"));
-        p
+    fn temp_record_path(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempdir().expect("tempdir");
+        let p = dir.path().join(format!("cowjail-{name}.cjr"));
+        (dir, p)
     }
 
     #[test]
     fn write_then_read_roundtrip() {
-        let path = temp_record_path("roundtrip");
+        let (_dir, path) = temp_record_path("roundtrip");
         let writer = Writer::open_append(&path).expect("writer open");
         writer
             .append_cbor(TAG_WRITE_OP, &("path", 7u32))
@@ -426,7 +423,7 @@ mod tests {
 
     #[test]
     fn partial_tail_is_ignored() {
-        let path = temp_record_path("partial");
+        let (_dir, path) = temp_record_path("partial");
         let writer = Writer::open_append(&path).expect("writer open");
         writer.append_cbor(TAG_WRITE_OP, &1u32).expect("append 1");
         let second_offset = writer.append_cbor(TAG_WRITE_OP, &2u32).expect("append 2");
@@ -441,7 +438,7 @@ mod tests {
 
     #[test]
     fn checksum_failure_stops_iteration() {
-        let path = temp_record_path("checksum");
+        let (_dir, path) = temp_record_path("checksum");
         let writer = Writer::open_append(&path).expect("writer open");
         writer.append_cbor(TAG_WRITE_OP, &1u32).expect("append 1");
         let second_offset = writer.append_cbor(TAG_WRITE_OP, &2u32).expect("append 2");
@@ -456,7 +453,7 @@ mod tests {
 
     #[test]
     fn mark_flushed_is_idempotent() {
-        let path = temp_record_path("mark-flushed");
+        let (_dir, path) = temp_record_path("mark-flushed");
         let writer = Writer::open_append(&path).expect("writer open");
         let offset = writer.append_cbor(TAG_WRITE_OP, &123u32).expect("append");
         writer.sync().expect("sync");

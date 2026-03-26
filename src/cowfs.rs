@@ -1116,25 +1116,26 @@ fn is_strict_descendant(parent: &Path, child: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     fn parse_profile(src: &str) -> Profile {
         Profile::parse(src, Path::new("/")).expect("profile parse")
     }
 
-    fn test_fs(profile_src: &str) -> CowFs {
-        let mut record_path = std::env::temp_dir();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("monotonic clock")
-            .as_nanos();
-        record_path.push(format!("cowjail-cowfs-test-{now}.cjr"));
+    fn test_fs(profile_src: &str) -> (tempfile::TempDir, std::path::PathBuf, CowFs) {
+        let dir = tempdir().expect("tempdir");
+        let record_path = dir.path().join("cowjail-cowfs-test.cjr");
         let writer = record::Writer::open_append(&record_path).expect("open record writer");
-        CowFs::new(parse_profile(profile_src), writer)
+        (
+            dir,
+            record_path,
+            CowFs::new(parse_profile(profile_src), writer),
+        )
     }
 
     #[test]
     fn overlay_deleted_hides_host_file() {
-        let mut fs = test_fs("/tmp/** rw");
+        let (_dir, _record_path, mut fs) = test_fs("/tmp/** rw");
         let path = PathBuf::from("/tmp/cowjail-overlay-deleted");
         std::fs::write(&path, b"host").expect("seed host");
         fs.overlay_set(path.clone(), OverlayNode::Deleted);
@@ -1145,7 +1146,7 @@ mod tests {
 
     #[test]
     fn overlay_regular_overrides_host_file() {
-        let mut fs = test_fs("/tmp/** rw");
+        let (_dir, _record_path, mut fs) = test_fs("/tmp/** rw");
         let path = PathBuf::from("/tmp/cowjail-overlay-regular");
         std::fs::write(&path, b"host").expect("seed host");
         fs.overlay_set(
@@ -1167,7 +1168,7 @@ mod tests {
 
     #[test]
     fn overlay_readdir_includes_new_children() {
-        let mut fs = test_fs("/tmp/** rw");
+        let (_dir, _record_path, mut fs) = test_fs("/tmp/** rw");
         let dir = PathBuf::from("/tmp/cowjail-overlay-dir");
         let _ = std::fs::create_dir_all(&dir);
         let new_file = dir.join("from-overlay");
@@ -1208,7 +1209,7 @@ mod tests {
 
     #[test]
     fn rename_moves_overlay_subtree() {
-        let mut fs = test_fs("/tmp/** rw");
+        let (_dir, _record_path, mut fs) = test_fs("/tmp/** rw");
         let from = PathBuf::from("/tmp/cowjail-rename-from");
         let to = PathBuf::from("/tmp/cowjail-rename-to");
         let child = from.join("child.txt");
@@ -1233,7 +1234,7 @@ mod tests {
 
     #[test]
     fn rename_dir_into_own_subpath_fails() {
-        let mut fs = test_fs("/tmp/** rw");
+        let (_dir, _record_path, mut fs) = test_fs("/tmp/** rw");
         let from = PathBuf::from("/tmp/cowjail-self-rename");
         let to = from.join("sub");
         fs.overlay_set(from.clone(), OverlayNode::Dir);
@@ -1245,12 +1246,8 @@ mod tests {
 
     #[test]
     fn replay_restores_pending_writes_and_rename() {
-        let mut record_path = std::env::temp_dir();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("monotonic clock")
-            .as_nanos();
-        record_path.push(format!("cowjail-replay-test-{now}.cjr"));
+        let dir = tempdir().expect("tempdir");
+        let record_path = dir.path().join("cowjail-replay-test.cjr");
         let writer = record::Writer::open_append(&record_path).expect("open record writer");
 
         writer
@@ -1298,18 +1295,12 @@ mod tests {
                 executable: true
             }) if data == b"two"
         ));
-
-        let _ = std::fs::remove_file(&record_path);
     }
 
     #[test]
     fn replay_skips_flushed_frames() {
-        let mut record_path = std::env::temp_dir();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("monotonic clock")
-            .as_nanos();
-        record_path.push(format!("cowjail-replay-flushed-test-{now}.cjr"));
+        let dir = tempdir().expect("tempdir");
+        let record_path = dir.path().join("cowjail-replay-flushed-test.cjr");
         let writer = record::Writer::open_append(&record_path).expect("open record writer");
 
         let flushed_offset = writer
@@ -1346,7 +1337,5 @@ mod tests {
                 executable: false
             }) if data == b"new"
         ));
-
-        let _ = std::fs::remove_file(&record_path);
     }
 }
