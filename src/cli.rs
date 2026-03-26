@@ -18,6 +18,7 @@ pub enum Command {
     LowLevelMount(MountCommand),
     LowLevelFlush(LowLevelFlushCommand),
     LowLevelFuse(LowLevelFuseCommand),
+    LowLevelSuid(LowLevelSuidCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +32,7 @@ pub enum HelpTopic {
     LowLevelMount,
     LowLevelFlush,
     LowLevelFuse,
+    LowLevelSuid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +92,11 @@ pub struct LowLevelFuseCommand {
     pub verbose: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LowLevelSuidCommand {
+    pub verbose: bool,
+}
+
 pub fn parse_from<I>(argv: I) -> Result<Command>
 where
     I: IntoIterator<Item = OsString>,
@@ -123,6 +130,7 @@ where
         "_mount" => parse_mount(args)?,
         "_flush" => parse_low_level_flush(args)?,
         "_fuse" => parse_low_level_fuse(args)?,
+        "_suid" => parse_low_level_suid(args)?,
         other => bail!("unknown subcommand: {other}"),
     };
 
@@ -372,6 +380,21 @@ fn parse_pathbuf(raw: &std::ffi::OsStr) -> Result<PathBuf, Infallible> {
     Ok(PathBuf::from(raw))
 }
 
+fn parse_low_level_suid(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(Command::Help {
+            topic: HelpTopic::LowLevelSuid,
+            verbose: true,
+        });
+    }
+    let verbose = args.contains(["-v", "--verbose"]);
+    let extra = args.finish();
+    if !extra.is_empty() {
+        bail!("_suid got unexpected trailing arguments");
+    }
+    Ok(Command::LowLevelSuid(LowLevelSuidCommand { verbose }))
+}
+
 pub fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
     match topic {
         HelpTopic::Root if verbose => concat!(
@@ -389,7 +412,8 @@ pub fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "\n",
             "LOW-LEVEL (DEBUG):\n",
             "  cowjail _mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n",
-            "  cowjail _flush --record <record_path> [--profile <profile>] [--dry-run] [-v|--verbose]\n\n",
+            "  cowjail _flush --record <record_path> [--profile <profile>] [--dry-run] [-v|--verbose]\n",
+            "  cowjail _suid [-v|--verbose]\n\n",
             "  cowjail _fuse --profile <profile> --record <record_path> \\\n",
             "       --mountpoint <path> --pid-path <path> [--uid <uid>] [--gid <gid>] [-v|--verbose]\n\n",
             "Run `cowjail <subcommand> --help` for details.",
@@ -479,6 +503,16 @@ pub fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "  --record <record>     Record output path (required)\n",
             "  --mountpoint <path>   Mountpoint inside target mntns (required)\n",
             "  --pid-path <path>     PID file path (required)\n",
+            "  -v, --verbose         Print progress logs",
+        ),
+        HelpTopic::LowLevelSuid => concat!(
+            "cowjail _suid\n\n",
+            "USAGE:\n",
+            "  cowjail _suid [-v|--verbose]\n\n",
+            "DESCRIPTION:\n",
+            "  Ensure current cowjail binary is setuid-root.\n",
+            "  If not running as root, this command reinvokes itself via sudo.\n\n",
+            "OPTIONS:\n",
             "  -v, --verbose         Print progress logs",
         ),
     }
@@ -638,6 +672,7 @@ mod tests {
         let text = help_text(HelpTopic::Root, true);
         assert!(text.contains("cowjail _mount"));
         assert!(text.contains("cowjail _flush"));
+        assert!(text.contains("cowjail _suid"));
     }
 
     #[test]
@@ -671,6 +706,15 @@ mod tests {
             fuse_help,
             Command::Help {
                 topic: HelpTopic::LowLevelFuse,
+                verbose: true,
+            }
+        );
+
+        let suid_help = parse_from(os(&["_suid", "--help"])).expect("_suid help should parse");
+        assert_eq!(
+            suid_help,
+            Command::Help {
+                topic: HelpTopic::LowLevelSuid,
                 verbose: true,
             }
         );

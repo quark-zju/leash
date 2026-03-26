@@ -4,6 +4,7 @@ mod cmd_fuse;
 mod cmd_jail;
 mod cmd_mount;
 mod cmd_run;
+mod cmd_suid;
 mod cowfs;
 mod jail;
 mod ns_runtime;
@@ -59,6 +60,10 @@ fn try_main() -> Result<i32> {
         }
         Command::LowLevelFuse(fuse) => {
             cmd_fuse::fuse_command(fuse).context("_fuse subcommand failed")?;
+            Ok(0)
+        }
+        Command::LowLevelSuid(suid) => {
+            cmd_suid::suid_command(suid).context("_suid subcommand failed")?;
             Ok(0)
         }
     }

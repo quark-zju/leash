@@ -19,9 +19,7 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         bail!(
             concat!(
                 "cowjail run requires root euid (current euid={euid}).\n",
-                "Example setuid setup:\n",
-                "sudo chown root:root $(command -v cowjail)\n",
-                "sudo chmod u+s $(command -v cowjail)"
+                "Run `cowjail _suid` once to set setuid-root on the current binary."
             ),
             euid = euid
         );
