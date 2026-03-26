@@ -253,7 +253,7 @@ pub(crate) fn materialize_jail(paths: &JailPaths, normalized_profile: &str) -> R
 }
 
 pub(crate) fn remove_jail(paths: &JailPaths) -> Result<()> {
-    let _ = fs::remove_dir_all(&paths.runtime_dir);
+    crate::ns_runtime::remove_runtime(paths)?;
     fs::remove_dir_all(&paths.state_dir).map_err(|err| {
         anyhow::anyhow!(
             "failed to remove jail state directory {}: {err}",

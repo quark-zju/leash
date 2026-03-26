@@ -1,4 +1,4 @@
-use super::{cli, cmd_flush, jail, op, profile, profile_loader, record};
+use super::{cli, cmd_flush, jail, ns_runtime, op, profile, profile_loader, record};
 use crate::profile_loader::ProfileHeaderFrame;
 use fs_err as fs;
 use std::path::Path;
@@ -156,6 +156,56 @@ fn resolve_in_rejects_rebinding_existing_named_jail_to_different_profile() {
     )
     .expect_err("rebind should fail");
     assert!(err.to_string().contains("bound to a different profile"));
+}
+
+#[test]
+fn ns_runtime_paths_track_runtime_layout() {
+    let home = Path::new("/tmp/cowjail-home");
+    let mut layout = jail::layout_from_home(home);
+    layout.runtime_root = Path::new("/run/cowjail-test").to_path_buf();
+
+    let jail_paths = jail::jail_paths_in(&layout, "demo");
+    let runtime = ns_runtime::paths_for(&jail_paths);
+
+    assert_eq!(runtime.runtime_dir, Path::new("/run/cowjail-test/demo"));
+    assert_eq!(
+        runtime.mntns_path,
+        Path::new("/run/cowjail-test/demo/mntns")
+    );
+    assert_eq!(
+        runtime.ipcns_path,
+        Path::new("/run/cowjail-test/demo/ipcns")
+    );
+    assert_eq!(runtime.lock_path, Path::new("/run/cowjail-test/demo/lock"));
+}
+
+#[test]
+fn ns_runtime_helpers_manage_temp_runtime_dir() {
+    let temp = tempdir().expect("tempdir");
+    let mut layout = jail::layout_from_home(temp.path());
+    layout.runtime_root = temp.path().join("run");
+    let jail_paths = jail::jail_paths_in(&layout, "demo");
+
+    let before = ns_runtime::inspect(&jail_paths).expect("inspect before");
+    assert!(!before.runtime_dir_exists);
+    assert!(!before.mntns_exists);
+    assert!(!before.ipcns_exists);
+    assert!(!before.lock_exists);
+
+    let runtime = ns_runtime::ensure_runtime_dir(&jail_paths).expect("ensure runtime dir");
+    assert!(runtime.runtime_dir.exists());
+
+    let _lock = ns_runtime::open_lock(&jail_paths).expect("open lock");
+    let after = ns_runtime::inspect(&jail_paths).expect("inspect after");
+    assert!(after.runtime_dir_exists);
+    assert!(after.lock_exists);
+    assert!(!after.mntns_exists);
+    assert!(!after.ipcns_exists);
+
+    ns_runtime::remove_runtime(&jail_paths).expect("remove runtime");
+    let removed = ns_runtime::inspect(&jail_paths).expect("inspect removed");
+    assert!(!removed.runtime_dir_exists);
+    assert!(!removed.lock_exists);
 }
 
 #[test]

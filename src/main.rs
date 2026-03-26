@@ -5,6 +5,7 @@ mod cmd_mount;
 mod cmd_run;
 mod cowfs;
 mod jail;
+mod ns_runtime;
 mod op;
 mod profile;
 mod profile_loader;
