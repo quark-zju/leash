@@ -70,11 +70,11 @@ def main() -> int:
         stdout=subprocess.DEVNULL,
     )
 
-    print("[2/6] starting mount")
+    print("[2/6] starting low-level mount")
     mount_proc = subprocess.Popen(
         RUN_COWJAIL
         + [
-            "mount",
+            "_mount",
             "--profile",
             str(PROFILE_PATH),
             "--record",
@@ -100,7 +100,7 @@ def main() -> int:
     run(["fusermount", "-u", str(MOUNT_DIR)])
     mount_proc.wait(timeout=5)
     mount_proc = None
-    run(RUN_COWJAIL + ["flush", "--record", str(RECORD_PATH)])
+    run(RUN_COWJAIL + ["_flush", "--record", str(RECORD_PATH)])
 
     print("[6/6] verifying host changed after flush")
     if TARGET_PATH.read_text(encoding="utf-8") != "after\n":
