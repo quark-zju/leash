@@ -1,5 +1,8 @@
-use super::*;
+use super::{cli, cmd_flush, op, profile, profile_loader, record};
+use fs_err as fs;
+use std::path::Path;
 use tempfile::tempdir;
+use crate::profile_loader::ProfileHeaderFrame;
 
 fn temp_record_path(name: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
@@ -35,7 +38,7 @@ fn flush_dry_run_does_not_mark() {
         .expect("append");
     writer.sync().expect("sync");
 
-    let stats = flush_record(&path, true, None).expect("flush dry-run");
+    let stats = cmd_flush::flush_record(&path, true, None).expect("flush dry-run");
     assert_eq!(stats.total, 1);
     assert_eq!(stats.pending, 1);
     assert_eq!(stats.marked, 0);
@@ -58,13 +61,13 @@ fn flush_marks_and_becomes_idempotent() {
         .expect("append");
     writer.sync().expect("sync");
 
-    let first = flush_record(&path, false, None).expect("first flush");
+    let first = cmd_flush::flush_record(&path, false, None).expect("first flush");
     assert_eq!(first.pending, 1);
     assert_eq!(first.marked, 1);
     let bytes = fs::read(&out_path).expect("output should be written");
     assert_eq!(bytes, b"world");
 
-    let second = flush_record(&path, false, None).expect("second flush");
+    let second = cmd_flush::flush_record(&path, false, None).expect("second flush");
     assert_eq!(second.pending, 0);
     assert_eq!(second.marked, 0);
     assert_eq!(second.skipped, 1);
@@ -87,7 +90,7 @@ fn flush_applies_rename() {
         .expect("append");
     writer.sync().expect("sync");
 
-    let stats = flush_record(&path, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&path, false, None).expect("flush");
     assert_eq!(stats.marked, 1);
     assert!(!from.exists());
     let bytes = fs::read(&to).expect("renamed target");
@@ -110,7 +113,7 @@ fn flush_applies_truncate() {
         .expect("append");
     writer.sync().expect("sync");
 
-    let stats = flush_record(&path, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&path, false, None).expect("flush");
     assert_eq!(stats.marked, 1);
     let bytes = fs::read(&target).expect("truncated target");
     assert_eq!(bytes, b"abc");
@@ -142,7 +145,7 @@ fn flush_applies_create_and_remove_ops() {
     }
     writer.sync().expect("sync");
 
-    let stats = flush_record(&path, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&path, false, None).expect("flush");
     assert_eq!(stats.marked, 4);
     assert!(!file.exists());
     assert!(!dir.exists());
@@ -166,7 +169,7 @@ fn flush_applies_executable_bit() {
         .expect("append");
     writer.sync().expect("sync");
 
-    let stats = flush_record(&path, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&path, false, None).expect("flush");
     assert_eq!(stats.marked, 1);
 
     let mode = fs::metadata(&target)
@@ -196,7 +199,7 @@ fn flush_applies_symlink_creation() {
         .expect("append");
     writer.sync().expect("sync");
 
-    let stats = flush_record(&path, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&path, false, None).expect("flush");
     assert_eq!(stats.marked, 1);
     let resolved = fs::read_link(&link).expect("read link");
     assert_eq!(resolved, target);
@@ -229,7 +232,7 @@ fn flush_compacts_multiple_writes_then_delete() {
     }
     writer.sync().expect("sync");
 
-    let stats = flush_record(&path, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&path, false, None).expect("flush");
     assert_eq!(stats.pending, 3);
     assert_eq!(stats.optimized, 2);
     assert_eq!(stats.marked, 3);
@@ -268,7 +271,7 @@ fn flush_compaction_respects_rename_boundaries() {
     }
     writer.sync().expect("sync");
 
-    let stats = flush_record(&path, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&path, false, None).expect("flush");
     assert_eq!(stats.pending, 4);
     assert_eq!(stats.optimized, 1);
     assert_eq!(stats.marked, 4);
@@ -299,7 +302,7 @@ fn flush_blocks_when_profile_header_disallows_write() {
         .expect("append write");
     writer.sync().expect("sync");
 
-    let stats = flush_record(&path, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&path, false, None).expect("flush");
     assert_eq!(stats.pending, 1);
     assert_eq!(stats.blocked, 1);
     assert_eq!(stats.marked, 0);
@@ -329,14 +332,14 @@ fn flush_profile_override_can_allow_previously_blocked_write() {
         .expect("append write");
     writer.sync().expect("sync");
 
-    let first = flush_record(&path, false, None).expect("flush blocked");
+    let first = cmd_flush::flush_record(&path, false, None).expect("flush blocked");
     assert_eq!(first.blocked, 1);
     assert_eq!(first.marked, 0);
 
     let override_profile =
         temp_profile_path("profile-override", &format!("{} rw\n", target.display()));
     let override_profile_str = override_profile.to_string_lossy().to_string();
-    let second = flush_record(&path, false, Some(&override_profile_str))
+    let second = cmd_flush::flush_record(&path, false, Some(&override_profile_str))
         .expect("flush with override");
     assert_eq!(second.blocked, 0);
     assert_eq!(second.marked, 1);
@@ -345,7 +348,7 @@ fn flush_profile_override_can_allow_previously_blocked_write() {
 
 #[test]
 fn load_profile_uses_builtin_default_profile() {
-    let loaded = load_profile(Path::new(cli::DEFAULT_PROFILE)).expect("load builtin default");
+    let loaded = profile_loader::load_profile(Path::new(cli::DEFAULT_PROFILE)).expect("load builtin default");
     assert_eq!(
         loaded.profile.first_match_action(Path::new("/bin/sh")),
         Some(profile::RuleAction::ReadOnly)
@@ -380,7 +383,7 @@ fn flush_regular_write_replaces_existing_symlink_instead_of_following_it() {
         .expect("append write");
     writer.sync().expect("sync");
 
-    let stats = flush_record(&record, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&record, false, None).expect("flush");
     assert_eq!(stats.marked, 1);
     assert_eq!(fs::read(&link_path).expect("read replaced file"), b"replacement");
     assert_eq!(
@@ -417,7 +420,7 @@ fn flush_symlink_write_replaces_existing_regular_file() {
         .expect("append write");
     writer.sync().expect("sync");
 
-    let stats = flush_record(&record, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&record, false, None).expect("flush");
     assert_eq!(stats.marked, 1);
     assert!(
         fs::symlink_metadata(&link_path)
@@ -454,7 +457,7 @@ fn flush_rename_to_blocked_target_is_rejected() {
         .expect("append rename");
     writer.sync().expect("sync");
 
-    let stats = flush_record(&record, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&record, false, None).expect("flush");
     assert_eq!(stats.pending, 1);
     assert_eq!(stats.blocked, 1);
     assert_eq!(stats.marked, 0);
@@ -481,7 +484,7 @@ fn flush_regular_write_into_existing_directory_fails_without_marking() {
         .expect("append write");
     writer.sync().expect("sync");
 
-    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    let err = cmd_flush::flush_record(&record, false, None).expect_err("flush should fail");
     assert!(err
         .to_string()
         .contains("refusing to replace directory with regular file"));
@@ -512,7 +515,7 @@ fn flush_symlink_write_into_existing_directory_fails_without_marking() {
         .expect("append write");
     writer.sync().expect("sync");
 
-    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    let err = cmd_flush::flush_record(&record, false, None).expect_err("flush should fail");
     assert!(err
         .to_string()
         .contains("refusing to replace directory with symlink"));
@@ -544,7 +547,7 @@ fn flush_rename_over_non_empty_directory_fails_without_marking() {
         .expect("append rename");
     writer.sync().expect("sync");
 
-    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    let err = cmd_flush::flush_record(&record, false, None).expect_err("flush should fail");
     assert!(
         err.to_string().contains("failed to rename")
             || err.to_string().contains("Is a directory")
@@ -576,7 +579,7 @@ fn flush_truncate_directory_fails_without_marking() {
         .expect("append truncate");
     writer.sync().expect("sync");
 
-    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    let err = cmd_flush::flush_record(&record, false, None).expect_err("flush should fail");
     assert!(
         err.to_string().contains("failed to open file for truncate")
             || err.to_string().contains("Is a directory")
@@ -604,7 +607,7 @@ fn flush_remove_dir_on_regular_file_fails_without_marking() {
         .expect("append rmdir");
     writer.sync().expect("sync");
 
-    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    let err = cmd_flush::flush_record(&record, false, None).expect_err("flush should fail");
     assert!(
         err.to_string().contains("failed to remove directory")
             || err.to_string().contains("Not a directory")
@@ -632,7 +635,7 @@ fn flush_create_dir_on_existing_file_fails_without_marking() {
         .expect("append mkdir");
     writer.sync().expect("sync");
 
-    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    let err = cmd_flush::flush_record(&record, false, None).expect_err("flush should fail");
     assert!(
         err.to_string().contains("failed to create directory")
             || err.to_string().contains("File exists")
@@ -666,7 +669,7 @@ fn flush_delete_on_symlink_removes_link_not_target() {
         .expect("append delete");
     writer.sync().expect("sync");
 
-    let stats = flush_record(&record, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&record, false, None).expect("flush");
     assert_eq!(stats.marked, 1);
     assert!(!link_path.exists());
     assert_eq!(fs::read(&real_target).expect("read original target"), b"keep-target");
@@ -696,7 +699,7 @@ fn flush_truncate_on_symlink_fails_without_marking_or_modifying_target() {
         .expect("append truncate");
     writer.sync().expect("sync");
 
-    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    let err = cmd_flush::flush_record(&record, false, None).expect_err("flush should fail");
     assert!(
         err.to_string().contains("refusing to truncate symlink")
             || err.to_string().contains("failed to open file for truncate")
@@ -736,7 +739,7 @@ fn flush_rename_over_symlink_replaces_link_not_target() {
         .expect("append rename");
     writer.sync().expect("sync");
 
-    let stats = flush_record(&record, false, None).expect("flush");
+    let stats = cmd_flush::flush_record(&record, false, None).expect("flush");
     assert_eq!(stats.marked, 1);
     assert!(!from.exists());
     assert_eq!(fs::read(&link_path).expect("read renamed file"), b"rename-me");
@@ -776,7 +779,7 @@ fn flush_rename_into_symlink_parent_fails_without_marking_or_modifying_target_tr
         .expect("append rename");
     writer.sync().expect("sync");
 
-    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    let err = cmd_flush::flush_record(&record, false, None).expect_err("flush should fail");
     assert!(
         err.to_string()
             .contains("refusing to create rename target under symlink parent")
