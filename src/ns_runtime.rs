@@ -429,10 +429,27 @@ fn bootstrap_namespace_handles(paths: &NsRuntimePaths) -> Result<()> {
     }
 
     if pid == 0 {
-        let rc = unsafe { libc::unshare(libc::CLONE_NEWIPC) };
+        let rc = unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_NEWIPC) };
         if rc != 0 {
             eprintln!("unshare failed: {}", std::io::Error::last_os_error());
             unsafe { libc::_exit(101) };
+        }
+
+        let rc = unsafe {
+            libc::mount(
+                std::ptr::null(),
+                b"/\0".as_ptr().cast(),
+                std::ptr::null(),
+                (libc::MS_REC | libc::MS_PRIVATE) as libc::c_ulong,
+                std::ptr::null(),
+            )
+        };
+        if rc != 0 {
+            eprintln!(
+                "mount propagation setup failed: {}",
+                std::io::Error::last_os_error()
+            );
+            unsafe { libc::_exit(102) };
         }
 
         if let Err(err) = bind_namespace_handle("/proc/self/ns/mnt", &paths.mntns_path) {
