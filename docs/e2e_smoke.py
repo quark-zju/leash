@@ -162,7 +162,7 @@ def run_high_level_smoke() -> bool:
     run([str(suid_bin), "add", "--name", HIGH_LEVEL_JAIL, "--profile", str(PROFILE_PATH)])
 
     print("[high 3/6] writing via high-level run")
-    run(
+    run_result = subprocess.run(
         [
             str(suid_bin),
             "run",
@@ -171,8 +171,29 @@ def run_high_level_smoke() -> bool:
             "/bin/sh",
             "-lc",
             f"printf 'after-high\\n' > '{TARGET_PATH_HIGH}'",
-        ]
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
     )
+    if run_result.returncode != 0:
+        merged = f"{run_result.stdout}\n{run_result.stderr}"
+        if "requires root euid" in merged:
+            print(
+                "[high] SKIP: setuid binary did not gain root euid "
+                "(likely nosuid mount on temp dir)"
+            )
+            subprocess.run(
+                [str(suid_bin), "rm", "--name", HIGH_LEVEL_JAIL],
+                check=False,
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return False
+        print(run_result.stdout, end="")
+        print(run_result.stderr, end="", file=sys.stderr)
+        fail(f"high-level run failed with exit code {run_result.returncode}")
 
     print("[high 4/6] verifying host not changed before flush")
     if TARGET_PATH_HIGH.read_text(encoding="utf-8") != "before-high\n":
