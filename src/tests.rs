@@ -195,17 +195,36 @@ fn ns_runtime_helpers_manage_temp_runtime_dir() {
     let runtime = ns_runtime::ensure_runtime_dir(&jail_paths).expect("ensure runtime dir");
     assert!(runtime.runtime_dir.exists());
 
-    let _lock = ns_runtime::open_lock(&jail_paths).expect("open lock");
+    let lock = ns_runtime::open_lock(&jail_paths).expect("open lock");
     let after = ns_runtime::inspect(&jail_paths).expect("inspect after");
     assert!(after.runtime_dir_exists);
     assert!(after.lock_exists);
     assert!(!after.mntns_exists);
     assert!(!after.ipcns_exists);
+    assert_eq!(lock.path(), runtime.lock_path.as_path());
 
+    drop(lock);
     ns_runtime::remove_runtime(&jail_paths).expect("remove runtime");
     let removed = ns_runtime::inspect(&jail_paths).expect("inspect removed");
     assert!(!removed.runtime_dir_exists);
     assert!(!removed.lock_exists);
+}
+
+#[test]
+fn ns_runtime_lock_is_exclusive() {
+    let temp = tempdir().expect("tempdir");
+    let mut layout = jail::layout_from_home(temp.path());
+    layout.runtime_root = temp.path().join("run");
+    let jail_paths = jail::jail_paths_in(&layout, "demo");
+
+    let first = ns_runtime::open_lock(&jail_paths).expect("first lock");
+    let second = ns_runtime::try_open_lock(&jail_paths).expect("second open");
+    assert!(second.is_none());
+
+    drop(first);
+
+    let third = ns_runtime::try_open_lock(&jail_paths).expect("third open");
+    assert!(third.is_some());
 }
 
 #[test]

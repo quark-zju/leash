@@ -22,6 +22,12 @@ pub(crate) struct RuntimeStatus {
     pub(crate) lock_exists: bool,
 }
 
+#[derive(Debug)]
+pub(crate) struct RuntimeLock {
+    file: fs::File,
+    path: PathBuf,
+}
+
 pub(crate) fn paths_for(jail: &JailPaths) -> NsRuntimePaths {
     NsRuntimePaths {
         runtime_dir: jail.runtime_dir.clone(),
@@ -42,14 +48,43 @@ pub(crate) fn ensure_runtime_dir(jail: &JailPaths) -> Result<NsRuntimePaths> {
     Ok(paths)
 }
 
-pub(crate) fn open_lock(jail: &JailPaths) -> Result<fs::File> {
+pub(crate) fn open_lock(jail: &JailPaths) -> Result<RuntimeLock> {
     let paths = ensure_runtime_dir(jail)?;
-    fs::OpenOptions::new()
+    let file = fs::OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .open(&paths.lock_path)
-        .with_context(|| format!("failed to open runtime lock {}", paths.lock_path.display()))
+        .with_context(|| format!("failed to open runtime lock {}", paths.lock_path.display()))?;
+    file.lock()
+        .with_context(|| format!("failed to lock runtime lock {}", paths.lock_path.display()))?;
+    Ok(RuntimeLock {
+        file,
+        path: paths.lock_path,
+    })
+}
+
+pub(crate) fn try_open_lock(jail: &JailPaths) -> Result<Option<RuntimeLock>> {
+    let paths = ensure_runtime_dir(jail)?;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&paths.lock_path)
+        .with_context(|| format!("failed to open runtime lock {}", paths.lock_path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(RuntimeLock {
+            file,
+            path: paths.lock_path,
+        })),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(err)) => Err(err).with_context(|| {
+            format!(
+                "failed to try-lock runtime lock {}",
+                paths.lock_path.display()
+            )
+        }),
+    }
 }
 
 pub(crate) fn inspect(jail: &JailPaths) -> Result<RuntimeStatus> {
@@ -81,5 +116,17 @@ fn exists_file(path: &Path) -> Result<bool> {
         Ok(_) => Ok(true),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err).with_context(|| format!("failed to inspect {}", path.display())),
+    }
+}
+
+impl Drop for RuntimeLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+impl RuntimeLock {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
     }
 }
