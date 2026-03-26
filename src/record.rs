@@ -242,8 +242,7 @@ impl Drop for LockedRecord {
     }
 }
 
-#[cfg(test)]
-pub fn read_frames(path: &Path) -> Result<Vec<Frame>> {
+pub fn read_frames_best_effort(path: &Path) -> Result<Vec<Frame>> {
     let data = match fs::read(path) {
         Ok(data) => data,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -254,6 +253,11 @@ pub fn read_frames(path: &Path) -> Result<Vec<Frame>> {
     };
 
     Ok(read_frames_from_bytes(&data))
+}
+
+#[cfg(test)]
+pub fn read_frames(path: &Path) -> Result<Vec<Frame>> {
+    read_frames_best_effort(path)
 }
 
 fn read_frames_from_bytes(data: &[u8]) -> Vec<Frame> {

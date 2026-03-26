@@ -30,6 +30,15 @@ pub struct CowFs {
     overlay: std::collections::HashMap<PathBuf, OverlayNode>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReplayStats {
+    pub total_frames: usize,
+    pub pending_ops: usize,
+    pub applied_ops: usize,
+    pub skipped_frames: usize,
+    pub skipped_ops: usize,
+}
+
 #[derive(Debug, Clone)]
 enum OverlayNode {
     Deleted,
@@ -262,6 +271,73 @@ impl CowFs {
             .append_cbor(record::TAG_WRITE_OP, op)
             .map(|_| ())
             .map_err(|_| EIO)
+    }
+
+    pub fn replay_from_record_frames(&mut self, frames: &[record::Frame]) -> ReplayStats {
+        let mut stats = ReplayStats {
+            total_frames: frames.len(),
+            ..ReplayStats::default()
+        };
+        for frame in frames {
+            if frame.flushed || frame.tag != record::TAG_WRITE_OP {
+                stats.skipped_frames += 1;
+                continue;
+            }
+            stats.pending_ops += 1;
+            let op: Operation = match record::decode_cbor(frame) {
+                Ok(op) => op,
+                Err(_) => {
+                    stats.skipped_ops += 1;
+                    continue;
+                }
+            };
+            if self.apply_replayed_operation(&op).is_ok() {
+                stats.applied_ops += 1;
+            } else {
+                stats.skipped_ops += 1;
+            }
+        }
+        stats
+    }
+
+    fn apply_replayed_operation(&mut self, op: &Operation) -> Result<(), ()> {
+        match op {
+            Operation::WriteFile { path, state } => {
+                let node = match state {
+                    FileState::Deleted => OverlayNode::Deleted,
+                    FileState::Regular(data) => OverlayNode::Regular {
+                        data: data.clone(),
+                        executable: false,
+                    },
+                    FileState::Executable(data) => OverlayNode::Regular {
+                        data: data.clone(),
+                        executable: true,
+                    },
+                    FileState::Symlink(target) => OverlayNode::Symlink {
+                        target: target.clone(),
+                    },
+                };
+                self.overlay.insert(path.clone(), node);
+                Ok(())
+            }
+            Operation::CreateDir { path } => {
+                self.overlay.insert(path.clone(), OverlayNode::Dir);
+                Ok(())
+            }
+            Operation::RemoveDir { path } => {
+                self.overlay.insert(path.clone(), OverlayNode::Deleted);
+                Ok(())
+            }
+            Operation::Rename { from, to } => self.apply_rename_paths(from, to).map_err(|_| ()),
+            Operation::Truncate { path, size } => {
+                let (mut data, executable) =
+                    self.current_regular(path).map_err(|_| ())?.ok_or(())?;
+                data.resize(*size as usize, 0);
+                self.overlay
+                    .insert(path.clone(), OverlayNode::Regular { data, executable });
+                Ok(())
+            }
+        }
     }
 
     fn snapshot_node(&self, path: &Path) -> Result<Option<OverlayNode>, i32> {
@@ -1165,5 +1241,112 @@ mod tests {
             .apply_rename_paths(&from, &to)
             .expect_err("rename to own subpath should fail");
         assert_eq!(err, EINVAL);
+    }
+
+    #[test]
+    fn replay_restores_pending_writes_and_rename() {
+        let mut record_path = std::env::temp_dir();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("monotonic clock")
+            .as_nanos();
+        record_path.push(format!("cowjail-replay-test-{now}.cjr"));
+        let writer = record::Writer::open_append(&record_path).expect("open record writer");
+
+        writer
+            .append_cbor(
+                record::TAG_WRITE_OP,
+                &Operation::WriteFile {
+                    path: PathBuf::from("/tmp/replay-a"),
+                    state: FileState::Regular(b"one".to_vec()),
+                },
+            )
+            .expect("append write a");
+        writer
+            .append_cbor(
+                record::TAG_WRITE_OP,
+                &Operation::Rename {
+                    from: PathBuf::from("/tmp/replay-a"),
+                    to: PathBuf::from("/tmp/replay-b"),
+                },
+            )
+            .expect("append rename");
+        writer
+            .append_cbor(
+                record::TAG_WRITE_OP,
+                &Operation::WriteFile {
+                    path: PathBuf::from("/tmp/replay-b"),
+                    state: FileState::Executable(b"two".to_vec()),
+                },
+            )
+            .expect("append write b");
+        writer.sync().expect("sync record");
+
+        let frames = record::read_frames(&record_path).expect("read frames");
+        let mut fs = CowFs::new(parse_profile("/tmp/** rw"), writer);
+        let stats = fs.replay_from_record_frames(&frames);
+        assert_eq!(stats.pending_ops, 3);
+        assert_eq!(stats.applied_ops, 3);
+        assert!(matches!(
+            fs.overlay.get(Path::new("/tmp/replay-a")),
+            Some(OverlayNode::Deleted)
+        ));
+        assert!(matches!(
+            fs.overlay.get(Path::new("/tmp/replay-b")),
+            Some(OverlayNode::Regular {
+                data,
+                executable: true
+            }) if data == b"two"
+        ));
+
+        let _ = std::fs::remove_file(&record_path);
+    }
+
+    #[test]
+    fn replay_skips_flushed_frames() {
+        let mut record_path = std::env::temp_dir();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("monotonic clock")
+            .as_nanos();
+        record_path.push(format!("cowjail-replay-flushed-test-{now}.cjr"));
+        let writer = record::Writer::open_append(&record_path).expect("open record writer");
+
+        let flushed_offset = writer
+            .append_cbor(
+                record::TAG_WRITE_OP,
+                &Operation::WriteFile {
+                    path: PathBuf::from("/tmp/replay-flushed"),
+                    state: FileState::Regular(b"old".to_vec()),
+                },
+            )
+            .expect("append flushed op");
+        writer
+            .append_cbor(
+                record::TAG_WRITE_OP,
+                &Operation::WriteFile {
+                    path: PathBuf::from("/tmp/replay-flushed"),
+                    state: FileState::Regular(b"new".to_vec()),
+                },
+            )
+            .expect("append pending op");
+        writer.sync().expect("sync record");
+        record::mark_flushed(&record_path, flushed_offset).expect("mark flushed");
+
+        let frames = record::read_frames(&record_path).expect("read frames");
+        let mut fs = CowFs::new(parse_profile("/tmp/** rw"), writer);
+        let stats = fs.replay_from_record_frames(&frames);
+        assert_eq!(stats.pending_ops, 1);
+        assert_eq!(stats.applied_ops, 1);
+        assert_eq!(stats.skipped_frames, 1);
+        assert!(matches!(
+            fs.overlay.get(Path::new("/tmp/replay-flushed")),
+            Some(OverlayNode::Regular {
+                data,
+                executable: false
+            }) if data == b"new"
+        ));
+
+        let _ = std::fs::remove_file(&record_path);
     }
 }

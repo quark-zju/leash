@@ -41,7 +41,22 @@ pub(crate) fn fuse_command(cmd: LowLevelFuseCommand) -> Result<()> {
         )
     })?;
 
-    let fs = cowfs::CowFs::new(loaded.profile, writer);
+    let frames = record::read_frames_best_effort(&cmd.record)
+        .with_context(|| format!("failed to read record frames from {}", cmd.record.display()))?;
+    let mut fs = cowfs::CowFs::new(loaded.profile, writer);
+    let replay = fs.replay_from_record_frames(&frames);
+    vlog(
+        cmd.verbose,
+        format!(
+            "_fuse: replay record={} total_frames={} pending_ops={} applied_ops={} skipped_frames={} skipped_ops={}",
+            cmd.record.display(),
+            replay.total_frames,
+            replay.pending_ops,
+            replay.applied_ops,
+            replay.skipped_frames,
+            replay.skipped_ops
+        ),
+    );
     vlog(
         cmd.verbose,
         format!(
