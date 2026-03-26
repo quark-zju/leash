@@ -35,13 +35,15 @@ That means the implementation should explicitly manage:
 
 ## Core Model
 
-Each jail has a globally unique name, for example:
+Each jail has a globally unique name.
 
-- `cowjail create --name agent-a --profile default`
-- `cowjail exec agent-a command ...`
-- `cowjail mount agent-a <path>`
-- `cowjail flush agent-a`
-- `cowjail rm agent-a`
+Public commands should stay small and high-level:
+
+- `cowjail run [--name <name> | --profile <profile>] command ...`
+- `cowjail flush [--name <name> | --profile <profile>] [--dry-run]`
+- `cowjail add --name <name> [--profile <profile>]`
+- `cowjail rm [--name <name> | --profile <profile>]`
+- `cowjail list`
 
 Each named jail should have durable metadata under a stable runtime path plus a durable record path.
 
@@ -154,96 +156,155 @@ That split gives you reboot persistence without forcing immediate host writes.
 
 ## CLI Direction
 
-The old commands are too tied to ephemeral execution.
+The public CLI should optimize for "just use the jail" rather than explicit lifecycle choreography.
 
-Suggested new top-level shape:
+Suggested public shape:
 
 ```text
-cowjail create --name <name> [--profile <profile>]
-cowjail start <name>
-cowjail exec <name> command ...
-cowjail mount <name> <path>
-cowjail flush <name> [--dry-run] [--profile <profile>]
-cowjail status [<name>]
-cowjail rm <name>
+cowjail run [--name <name> | --profile <profile>] command ...
+cowjail flush [--name <name> | --profile <profile>] [--dry-run]
+cowjail add --name <name> [--profile <profile>]
+cowjail rm [--name <name> | --profile <profile>]
+cowjail list
 ```
 
-Possible compatibility bridge:
+This keeps the common path short:
 
-- keep `cowjail run` as sugar for `create + exec + optional auto-cleanup`
+- `run` ensures the jail exists, ensures the runtime is mounted, then executes inside it
+- `flush` resolves the same jail identity and replays its record
+- `add/rm/list` are explicit management commands
 
-That avoids breaking the current UX immediately while moving the internals to named jails.
+### Jail Selector Rules
+
+`run`, `flush`, and `rm` should share one selector module with one resolution algorithm.
+
+Proposed rules:
+
+1. `--name <name>`
+- Select that jail directly.
+- For `run`, create if missing.
+- For `rm`, fail if missing.
+
+2. `--profile <profile>` with no `--name`
+- Resolve to a deterministic auto-generated jail identity derived from:
+  - normalized profile content
+  - current working directory, because `.` in the profile is cwd-sensitive and users expect pwd to matter
+- `run` creates it if missing.
+- `flush` resolves the same identity.
+- `rm` resolves the same identity but must not auto-create.
+
+3. Neither `--name` nor `--profile`
+- Equivalent to `--profile default`.
+- Cwd still participates in derived identity so separate working directories do not accidentally share the same implicit jail when `.` matters.
+
+Auto-generated jails should be clearly distinguishable from user-named jails.
+
+Suggested options:
+
+- a reserved prefix such as `auto-<hash>`
+- or a metadata flag that marks the jail as generated
+
+The prefix is useful for `list`; the metadata flag is useful for future UX.
+
+### Low-Level Commands
+
+The project should keep a low-level escape hatch for advanced users and debugging, but not expose it in the normal help output.
+
+Suggested hidden commands:
+
+```text
+cowjail _mount --profile <profile> --record <record_path> <path>
+cowjail _flush --record <record_path> [--profile <profile>] [--dry-run]
+```
+
+Properties:
+
+- no named-jail state writes
+- explicit `--record`
+- explicit `--profile` where needed
+- intended for debugging, recovery, and expert workflows
+- not listed in normal `--help`
+- shown only in verbose help such as `-v --help`
+
+This preserves the current debug-oriented power without forcing the main UX to expose lifecycle internals.
 
 ## Recommended Implementation Order
 
-### Phase 1: Persistent jail identity
+### Phase 1: Jail identity and selector model
 
 1. `state: add named jail metadata model`
 - Introduce jail name validation and on-disk metadata layout.
 - Make jail names globally unique.
 
-2. `cli: add create/status/rm commands`
-- Start managing named jails even before namespace reuse exists.
-- Keep runtime behavior simple.
+2. `selector: implement shared jail resolution module`
+- Resolve `--name`, `--profile`, and implicit default consistently.
+- Distinguish "resolve or create" from "resolve only".
 
-3. `record: bind jail name to stable record path`
+3. `cli: add add/rm/list commands`
+- `add` is explicit creation.
+- `rm` uses shared selector logic but never auto-creates.
+- `list` surfaces both named and auto-generated jails clearly.
+
+4. `record: bind jail identity to stable record path`
 - Replace implicit per-run record with a stable record path derived from jail name.
 - Keep existing frame format.
 
-4. `profile: persist normalized profile into jail metadata`
+5. `profile: persist normalized profile into jail metadata`
 - Remove ambiguity between "profile path" and "actual resolved profile content".
 
 ### Phase 2: Named mount namespace lifecycle
 
-5. `ns: create named mount namespace handles under /run/cowjail`
+6. `ns: create named mount namespace handles under /run/cowjail`
 - Add namespace creation and runtime directory conventions.
 
-6. `ns: add enter logic for existing named jail`
+7. `ns: add enter logic for existing named jail`
 - Implement the equivalent of "open handle and setns into it".
 
-7. `mount: move fuse mount lifecycle into named namespace`
+8. `mount: move fuse mount lifecycle into named namespace`
 - Make mount placement part of jail start rather than part of a single process execution.
 
-8. `cmd: add start and exec commands`
-- `start` creates or restores runtime namespace state.
-- `exec` enters the jail and runs a command inside it.
+9. `cmd: implement high-level run`
+- `run` resolves or creates the jail, ensures runtime namespace state exists, and then executes inside it.
+- No separate public `start` or `exec` command.
 
 ### Phase 3: Isolation refinement
 
-9. `ns: add ipc namespace isolation`
+10. `ns: add ipc namespace isolation`
 - Keep this separate from mount namespace work.
 - Add behavioral tests for isolated IPC.
 
-10. `run: preserve privilege dropping inside named exec path`
+11. `run: preserve privilege dropping inside named exec path`
 - Keep `setgroups([])`, `setgid`, `setuid`, `PR_SET_NO_NEW_PRIVS`.
 
-11. `security: document current isolation boundary`
+12. `security: document current isolation boundary`
 - Explicitly state that network and broader sandboxing are still out of scope.
 
 ### Phase 4: Overlay replay from record
 
-12. `record: define overlay replay pass`
+13. `record: define overlay replay pass`
 - Formalize record-to-overlay replay semantics.
 
-13. `fuse: reconstruct overlay state from record at mount time`
+14. `fuse: reconstruct overlay state from record at mount time`
 - Make a newly started jail show prior unflushed writes.
 
-14. `fuse: separate overlay replay from host flush replay`
+15. `fuse: separate overlay replay from host flush replay`
 - Do not mark frames flushed just because overlay replay consumed them.
 
-15. `test: reboot-style recovery scenarios`
+16. `test: reboot-style recovery scenarios`
 - Simulate "write in jail -> process exits -> remount jail -> state still visible".
 
 ### Phase 5: Operational polish
 
-16. `flush: switch to jail-name based UX`
-- `cowjail flush <name>` should discover profile and record from metadata.
+17. `flush: switch fully to selector-based UX`
+- `flush` should use the same jail selector logic as `run`.
+- Public `flush` should be high-level and state-aware.
 
-17. `status: show live namespace status and pending record info`
-- Include pending frame count and whether runtime namespace exists.
+18. `debug: preserve hidden _mount and _flush commands`
+- Keep low-level commands for recovery and advanced debugging.
+- Do not write named-jail metadata from these code paths.
 
-18. `docs: update README around named jail workflow`
-- Replace temporary run-focused examples with `create/start/exec/flush`.
+19. `docs: update README around run/add/rm/list workflow`
+- Replace lifecycle-heavy examples with selector-driven usage.
 
 ## Key Risks
 
