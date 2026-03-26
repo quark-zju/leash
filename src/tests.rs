@@ -177,6 +177,11 @@ fn ns_runtime_paths_track_runtime_layout() {
         Path::new("/run/cowjail-test/demo/ipcns")
     );
     assert_eq!(runtime.lock_path, Path::new("/run/cowjail-test/demo/lock"));
+    assert_eq!(runtime.mount_dir, Path::new("/run/cowjail-test/demo/mount"));
+    assert_eq!(
+        runtime.fuse_pid_path,
+        Path::new("/run/cowjail-test/demo/fuse.pid")
+    );
 }
 
 #[test]

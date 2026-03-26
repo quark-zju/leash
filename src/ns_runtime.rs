@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use crate::jail::JailPaths;
 
 pub(crate) const LOCK_FILE_NAME: &str = "lock";
+pub(crate) const MOUNT_DIR_NAME: &str = "mount";
+pub(crate) const FUSE_PID_NAME: &str = "fuse.pid";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NsRuntimePaths {
@@ -14,6 +16,8 @@ pub(crate) struct NsRuntimePaths {
     pub(crate) mntns_path: PathBuf,
     pub(crate) ipcns_path: PathBuf,
     pub(crate) lock_path: PathBuf,
+    pub(crate) mount_dir: PathBuf,
+    pub(crate) fuse_pid_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +56,8 @@ pub(crate) fn paths_for(jail: &JailPaths) -> NsRuntimePaths {
         mntns_path: jail.mntns_path.clone(),
         ipcns_path: jail.ipcns_path.clone(),
         lock_path: jail.runtime_dir.join(LOCK_FILE_NAME),
+        mount_dir: jail.runtime_dir.join(MOUNT_DIR_NAME),
+        fuse_pid_path: jail.runtime_dir.join(FUSE_PID_NAME),
     }
 }
 
