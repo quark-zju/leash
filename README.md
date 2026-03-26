@@ -22,28 +22,28 @@ Out of scope:
 Start from the simplest flow (default profile + current directory identity):
 
 ```bash
-cowjail run -- your-command arg1 arg2
-cowjail flush --dry-run
-cowjail flush
+cowjail run -- your-command arg1 arg2  # run inside jail
+cowjail flush --dry-run                # review pending changes
+cowjail flush                          # apply pending changes to host
 ```
 
 Use an explicit profile:
 
 ```bash
-cowjail run --profile default -- your-command
-cowjail flush --profile default --dry-run
-cowjail flush --profile default
+cowjail run --profile default -- your-command        # select jail by profile identity
+cowjail flush --profile default --dry-run            # review pending changes for that profile
+cowjail flush --profile default                      # apply pending changes for that profile
 ```
 
 Use named jail management when you want stable explicit identities:
 
 ```bash
-cowjail add --name agent --profile default
-cowjail run --name agent -- your-command arg1 arg2
-cowjail flush --name agent --dry-run
-cowjail flush --name agent
-cowjail list
-cowjail rm --name agent
+cowjail add --name agent --profile default           # create/pin explicit jail metadata
+cowjail run --name agent -- your-command arg1 arg2   # run in named jail
+cowjail flush --name agent --dry-run                 # review pending changes for named jail
+cowjail flush --name agent                           # apply pending changes for named jail
+cowjail list                                         # list known jails
+cowjail rm --name agent                              # remove jail metadata/runtime state
 ```
 
 ## More Docs
