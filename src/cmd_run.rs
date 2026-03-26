@@ -7,8 +7,9 @@ use std::process::Command as ProcessCommand;
 
 use crate::cli::RunCommand;
 use crate::cowfs;
+use crate::jail;
 use crate::profile_loader::{
-    append_profile_header, default_record_path, ensure_record_parent_dir, load_profile,
+    append_profile_header, ensure_record_parent_dir, parse_profile_from_normalized_source,
 };
 use crate::record;
 use crate::vlog;
@@ -24,15 +25,18 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         );
     }
 
-    let cwd = std::env::current_dir().context("failed to resolve current working directory")?;
+    let cwd = jail::current_pwd().context("failed to resolve current working directory")?;
     let ruid = unsafe { libc::getuid() };
     let rgid = unsafe { libc::getgid() };
-    let loaded = load_profile(Path::new(&run.profile))
-        .with_context(|| format!("failed to load run profile '{}'", run.profile))?;
-    let record_path = run.record.clone().unwrap_or(
-        default_record_path(&loaded.normalized_source, &cwd)
-            .context("failed to build default record path")?,
-    );
+    let resolved = jail::resolve(
+        run.name.as_deref(),
+        run.profile.as_deref(),
+        jail::ResolveMode::EnsureExists,
+    )
+    .context("failed to resolve run jail")?;
+    let jail_profile = parse_profile_from_normalized_source(&resolved.normalized_profile)
+        .context("failed to parse resolved jail profile")?;
+    let record_path = resolved.paths.record_path.clone();
     ensure_record_parent_dir(&record_path)?;
     let writer = record::Writer::open_append(&record_path).with_context(|| {
         format!(
@@ -40,18 +44,21 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
             record_path.display()
         )
     })?;
-    append_profile_header(&writer, &loaded.normalized_source).with_context(|| {
+    append_profile_header(&writer, &resolved.normalized_profile).with_context(|| {
         format!(
             "failed to append run profile header into {}",
             record_path.display()
         )
     })?;
-    let cowfs = cowfs::CowFs::new(loaded.profile, writer);
+    let cowfs = cowfs::CowFs::new(jail_profile, writer);
 
     let mountpoint = make_run_mountpoint()?;
     vlog(
         run.verbose,
-        format!("run: creating temporary mountpoint {}", mountpoint.display()),
+        format!(
+            "run: creating temporary mountpoint {}",
+            mountpoint.display()
+        ),
     );
     fs::create_dir_all(&mountpoint).with_context(|| {
         format!(
@@ -84,7 +91,10 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
     let status = run_child_in_chroot(&run, &mountpoint, &cwd, ruid, rgid)
         .with_context(|| format!("failed to execute jailed command {:?}", run.program));
 
-    vlog(run.verbose, "run: waiting for child completion done".to_string());
+    vlog(
+        run.verbose,
+        "run: waiting for child completion done".to_string(),
+    );
     vlog(
         run.verbose,
         format!("run: unmounting fuse mount {}", mountpoint.display()),
@@ -92,7 +102,10 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
     drop(bg);
     vlog(
         run.verbose,
-        format!("run: removing temporary mountpoint {}", mountpoint.display()),
+        format!(
+            "run: removing temporary mountpoint {}",
+            mountpoint.display()
+        ),
     );
     let _ = fs::remove_dir(&mountpoint);
     vlog(run.verbose, "run: cleanup complete".to_string());

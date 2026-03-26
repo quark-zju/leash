@@ -46,8 +46,8 @@ pub struct RmCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCommand {
-    pub profile: String,
-    pub record: Option<PathBuf>,
+    pub name: Option<String>,
+    pub profile: Option<String>,
     pub verbose: bool,
     pub program: OsString,
     pub args: Vec<OsString>,
@@ -63,7 +63,7 @@ pub struct MountCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlushCommand {
-    pub record: Option<PathBuf>,
+    pub name: Option<String>,
     pub profile: Option<String>,
     pub dry_run: bool,
     pub verbose: bool,
@@ -82,9 +82,9 @@ where
     }
 
     let mut args = Arguments::from_vec(raw);
-    let subcmd = args
-        .subcommand()?
-        .ok_or_else(|| anyhow::anyhow!("missing subcommand (expected: add, list, rm, run, mount, flush)"))?;
+    let subcmd = args.subcommand()?.ok_or_else(|| {
+        anyhow::anyhow!("missing subcommand (expected: add, list, rm, run, mount, flush)")
+    })?;
 
     let command = match subcmd.as_str() {
         "add" => parse_add(args)?,
@@ -109,10 +109,11 @@ fn parse_run(mut args: Arguments) -> Result<Command> {
         return Ok(Command::Help(HelpTopic::Run));
     }
     let verbose = args.contains(["-v", "--verbose"]);
-    let profile = args
-        .opt_value_from_str("--profile")?
-        .unwrap_or_else(|| DEFAULT_PROFILE.to_string());
-    let record = args.opt_value_from_os_str("--record", parse_pathbuf)?;
+    let name = args.opt_value_from_str("--name")?;
+    let profile = args.opt_value_from_str("--profile")?;
+    if name.is_some() && profile.is_some() {
+        bail!("run accepts only one of --name <name> or --profile <profile>");
+    }
 
     let mut trailing = args.finish();
     if trailing.is_empty() {
@@ -121,8 +122,8 @@ fn parse_run(mut args: Arguments) -> Result<Command> {
 
     let program = trailing.remove(0);
     Ok(Command::Run(RunCommand {
+        name,
         profile,
-        record,
         verbose,
         program,
         args: trailing,
@@ -208,8 +209,11 @@ fn parse_flush(mut args: Arguments) -> Result<Command> {
     }
     let verbose = args.contains(["-v", "--verbose"]);
     let dry_run = args.contains("--dry-run");
+    let name = args.opt_value_from_str("--name")?;
     let profile = args.opt_value_from_str("--profile")?;
-    let record = args.opt_value_from_os_str("--record", parse_pathbuf)?;
+    if name.is_some() && profile.is_some() {
+        bail!("flush accepts only one of --name <name> or --profile <profile>");
+    }
 
     let extra = args.finish();
     if !extra.is_empty() {
@@ -217,7 +221,7 @@ fn parse_flush(mut args: Arguments) -> Result<Command> {
     }
 
     Ok(Command::Flush(FlushCommand {
-        record,
+        name,
         profile,
         dry_run,
         verbose,
@@ -231,25 +235,23 @@ fn parse_pathbuf(raw: &std::ffi::OsStr) -> Result<PathBuf, Infallible> {
 pub fn help_text(topic: HelpTopic) -> &'static str {
     match topic {
         HelpTopic::Root => {
-            "cowjail\n\nUSAGE:\n  cowjail add --name <name> [--profile <profile>]\n  cowjail list\n  cowjail rm [--name <name> | --profile <profile>]\n  cowjail run [--profile <profile>] [--record <record_path>] [-v|--verbose] command ...\n  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n  cowjail flush [--record <record_path>] [--profile <profile>] [--dry-run] [-v|--verbose]\n\nRun `cowjail <subcommand> --help` for details."
+            "cowjail\n\nUSAGE:\n  cowjail add --name <name> [--profile <profile>]\n  cowjail list\n  cowjail rm [--name <name> | --profile <profile>]\n  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n\nRun `cowjail <subcommand> --help` for details."
         }
         HelpTopic::Add => {
             "cowjail add\n\nUSAGE:\n  cowjail add --name <name> [--profile <profile>]\n\nOPTIONS:\n  --name <name>         Explicit jail name (required)\n  --profile <profile>   Profile path. Default: default"
         }
-        HelpTopic::List => {
-            "cowjail list\n\nUSAGE:\n  cowjail list"
-        }
+        HelpTopic::List => "cowjail list\n\nUSAGE:\n  cowjail list",
         HelpTopic::Rm => {
             "cowjail rm\n\nUSAGE:\n  cowjail rm [--name <name> | --profile <profile>]\n\nOPTIONS:\n  --name <name>         Remove an explicit or auto-generated jail by name\n  --profile <profile>   Remove the jail selected by profile-derived identity"
         }
         HelpTopic::Run => {
-            "cowjail run\n\nUSAGE:\n  cowjail run [--profile <profile>] [--record <record_path>] [-v|--verbose] command ...\n\nOPTIONS:\n  --profile <profile>   Profile path. Default: default\n  --record <record>     Record output path. Default: ~/.cache/cowjail/<context-hash>-<timestamp>.cjr\n  -v, --verbose         Print progress logs"
+            "cowjail run\n\nUSAGE:\n  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n\nOPTIONS:\n  --name <name>         Reuse or create an explicit jail name\n  --profile <profile>   Select/create the profile-derived jail identity\n  -v, --verbose         Print progress logs"
         }
         HelpTopic::Mount => {
             "cowjail mount\n\nUSAGE:\n  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n\nOPTIONS:\n  --profile <profile>   Profile path (required)\n  --record <record>     Record output path (required)\n  -v, --verbose         Print progress logs"
         }
         HelpTopic::Flush => {
-            "cowjail flush\n\nUSAGE:\n  cowjail flush [--record <record_path>] [--profile <profile>] [--dry-run] [-v|--verbose]\n\nOPTIONS:\n  --record <record>     Record path. Default: newest under ~/.cache/cowjail\n  --profile <profile>   Replay policy profile override\n  --dry-run             Preview without applying or marking flushed\n  -v, --verbose         Print progress logs"
+            "cowjail flush\n\nUSAGE:\n  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n\nOPTIONS:\n  --name <name>         Flush an explicit or auto-generated jail by name\n  --profile <profile>   Flush the jail selected by profile-derived identity\n  --dry-run             Preview without applying or marking flushed\n  -v, --verbose         Print progress logs"
         }
     }
 }
@@ -270,7 +272,8 @@ mod tests {
             Command::Run(run) => run,
             other => panic!("expected run, got {other:?}"),
         };
-        assert_eq!(run.profile, DEFAULT_PROFILE);
+        assert!(run.name.is_none());
+        assert!(run.profile.is_none());
         assert!(!run.verbose);
         assert_eq!(run.program, OsString::from("echo"));
         assert_eq!(run.args, vec![OsString::from("hi")]);
@@ -292,8 +295,8 @@ mod tests {
         };
         assert!(flush.dry_run);
         assert!(!flush.verbose);
+        assert!(flush.name.is_none());
         assert!(flush.profile.is_none());
-        assert!(flush.record.is_none());
     }
 
     #[test]
@@ -337,6 +340,20 @@ mod tests {
 
         let err = parse_from(os(&["rm", "--name", "a", "--profile", "b"]))
             .expect_err("rm with two selectors should fail");
+        assert!(err.to_string().contains("only one of"));
+    }
+
+    #[test]
+    fn parse_run_requires_exactly_one_selector() {
+        let err = parse_from(os(&["run", "--name", "a", "--profile", "b", "echo"]))
+            .expect_err("run with two selectors should fail");
+        assert!(err.to_string().contains("only one of"));
+    }
+
+    #[test]
+    fn parse_flush_requires_exactly_one_selector() {
+        let err = parse_from(os(&["flush", "--name", "a", "--profile", "b"]))
+            .expect_err("flush with two selectors should fail");
         assert!(err.to_string().contains("only one of"));
     }
 }

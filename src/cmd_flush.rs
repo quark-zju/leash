@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::cli::FlushCommand;
+use crate::jail;
 use crate::op;
 use crate::profile;
 use crate::profile_loader::{
-    ProfileHeaderFrame, default_record_dir, load_profile, newest_record_path,
-    parse_profile_from_normalized_source,
+    ProfileHeaderFrame, load_profile, parse_profile_from_normalized_source,
 };
 use crate::record;
 use crate::vlog;
@@ -30,19 +30,17 @@ struct PendingOp {
 }
 
 pub(crate) fn flush_command(flush: FlushCommand) -> Result<()> {
-    let record_path = if let Some(path) = flush.record {
-        path
-    } else {
-        let default_dir = default_record_dir()?;
-        newest_record_path()?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "no record file specified and no default record found under {}",
-                default_dir.display()
-            )
-        })?
-    };
+    let resolved = jail::resolve(
+        flush.name.as_deref(),
+        flush.profile.as_deref(),
+        jail::ResolveMode::MustExist,
+    )
+    .context("failed to resolve flush jail")?;
+    let record_path = resolved.paths.record_path.clone();
+    let replay_profile = parse_profile_from_normalized_source(&resolved.normalized_profile)
+        .context("failed to parse resolved jail profile")?;
 
-    let stats = flush_record(&record_path, flush.dry_run, flush.profile.as_deref())
+    let stats = flush_record_with_policy(&record_path, flush.dry_run, Some(replay_profile))
         .with_context(|| format!("failed to flush record file {}", record_path.display()))?;
     vlog(
         flush.verbose,
@@ -77,13 +75,30 @@ pub(crate) fn flush_record(
     dry_run: bool,
     profile_override: Option<&str>,
 ) -> Result<FlushStats> {
+    let replay_profile = if let Some(profile_path) = profile_override {
+        let loaded = load_profile(Path::new(profile_path))?;
+        Some(loaded.profile)
+    } else {
+        None
+    };
+    flush_record_with_policy(path, dry_run, replay_profile)
+}
+
+pub(crate) fn flush_record_with_policy(
+    path: &Path,
+    dry_run: bool,
+    replay_profile: Option<profile::Profile>,
+) -> Result<FlushStats> {
     let mut record_lock = record::lock_record(path)
         .with_context(|| format!("failed to lock record {}", path.display()))?;
     let frames = record_lock
         .read_frames()
         .with_context(|| format!("failed to read frames from {}", path.display()))?;
-    let replay_profile = resolve_flush_profile(profile_override, &frames)
-        .with_context(|| format!("failed to resolve flush profile for {}", path.display()))?;
+    let replay_profile = match replay_profile {
+        Some(profile) => Some(profile),
+        None => resolve_record_header_profile(&frames)
+            .with_context(|| format!("failed to resolve flush profile for {}", path.display()))?,
+    };
     let mut stats = FlushStats {
         total: frames.len(),
         ..FlushStats::default()
@@ -134,15 +149,7 @@ pub(crate) fn flush_record(
     Ok(stats)
 }
 
-fn resolve_flush_profile(
-    profile_override: Option<&str>,
-    frames: &[record::Frame],
-) -> Result<Option<profile::Profile>> {
-    if let Some(profile_path) = profile_override {
-        let loaded = load_profile(Path::new(profile_path))?;
-        return Ok(Some(loaded.profile));
-    }
-
+fn resolve_record_header_profile(frames: &[record::Frame]) -> Result<Option<profile::Profile>> {
     for frame in frames.iter().rev() {
         if frame.tag != record::TAG_PROFILE_HEADER {
             continue;
@@ -276,7 +283,10 @@ fn apply_operation(op: &op::Operation) -> Result<()> {
             validate_abs(path)?;
             match fs::symlink_metadata(path) {
                 Ok(meta) if meta.file_type().is_symlink() => {
-                    bail!("refusing to truncate symlink during replay: {}", path.display());
+                    bail!(
+                        "refusing to truncate symlink during replay: {}",
+                        path.display()
+                    );
                 }
                 Ok(_) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -345,7 +355,11 @@ fn ensure_safe_parent_dirs(path: &Path, context: &str) -> Result<()> {
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                     Err(err) => {
                         return Err(err).with_context(|| {
-                            format!("failed to inspect parent {} for {}", current.display(), context)
+                            format!(
+                                "failed to inspect parent {} for {}",
+                                current.display(),
+                                context
+                            )
                         });
                     }
                 }
