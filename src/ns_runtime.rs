@@ -182,11 +182,7 @@ pub(crate) fn ensure_runtime_placeholders(jail: &JailPaths) -> Result<EnsuredRun
 }
 
 pub(crate) fn ensure_runtime_namespaces(jail: &JailPaths) -> Result<EnsuredRuntime> {
-    ensure_runtime_with(jail, |paths| {
-        bind_namespace_handle("/proc/self/ns/mnt", &paths.mntns_path)?;
-        bind_namespace_handle("/proc/self/ns/ipc", &paths.ipcns_path)?;
-        Ok(())
-    })
+    ensure_runtime_with(jail, bootstrap_namespace_handles)
 }
 
 pub(crate) fn remove_runtime(jail: &JailPaths) -> Result<()> {
@@ -218,6 +214,21 @@ fn reset_to_skeleton(paths: &NsRuntimePaths) -> Result<()> {
 }
 
 fn remove_if_present(path: &Path) -> Result<()> {
+    let target_c = CString::new(path.as_os_str().as_bytes())
+        .with_context(|| format!("invalid path: {}", path.display()))?;
+    let rc = unsafe { libc::umount2(target_c.as_ptr(), libc::MNT_DETACH) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        if !matches!(
+            err.raw_os_error(),
+            Some(libc::EINVAL) | Some(libc::ENOENT) | Some(libc::EPERM)
+        ) {
+            return Err(anyhow::anyhow!(
+                "failed to detach mount at {}: {err}",
+                path.display()
+            ));
+        }
+    }
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -259,6 +270,79 @@ fn bind_namespace_handle(source: &str, target: &Path) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn bootstrap_namespace_handles(paths: &NsRuntimePaths) -> Result<()> {
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(anyhow::anyhow!(
+            "failed to fork namespace bootstrap process: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    if pid == 0 {
+        let rc = unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_NEWIPC) };
+        if rc != 0 {
+            eprintln!("unshare failed: {}", std::io::Error::last_os_error());
+            unsafe { libc::_exit(101) };
+        }
+
+        let root = CString::new("/").expect("literal path");
+        let rc = unsafe {
+            libc::mount(
+                std::ptr::null(),
+                root.as_ptr(),
+                std::ptr::null(),
+                (libc::MS_REC | libc::MS_PRIVATE) as libc::c_ulong,
+                std::ptr::null(),
+            )
+        };
+        if rc != 0 {
+            eprintln!(
+                "mount propagation setup failed: {}",
+                std::io::Error::last_os_error()
+            );
+            unsafe { libc::_exit(102) };
+        }
+
+        if let Err(err) = bind_namespace_handle("/proc/self/ns/mnt", &paths.mntns_path) {
+            eprintln!("{err:#}");
+            unsafe { libc::_exit(103) };
+        }
+        if let Err(err) = bind_namespace_handle("/proc/self/ns/ipc", &paths.ipcns_path) {
+            eprintln!("{err:#}");
+            unsafe { libc::_exit(104) };
+        }
+        unsafe { libc::_exit(0) };
+    }
+
+    let mut status: libc::c_int = 0;
+    let wait_rc = unsafe { libc::waitpid(pid, &mut status as *mut libc::c_int, 0) };
+    if wait_rc < 0 {
+        return Err(anyhow::anyhow!(
+            "failed to wait for namespace bootstrap process: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if libc::WIFEXITED(status) {
+        let code = libc::WEXITSTATUS(status);
+        if code == 0 {
+            return Ok(());
+        }
+        return Err(anyhow::anyhow!(
+            "namespace bootstrap process exited with code {code}"
+        ));
+    }
+    if libc::WIFSIGNALED(status) {
+        let sig = libc::WTERMSIG(status);
+        return Err(anyhow::anyhow!(
+            "namespace bootstrap process killed by signal {sig}"
+        ));
+    }
+    Err(anyhow::anyhow!(
+        "namespace bootstrap process ended unexpectedly: status={status}"
+    ))
 }
 
 impl Drop for RuntimeLock {
