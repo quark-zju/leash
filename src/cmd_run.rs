@@ -3,18 +3,14 @@ use fs_err as fs;
 use std::ffi::CString;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command as ProcessCommand;
+use std::time::Duration;
 
 use crate::cli::RunCommand;
-use crate::cowfs;
 use crate::jail;
 use crate::ns_runtime;
 use crate::privileges;
-use crate::profile_loader::{
-    append_profile_header, ensure_record_parent_dir, parse_profile_from_normalized_source,
-};
-use crate::record;
 use crate::vlog;
 
 pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
@@ -50,87 +46,37 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
             runtime.ensured.rebuilt
         ),
     );
-    let jail_profile = parse_profile_from_normalized_source(&resolved.normalized_profile)
-        .context("failed to parse resolved jail profile")?;
-    let record_path = resolved.paths.record_path.clone();
-    ensure_record_parent_dir(&record_path)?;
-    let writer = record::Writer::open_append(&record_path).with_context(|| {
-        format!(
-            "failed to open run record writer at {}",
-            record_path.display()
-        )
-    })?;
-    append_profile_header(&writer, &resolved.normalized_profile).with_context(|| {
-        format!(
-            "failed to append run profile header into {}",
-            record_path.display()
-        )
-    })?;
-    let cowfs = cowfs::CowFs::new(jail_profile, writer);
-
-    let mountpoint = make_run_mountpoint()?;
-    vlog(
+    ensure_fuse_server(
+        &runtime.ensured.paths,
+        &resolved.paths.profile_path,
+        &resolved.paths.record_path,
         run.verbose,
-        format!(
-            "run: creating temporary mountpoint {}",
-            mountpoint.display()
-        ),
-    );
-    fs::create_dir_all(&mountpoint).with_context(|| {
-        format!(
-            "failed to create run mountpoint directory: {}",
-            mountpoint.display()
-        )
-    })?;
-
-    let bg = {
-        vlog(
-            run.verbose,
-            format!("run: mounting fuse filesystem at {}", mountpoint.display()),
-        );
-        unsafe { cowfs.mount_background(&mountpoint) }.with_context(|| {
-            format!(
-                "failed to mount run filesystem at temporary mountpoint {}",
-                mountpoint.display()
-            )
-        })?
-    };
+        runtime
+            .mntns_file
+            .try_clone()
+            .context("failed to clone mntns fd")?,
+        runtime
+            .ipcns_file
+            .try_clone()
+            .context("failed to clone ipcns fd")?,
+    )?;
 
     vlog(
         run.verbose,
         format!(
             "run: preparing child chroot to {} then chdir to {}",
-            mountpoint.display(),
+            runtime.ensured.paths.mount_dir.display(),
             cwd.display()
         ),
     );
     let status = run_child_in_chroot(
         &run,
-        &mountpoint,
+        &runtime.ensured.paths.mount_dir,
         &cwd,
         runtime.mntns_file,
         runtime.ipcns_file,
     )
     .with_context(|| format!("failed to execute jailed command {:?}", run.program));
-
-    vlog(
-        run.verbose,
-        "run: waiting for child completion done".to_string(),
-    );
-    vlog(
-        run.verbose,
-        format!("run: unmounting fuse mount {}", mountpoint.display()),
-    );
-    drop(bg);
-    vlog(
-        run.verbose,
-        format!(
-            "run: removing temporary mountpoint {}",
-            mountpoint.display()
-        ),
-    );
-    let _ = fs::remove_dir(&mountpoint);
-    vlog(run.verbose, "run: cleanup complete".to_string());
 
     let status = status?;
     Ok(exit_code_from_status(status))
@@ -197,6 +143,87 @@ fn run_child_in_chroot(
     child.wait().context("failed waiting for child command")
 }
 
+fn ensure_fuse_server(
+    runtime_paths: &ns_runtime::NsRuntimePaths,
+    profile_path: &Path,
+    record_path: &Path,
+    verbose: bool,
+    mntns_file: fs::File,
+    ipcns_file: fs::File,
+) -> Result<()> {
+    if let Some(pid) = ns_runtime::read_fuse_pid(runtime_paths)?
+        && ns_runtime::process_has_mount(pid, &runtime_paths.mount_dir)?
+    {
+        vlog(
+            verbose,
+            format!(
+                "run: reusing fuse server pid={} mount={}",
+                pid,
+                runtime_paths.mount_dir.display()
+            ),
+        );
+        return Ok(());
+    }
+
+    vlog(
+        verbose,
+        format!(
+            "run: starting fuse server for mount {}",
+            runtime_paths.mount_dir.display()
+        ),
+    );
+    let exe = std::env::current_exe().context("failed to locate current executable")?;
+    let mntns_fd = mntns_file.as_raw_fd();
+    let ipcns_fd = ipcns_file.as_raw_fd();
+    let mut cmd = ProcessCommand::new(exe);
+    cmd.arg("_fuse")
+        .arg("--profile")
+        .arg(profile_path)
+        .arg("--record")
+        .arg(record_path)
+        .arg("--mountpoint")
+        .arg(&runtime_paths.mount_dir)
+        .arg("--pid-path")
+        .arg(&runtime_paths.fuse_pid_path);
+    if verbose {
+        cmd.arg("-v");
+    }
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setns(mntns_fd, libc::CLONE_NEWNS) != 0 {
+                let err = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    err.kind(),
+                    format!("setns(CLONE_NEWNS) for _fuse failed: {err}"),
+                ));
+            }
+            if libc::setns(ipcns_fd, libc::CLONE_NEWIPC) != 0 {
+                let err = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    err.kind(),
+                    format!("setns(CLONE_NEWIPC) for _fuse failed: {err}"),
+                ));
+            }
+            Ok(())
+        });
+    }
+
+    let child = cmd
+        .spawn()
+        .context("failed to spawn _fuse server process")?;
+    let pid = child.id();
+    let ok =
+        ns_runtime::wait_for_process_mount(pid, &runtime_paths.mount_dir, Duration::from_secs(5))?;
+    if !ok {
+        bail!(
+            "fuse server pid={} did not mount {} within timeout",
+            pid,
+            runtime_paths.mount_dir.display()
+        );
+    }
+    Ok(())
+}
+
 fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
     if let Some(code) = status.code() {
         return code;
@@ -209,13 +236,4 @@ fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
         }
     }
     1
-}
-
-fn make_run_mountpoint() -> Result<PathBuf> {
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .context("system clock is before unix epoch")?
-        .as_nanos();
-    Ok(PathBuf::from(format!("/tmp/cowjail-run-{pid}-{nanos}")))
 }

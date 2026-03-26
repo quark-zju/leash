@@ -393,6 +393,45 @@ fn ns_runtime_open_namespace_handles_from_paths() {
 }
 
 #[test]
+fn ns_runtime_reads_fuse_pid_file() {
+    let temp = tempdir().expect("tempdir");
+    let mut layout = jail::layout_from_home(temp.path());
+    layout.runtime_root = temp.path().join("run");
+    let jail_paths = jail::jail_paths_in(&layout, "demo");
+    let runtime_paths = ns_runtime::ensure_runtime_dir(&jail_paths).expect("ensure runtime");
+
+    assert!(
+        ns_runtime::read_fuse_pid(&runtime_paths)
+            .expect("read missing pid")
+            .is_none()
+    );
+    fs::write(&runtime_paths.fuse_pid_path, b"12345\n").expect("write pid");
+    assert_eq!(
+        ns_runtime::read_fuse_pid(&runtime_paths).expect("read pid"),
+        Some(12345)
+    );
+}
+
+#[test]
+fn ns_runtime_mountinfo_parser_handles_escaped_mountpoints() {
+    let raw = "\
+40 30 0:35 / /run/cowjail/demo/mount rw,nosuid - fuse.cowjail cowjail rw\n\
+41 30 0:36 / /run/cowjail/demo/space\\040path rw,nosuid - fuse.cowjail cowjail rw\n";
+    assert!(ns_runtime::mountinfo_has_mountpoint_for_test(
+        raw,
+        Path::new("/run/cowjail/demo/mount")
+    ));
+    assert!(ns_runtime::mountinfo_has_mountpoint_for_test(
+        raw,
+        Path::new("/run/cowjail/demo/space path")
+    ));
+    assert!(!ns_runtime::mountinfo_has_mountpoint_for_test(
+        raw,
+        Path::new("/run/cowjail/demo/missing")
+    ));
+}
+
+#[test]
 fn flush_dry_run_does_not_mark() {
     let path = temp_record_path("dry-run");
     let writer = record::Writer::open_append(&path).expect("writer open");

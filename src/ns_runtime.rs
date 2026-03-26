@@ -3,6 +3,7 @@ use fs_err as fs;
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::jail::JailPaths;
 
@@ -237,12 +238,110 @@ pub(crate) fn remove_runtime(jail: &JailPaths) -> Result<()> {
     }
 }
 
+pub(crate) fn read_fuse_pid(paths: &NsRuntimePaths) -> Result<Option<u32>> {
+    let raw = match fs::read_to_string(&paths.fuse_pid_path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to read fuse pid file {}",
+                    paths.fuse_pid_path.display()
+                )
+            });
+        }
+    };
+    let pid = raw
+        .trim()
+        .parse::<u32>()
+        .with_context(|| format!("invalid pid content in {}", paths.fuse_pid_path.display()))?;
+    Ok(Some(pid))
+}
+
+pub(crate) fn process_has_mount(pid: u32, mountpoint: &Path) -> Result<bool> {
+    let path = PathBuf::from(format!("/proc/{pid}/mountinfo"));
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to read mountinfo from {}", path.display()));
+        }
+    };
+    Ok(mountinfo_has_mountpoint(&raw, mountpoint))
+}
+
+pub(crate) fn wait_for_process_mount(
+    pid: u32,
+    mountpoint: &Path,
+    timeout: Duration,
+) -> Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if process_has_mount(pid, mountpoint)? {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn exists_file(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err).with_context(|| format!("failed to inspect {}", path.display())),
     }
+}
+
+fn mountinfo_has_mountpoint(raw: &str, mountpoint: &Path) -> bool {
+    let Some(target) = mountpoint.to_str() else {
+        return false;
+    };
+    for line in raw.lines() {
+        let mut fields = line.split_whitespace();
+        let _id = fields.next();
+        let _parent = fields.next();
+        let _major_minor = fields.next();
+        let _root = fields.next();
+        let Some(enc_mountpoint) = fields.next() else {
+            continue;
+        };
+        let parsed = decode_mountinfo_path(enc_mountpoint);
+        if parsed == target {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+pub(crate) fn mountinfo_has_mountpoint_for_test(raw: &str, mountpoint: &Path) -> bool {
+    mountinfo_has_mountpoint(raw, mountpoint)
+}
+
+fn decode_mountinfo_path(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() {
+            let d0 = bytes[i + 1];
+            let d1 = bytes[i + 2];
+            let d2 = bytes[i + 3];
+            if d0.is_ascii_digit() && d1.is_ascii_digit() && d2.is_ascii_digit() {
+                let v = (d0 - b'0') * 64 + (d1 - b'0') * 8 + (d2 - b'0');
+                out.push(v as char);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }
 
 fn reset_to_skeleton(paths: &NsRuntimePaths) -> Result<()> {
