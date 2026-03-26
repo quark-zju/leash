@@ -111,7 +111,7 @@ cargo test
 
 ## End-to-End Smoke Script
 
-A manual smoke test script is provided at `docs/e2e_smoke.sh`.
+A manual smoke test script is provided at `docs/e2e_smoke.py`.
 
 ## License
 
