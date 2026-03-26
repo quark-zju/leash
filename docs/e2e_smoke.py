@@ -11,7 +11,22 @@ import time
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-WORK_DIR = Path(tempfile.mkdtemp(prefix="cowjail-e2e-", dir="/tmp"))
+
+
+def init_work_dir() -> Path:
+    configured = os.environ.get("COWJAIL_E2E_WORK_ROOT")
+    if configured:
+        base = Path(configured)
+    else:
+        base = ROOT_DIR / ".e2e-work"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix="cowjail-e2e-", dir=str(base)))
+    except OSError:
+        return Path(tempfile.mkdtemp(prefix="cowjail-e2e-", dir="/tmp"))
+
+
+WORK_DIR = init_work_dir()
 MOUNT_DIR = WORK_DIR / "mnt"
 RECORD_PATH = WORK_DIR / "record.cjr"
 PROFILE_PATH = WORK_DIR / "profile"
@@ -29,6 +44,7 @@ RUN_COWJAIL = [
 ]
 
 mount_proc: subprocess.Popen[str] | None = None
+suid_copy_path: Path | None = None
 
 
 def run(cmd: list[str], *, stdout=None) -> subprocess.CompletedProcess[str]:
@@ -45,6 +61,11 @@ def cleanup() -> None:
         except subprocess.TimeoutExpired:
             mount_proc.kill()
             mount_proc.wait(timeout=2)
+    if suid_copy_path is not None:
+        try:
+            suid_copy_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     shutil.rmtree(WORK_DIR, ignore_errors=True)
 
 
@@ -53,7 +74,7 @@ def fail(message: str) -> "NoReturn":
     raise SystemExit(1)
 
 
-def resolve_built_binary_path() -> Path:
+def resolve_target_directory() -> Path:
     metadata = run(
         [
             "cargo",
@@ -66,7 +87,11 @@ def resolve_built_binary_path() -> Path:
         ],
         stdout=subprocess.PIPE,
     )
-    target_dir = Path(json.loads(metadata.stdout)["target_directory"])
+    return Path(json.loads(metadata.stdout)["target_directory"])
+
+
+def resolve_built_binary_path() -> Path:
+    target_dir = resolve_target_directory()
     candidates = [
         target_dir / "debug" / "cowjail",
         ROOT_DIR / "target" / "debug" / "cowjail",
@@ -127,9 +152,14 @@ def run_low_level_smoke() -> None:
 
 
 def prepare_setuid_binary() -> Path | None:
+    global suid_copy_path
     built = resolve_built_binary_path()
-    suid_copy = WORK_DIR / "cowjail-suid"
+    target_dir = resolve_target_directory()
+    suid_dir = target_dir / "e2e-suid"
+    suid_dir.mkdir(parents=True, exist_ok=True)
+    suid_copy = suid_dir / f"cowjail-suid-{os.getpid()}"
     shutil.copy2(built, suid_copy)
+    suid_copy_path = suid_copy
 
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         suid_copy.chmod(suid_copy.stat().st_mode | 0o4000)
@@ -181,7 +211,7 @@ def run_high_level_smoke() -> bool:
         if "requires root euid" in merged:
             print(
                 "[high] SKIP: setuid binary did not gain root euid "
-                "(likely nosuid mount on temp dir)"
+                "(likely nosuid mount on work dir)"
             )
             subprocess.run(
                 [str(suid_bin), "rm", "--name", HIGH_LEVEL_JAIL],
