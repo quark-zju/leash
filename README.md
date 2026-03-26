@@ -2,8 +2,6 @@
 
 `cowjail` is a Linux filesystem safety layer for untrusted programs and coding agents.
 
-`cowjail` 是一个 Linux 上的文件系统防护层，面向不可信程序和 coding agent。
-
 It combines:
 
 - profile-based filesystem visibility and write policy (`ro` / `rw` / `deny`)
@@ -13,9 +11,23 @@ It combines:
 
 Out of scope:
 
-- network isolation
-- full process/container sandboxing
-- cross-platform support (Linux only)
+- network/container isolation
+- non-Linux support
+
+---
+
+`cowjail` 是一个 Linux 文件系统防护层，面向不可信程序和 AI 编码工具。
+
+包含：
+
+- 配置文件控制读写策略（`ro` / `rw` / `deny`）
+- 写隔离（写操作先记录，仅在隔离区可见，后可选是否真正写回真实系统）
+- IPC 隔离，防止如 `systemd-run` 逃过文件系统隔离
+
+不包含：
+
+- 网络/容器隔离
+- 非 Linux 系统支持
 
 ## Usage
 
@@ -63,7 +75,7 @@ cowjail flush --profile ~/my-profile                 # apply pending changes
 Similar to `ip netns`, `cowjail` supports naming the jails:
 
 ```bash
-cowjail add --name agent --profile default           # create a named jail
+cowjail add --name agent --profile default           # assign a name to a jail
 cowjail run --name agent -- your-command arg1 arg2   # run in the jail
 cowjail run --name agent -- another-command args     # run in the same jail
 cowjail flush --name agent --dry-run                 # review pending changes
