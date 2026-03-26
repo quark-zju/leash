@@ -234,25 +234,62 @@ fn parse_pathbuf(raw: &std::ffi::OsStr) -> Result<PathBuf, Infallible> {
 
 pub fn help_text(topic: HelpTopic) -> &'static str {
     match topic {
-        HelpTopic::Root => {
-            "cowjail\n\nUSAGE:\n  cowjail add --name <name> [--profile <profile>]\n  cowjail list\n  cowjail rm [--name <name> | --profile <profile>]\n  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n\nRun `cowjail <subcommand> --help` for details."
-        }
-        HelpTopic::Add => {
-            "cowjail add\n\nUSAGE:\n  cowjail add --name <name> [--profile <profile>]\n\nOPTIONS:\n  --name <name>         Explicit jail name (required)\n  --profile <profile>   Profile path. Default: default"
-        }
-        HelpTopic::List => "cowjail list\n\nUSAGE:\n  cowjail list",
-        HelpTopic::Rm => {
-            "cowjail rm\n\nUSAGE:\n  cowjail rm [--name <name> | --profile <profile>]\n\nOPTIONS:\n  --name <name>         Remove an explicit or auto-generated jail by name\n  --profile <profile>   Remove the jail selected by profile-derived identity"
-        }
-        HelpTopic::Run => {
-            "cowjail run\n\nUSAGE:\n  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n\nOPTIONS:\n  --name <name>         Reuse or create an explicit jail name\n  --profile <profile>   Select/create the profile-derived jail identity\n  -v, --verbose         Print progress logs"
-        }
-        HelpTopic::Mount => {
-            "cowjail mount\n\nUSAGE:\n  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n\nOPTIONS:\n  --profile <profile>   Profile path (required)\n  --record <record>     Record output path (required)\n  -v, --verbose         Print progress logs"
-        }
-        HelpTopic::Flush => {
-            "cowjail flush\n\nUSAGE:\n  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n\nOPTIONS:\n  --name <name>         Flush an explicit or auto-generated jail by name\n  --profile <profile>   Flush the jail selected by profile-derived identity\n  --dry-run             Preview without applying or marking flushed\n  -v, --verbose         Print progress logs"
-        }
+        HelpTopic::Root => concat!(
+            "cowjail\n\n",
+            "USAGE:\n",
+            "  cowjail add --name <name> [--profile <profile>]\n",
+            "  cowjail list\n",
+            "  cowjail rm [--name <name> | --profile <profile>]\n",
+            "  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n",
+            "  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n",
+            "  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n\n",
+            "Run `cowjail <subcommand> --help` for details.",
+        ),
+        HelpTopic::Add => concat!(
+            "cowjail add\n\n",
+            "USAGE:\n",
+            "  cowjail add --name <name> [--profile <profile>]\n\n",
+            "OPTIONS:\n",
+            "  --name <name>         Explicit jail name (required)\n",
+            "  --profile <profile>   Profile path. Default: default",
+        ),
+        HelpTopic::List => concat!("cowjail list\n\n", "USAGE:\n", "  cowjail list"),
+        HelpTopic::Rm => concat!(
+            "cowjail rm\n\n",
+            "USAGE:\n",
+            "  cowjail rm [--name <name> | --profile <profile>]\n\n",
+            "OPTIONS:\n",
+            "  --name <name>         Remove an explicit or auto-generated jail by name\n",
+            "  --profile <profile>   Remove the jail selected by profile-derived identity",
+        ),
+        HelpTopic::Run => concat!(
+            "cowjail run\n\n",
+            "USAGE:\n",
+            "  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n\n",
+            "OPTIONS:\n",
+            "  --name <name>         Reuse or create an explicit jail name\n",
+            "  --profile <profile>   Select/create the profile-derived jail identity\n",
+            "  -v, --verbose         Print progress logs",
+        ),
+        HelpTopic::Mount => concat!(
+            "cowjail mount\n\n",
+            "USAGE:\n",
+            "  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n\n",
+            "OPTIONS:\n",
+            "  --profile <profile>   Profile path (required)\n",
+            "  --record <record>     Record output path (required)\n",
+            "  -v, --verbose         Print progress logs",
+        ),
+        HelpTopic::Flush => concat!(
+            "cowjail flush\n\n",
+            "USAGE:\n",
+            "  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n\n",
+            "OPTIONS:\n",
+            "  --name <name>         Flush an explicit or auto-generated jail by name\n",
+            "  --profile <profile>   Flush the jail selected by profile-derived identity\n",
+            "  --dry-run             Preview without applying or marking flushed\n",
+            "  -v, --verbose         Print progress logs",
+        ),
     }
 }
 

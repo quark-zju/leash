@@ -18,10 +18,13 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
     let euid = unsafe { libc::geteuid() };
     if euid != 0 {
         bail!(
-            "cowjail run requires root euid (current euid={euid}).\n\
-             Example setuid setup:\n\
-             sudo chown root:root $(command -v cowjail)\n\
-             sudo chmod u+s $(command -v cowjail)"
+            concat!(
+                "cowjail run requires root euid (current euid={euid}).\n",
+                "Example setuid setup:\n",
+                "sudo chown root:root $(command -v cowjail)\n",
+                "sudo chmod u+s $(command -v cowjail)"
+            ),
+            euid = euid
         );
     }
 
