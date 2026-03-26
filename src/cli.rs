@@ -9,13 +9,14 @@ pub const DEFAULT_PROFILE: &str = "default";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Help(HelpTopic),
+    Help { topic: HelpTopic, verbose: bool },
     Add(AddCommand),
     List(ListCommand),
     Rm(RmCommand),
     Run(RunCommand),
-    Mount(MountCommand),
     Flush(FlushCommand),
+    LowLevelMount(MountCommand),
+    LowLevelFlush(LowLevelFlushCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,8 +26,9 @@ pub enum HelpTopic {
     List,
     Rm,
     Run,
-    Mount,
     Flush,
+    LowLevelMount,
+    LowLevelFlush,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,21 +71,36 @@ pub struct FlushCommand {
     pub verbose: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LowLevelFlushCommand {
+    pub record: PathBuf,
+    pub profile: Option<String>,
+    pub dry_run: bool,
+    pub verbose: bool,
+}
+
 pub fn parse_from<I>(argv: I) -> Result<Command>
 where
     I: IntoIterator<Item = OsString>,
 {
     let raw: Vec<OsString> = argv.into_iter().collect();
     if raw.is_empty() {
-        return Ok(Command::Help(HelpTopic::Root));
+        return Ok(Command::Help {
+            topic: HelpTopic::Root,
+            verbose: false,
+        });
     }
     if raw[0] == "-h" || raw[0] == "--help" {
-        return Ok(Command::Help(HelpTopic::Root));
+        let verbose = raw.iter().any(|arg| arg == "-v" || arg == "--verbose");
+        return Ok(Command::Help {
+            topic: HelpTopic::Root,
+            verbose,
+        });
     }
 
     let mut args = Arguments::from_vec(raw);
     let subcmd = args.subcommand()?.ok_or_else(|| {
-        anyhow::anyhow!("missing subcommand (expected: add, list, rm, run, mount, flush)")
+        anyhow::anyhow!("missing subcommand (expected: add, list, rm, run, flush)")
     })?;
 
     let command = match subcmd.as_str() {
@@ -91,8 +108,9 @@ where
         "list" => parse_list(args)?,
         "rm" => parse_rm(args)?,
         "run" => parse_run(args)?,
-        "mount" => parse_mount(args)?,
         "flush" => parse_flush(args)?,
+        "_mount" => parse_mount(args)?,
+        "_flush" => parse_low_level_flush(args)?,
         other => bail!("unknown subcommand: {other}"),
     };
 
@@ -106,7 +124,10 @@ pub fn parse_env() -> Result<Command> {
 
 fn parse_run(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
-        return Ok(Command::Help(HelpTopic::Run));
+        return Ok(Command::Help {
+            topic: HelpTopic::Run,
+            verbose: false,
+        });
     }
     let verbose = args.contains(["-v", "--verbose"]);
     let name = args.opt_value_from_str("--name")?;
@@ -132,7 +153,10 @@ fn parse_run(mut args: Arguments) -> Result<Command> {
 
 fn parse_add(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
-        return Ok(Command::Help(HelpTopic::Add));
+        return Ok(Command::Help {
+            topic: HelpTopic::Add,
+            verbose: false,
+        });
     }
     let name = args
         .value_from_str("--name")
@@ -147,7 +171,10 @@ fn parse_add(mut args: Arguments) -> Result<Command> {
 
 fn parse_list(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
-        return Ok(Command::Help(HelpTopic::List));
+        return Ok(Command::Help {
+            topic: HelpTopic::List,
+            verbose: false,
+        });
     }
     let extra = args.finish();
     if !extra.is_empty() {
@@ -158,7 +185,10 @@ fn parse_list(mut args: Arguments) -> Result<Command> {
 
 fn parse_rm(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
-        return Ok(Command::Help(HelpTopic::Rm));
+        return Ok(Command::Help {
+            topic: HelpTopic::Rm,
+            verbose: false,
+        });
     }
     let name = args.opt_value_from_str("--name")?;
     let profile = args.opt_value_from_str("--profile")?;
@@ -177,7 +207,10 @@ fn parse_rm(mut args: Arguments) -> Result<Command> {
 
 fn parse_mount(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
-        return Ok(Command::Help(HelpTopic::Mount));
+        return Ok(Command::Help {
+            topic: HelpTopic::LowLevelMount,
+            verbose: true,
+        });
     }
     let verbose = args.contains(["-v", "--verbose"]);
     let profile = args
@@ -195,7 +228,7 @@ fn parse_mount(mut args: Arguments) -> Result<Command> {
         bail!("mount got unexpected trailing arguments");
     }
 
-    Ok(Command::Mount(MountCommand {
+    Ok(Command::LowLevelMount(MountCommand {
         profile,
         record,
         verbose,
@@ -205,7 +238,10 @@ fn parse_mount(mut args: Arguments) -> Result<Command> {
 
 fn parse_flush(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
-        return Ok(Command::Help(HelpTopic::Flush));
+        return Ok(Command::Help {
+            topic: HelpTopic::Flush,
+            verbose: false,
+        });
     }
     let verbose = args.contains(["-v", "--verbose"]);
     let dry_run = args.contains("--dry-run");
@@ -228,12 +264,51 @@ fn parse_flush(mut args: Arguments) -> Result<Command> {
     }))
 }
 
+fn parse_low_level_flush(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(Command::Help {
+            topic: HelpTopic::LowLevelFlush,
+            verbose: true,
+        });
+    }
+    let verbose = args.contains(["-v", "--verbose"]);
+    let dry_run = args.contains("--dry-run");
+    let profile = args.opt_value_from_str("--profile")?;
+    let record = args
+        .value_from_os_str("--record", parse_pathbuf)
+        .context("_flush requires --record <record_path>")?;
+
+    let extra = args.finish();
+    if !extra.is_empty() {
+        bail!("_flush got unexpected trailing arguments");
+    }
+
+    Ok(Command::LowLevelFlush(LowLevelFlushCommand {
+        record,
+        profile,
+        dry_run,
+        verbose,
+    }))
+}
+
 fn parse_pathbuf(raw: &std::ffi::OsStr) -> Result<PathBuf, Infallible> {
     Ok(PathBuf::from(raw))
 }
 
-pub fn help_text(topic: HelpTopic) -> &'static str {
+pub fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
     match topic {
+        HelpTopic::Root if verbose => concat!(
+            "cowjail\n\n",
+            "USAGE:\n",
+            "  cowjail add --name <name> [--profile <profile>]\n",
+            "  cowjail list\n",
+            "  cowjail rm [--name <name> | --profile <profile>]\n",
+            "  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n",
+            "  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n",
+            "  cowjail _mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n",
+            "  cowjail _flush --record <record_path> [--profile <profile>] [--dry-run] [-v|--verbose]\n\n",
+            "Run `cowjail <subcommand> --help` for details.",
+        ),
         HelpTopic::Root => concat!(
             "cowjail\n\n",
             "USAGE:\n",
@@ -241,8 +316,8 @@ pub fn help_text(topic: HelpTopic) -> &'static str {
             "  cowjail list\n",
             "  cowjail rm [--name <name> | --profile <profile>]\n",
             "  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n",
-            "  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n",
             "  cowjail flush [--name <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n\n",
+            "Run `cowjail --help -v` to list low-level debugging commands.\n",
             "Run `cowjail <subcommand> --help` for details.",
         ),
         HelpTopic::Add => concat!(
@@ -271,10 +346,10 @@ pub fn help_text(topic: HelpTopic) -> &'static str {
             "  --profile <profile>   Select/create the profile-derived jail identity\n",
             "  -v, --verbose         Print progress logs",
         ),
-        HelpTopic::Mount => concat!(
-            "cowjail mount\n\n",
+        HelpTopic::LowLevelMount => concat!(
+            "cowjail _mount\n\n",
             "USAGE:\n",
-            "  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n\n",
+            "  cowjail _mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n\n",
             "OPTIONS:\n",
             "  --profile <profile>   Profile path (required)\n",
             "  --record <record>     Record output path (required)\n",
@@ -287,6 +362,16 @@ pub fn help_text(topic: HelpTopic) -> &'static str {
             "OPTIONS:\n",
             "  --name <name>         Flush an explicit or auto-generated jail by name\n",
             "  --profile <profile>   Flush the jail selected by profile-derived identity\n",
+            "  --dry-run             Preview without applying or marking flushed\n",
+            "  -v, --verbose         Print progress logs",
+        ),
+        HelpTopic::LowLevelFlush => concat!(
+            "cowjail _flush\n\n",
+            "USAGE:\n",
+            "  cowjail _flush --record <record_path> [--profile <profile>] [--dry-run] [-v|--verbose]\n\n",
+            "OPTIONS:\n",
+            "  --record <record>     Record path (required)\n",
+            "  --profile <profile>   Replay policy profile override\n",
             "  --dry-run             Preview without applying or marking flushed\n",
             "  -v, --verbose         Print progress logs",
         ),
@@ -318,8 +403,8 @@ mod tests {
 
     #[test]
     fn parse_mount_requires_all_flags() {
-        let err = parse_from(os(&["mount", "./mnt"]))
-            .expect_err("mount without required flags should fail");
+        let err = parse_from(os(&["_mount", "./mnt"]))
+            .expect_err("_mount without required flags should fail");
         assert!(err.to_string().contains("mount requires --profile"));
     }
 
@@ -349,13 +434,25 @@ mod tests {
     #[test]
     fn parse_root_help_flag() {
         let cmd = parse_from(os(&["--help"])).expect("help should parse");
-        assert_eq!(cmd, Command::Help(HelpTopic::Root));
+        assert_eq!(
+            cmd,
+            Command::Help {
+                topic: HelpTopic::Root,
+                verbose: false,
+            }
+        );
     }
 
     #[test]
     fn parse_subcommand_help_flag() {
         let cmd = parse_from(os(&["run", "--help"])).expect("run help should parse");
-        assert_eq!(cmd, Command::Help(HelpTopic::Run));
+        assert_eq!(
+            cmd,
+            Command::Help {
+                topic: HelpTopic::Run,
+                verbose: false,
+            }
+        );
     }
 
     #[test]
@@ -392,5 +489,47 @@ mod tests {
         let err = parse_from(os(&["flush", "--name", "a", "--profile", "b"]))
             .expect_err("flush with two selectors should fail");
         assert!(err.to_string().contains("only one of"));
+    }
+
+    #[test]
+    fn parse_root_help_can_list_hidden_commands() {
+        let cmd = parse_from(os(&["--help", "-v"])).expect("verbose help should parse");
+        assert_eq!(
+            cmd,
+            Command::Help {
+                topic: HelpTopic::Root,
+                verbose: true,
+            }
+        );
+        let text = help_text(HelpTopic::Root, true);
+        assert!(text.contains("cowjail _mount"));
+        assert!(text.contains("cowjail _flush"));
+    }
+
+    #[test]
+    fn parse_low_level_flush_requires_record() {
+        let err = parse_from(os(&["_flush"])).expect_err("_flush without record should fail");
+        assert!(err.to_string().contains("_flush requires --record"));
+    }
+
+    #[test]
+    fn parse_low_level_help_topics() {
+        let mount_help = parse_from(os(&["_mount", "--help"])).expect("_mount help should parse");
+        assert_eq!(
+            mount_help,
+            Command::Help {
+                topic: HelpTopic::LowLevelMount,
+                verbose: true,
+            }
+        );
+
+        let flush_help = parse_from(os(&["_flush", "--help"])).expect("_flush help should parse");
+        assert_eq!(
+            flush_help,
+            Command::Help {
+                topic: HelpTopic::LowLevelFlush,
+                verbose: true,
+            }
+        );
     }
 }

@@ -3,7 +3,7 @@ use fs_err as fs;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::cli::FlushCommand;
+use crate::cli::{FlushCommand, LowLevelFlushCommand};
 use crate::jail;
 use crate::op;
 use crate::profile;
@@ -59,6 +59,37 @@ pub(crate) fn flush_command(flush: FlushCommand) -> Result<()> {
     println!(
         "record: {} | total={} pending={} skipped={} optimized={} blocked={} marked={} dry_run={}",
         record_path.display(),
+        stats.total,
+        stats.pending,
+        stats.skipped,
+        stats.optimized,
+        stats.blocked,
+        stats.marked,
+        flush.dry_run
+    );
+    Ok(())
+}
+
+pub(crate) fn low_level_flush_command(flush: LowLevelFlushCommand) -> Result<()> {
+    let stats = flush_record(&flush.record, flush.dry_run, flush.profile.as_deref())
+        .with_context(|| format!("failed to flush record file {}", flush.record.display()))?;
+    vlog(
+        flush.verbose,
+        format!(
+            "_flush: record={} total={} pending={} skipped={} optimized={} blocked={} marked={} dry_run={}",
+            flush.record.display(),
+            stats.total,
+            stats.pending,
+            stats.skipped,
+            stats.optimized,
+            stats.blocked,
+            stats.marked,
+            flush.dry_run
+        ),
+    );
+    println!(
+        "record: {} | total={} pending={} skipped={} optimized={} blocked={} marked={} dry_run={}",
+        flush.record.display(),
         stats.total,
         stats.pending,
         stats.skipped,

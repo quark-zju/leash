@@ -25,8 +25,8 @@ fn main() {
 
 fn try_main() -> Result<i32> {
     match cli::parse_env()? {
-        Command::Help(topic) => {
-            println!("{}", cli::help_text(topic));
+        Command::Help { topic, verbose } => {
+            println!("{}", cli::help_text(topic, verbose));
             Ok(0)
         }
         Command::Add(add) => {
@@ -42,12 +42,16 @@ fn try_main() -> Result<i32> {
             Ok(0)
         }
         Command::Run(run) => cmd_run::run_command(run).context("run subcommand failed"),
-        Command::Mount(mount) => {
-            cmd_mount::mount_command(mount).context("mount subcommand failed")?;
+        Command::LowLevelMount(mount) => {
+            cmd_mount::mount_command(mount).context("_mount subcommand failed")?;
             Ok(0)
         }
         Command::Flush(flush) => {
             cmd_flush::flush_command(flush).context("flush subcommand failed")?;
+            Ok(0)
+        }
+        Command::LowLevelFlush(flush) => {
+            cmd_flush::low_level_flush_command(flush).context("_flush subcommand failed")?;
             Ok(0)
         }
     }
