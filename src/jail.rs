@@ -83,20 +83,8 @@ pub(crate) fn is_generated_name(name: &str) -> bool {
     name.starts_with(AUTO_NAME_PREFIX)
 }
 
-pub(crate) fn config_root() -> Result<PathBuf> {
-    Ok(layout()?.config_root)
-}
-
-pub(crate) fn profiles_dir() -> Result<PathBuf> {
-    Ok(config_root()?.join("profiles"))
-}
-
 pub(crate) fn profile_definition_path(name: &str) -> Result<PathBuf> {
     Ok(profile_definition_path_in(&layout()?, name))
-}
-
-pub(crate) fn state_root() -> Result<PathBuf> {
-    Ok(layout()?.state_root)
 }
 
 pub(crate) fn runtime_root() -> PathBuf {

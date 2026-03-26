@@ -1,9 +1,7 @@
 use anyhow::{Context, Result};
 use fs_err as fs;
 use serde::{Deserialize, Serialize};
-use std::hash::Hasher;
 use std::path::{Path, PathBuf};
-use twox_hash::XxHash64;
 
 use crate::{cli, jail, profile, record};
 
@@ -80,71 +78,12 @@ pub(crate) fn parse_profile_from_normalized_source(source: &str) -> Result<profi
         .context("failed to parse normalized profile source from record")
 }
 
-pub(crate) fn default_record_dir() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").ok_or_else(|| {
-        anyhow::anyhow!("HOME is not set; cannot resolve default record directory")
-    })?;
-    Ok(default_record_dir_from_home(&PathBuf::from(home)))
-}
-
-pub(crate) fn default_record_path(normalized_profile: &str, cwd: &Path) -> Result<PathBuf> {
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .context("system clock is before unix epoch")?
-        .as_millis();
-    let context_hash = record_context_hash(normalized_profile, cwd);
-    Ok(default_record_dir()?.join(format!("{context_hash:016x}-{millis}.cjr")))
-}
-
 pub(crate) fn ensure_record_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create record directory: {}", parent.display()))?;
     }
     Ok(())
-}
-
-pub(crate) fn newest_record_path() -> Result<Option<PathBuf>> {
-    let dir = default_record_dir()?;
-    if !dir.exists() {
-        return Ok(None);
-    }
-
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    for entry in fs::read_dir(&dir)
-        .with_context(|| format!("failed to list record directory: {}", dir.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("failed to read entry under {}", dir.display()))?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("cjr") {
-            continue;
-        }
-        let metadata = entry
-            .metadata()
-            .with_context(|| format!("failed to stat record file: {}", path.display()))?;
-        if !metadata.is_file() {
-            continue;
-        }
-        let modified = metadata
-            .modified()
-            .with_context(|| format!("failed to get mtime: {}", path.display()))?;
-
-        match &newest {
-            Some((best, _)) if modified <= *best => {}
-            _ => newest = Some((modified, path)),
-        }
-    }
-
-    Ok(newest.map(|(_, path)| path))
-}
-
-fn record_context_hash(normalized_profile: &str, cwd: &Path) -> u64 {
-    let mut hasher = XxHash64::default();
-    hasher.write(cwd.as_os_str().as_encoded_bytes());
-    hasher.write_u8(0);
-    hasher.write(normalized_profile.as_bytes());
-    hasher.finish()
 }
 
 pub(crate) fn default_record_dir_from_home(home: &Path) -> PathBuf {
