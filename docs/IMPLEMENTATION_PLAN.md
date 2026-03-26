@@ -45,6 +45,30 @@ Public commands should stay small and high-level:
 - `cowjail rm [--name <name> | --profile <profile>]`
 - `cowjail list`
 
+### Jail Name Rules
+
+Explicit jail names should be restricted to a simple portable character set:
+
+- ASCII letters
+- ASCII digits
+- `.`
+- `_`
+- `-`
+
+Additional constraints:
+
+- must not be empty
+- must not be `.` or `..`
+- must not contain `/`
+
+Implementation should use a small hand-written validator rather than a regex dependency.
+
+The prefix `unnamed-` is reserved for auto-generated jail identities:
+
+- explicit creation via `add --name unnamed-...` should be rejected
+- selecting an already-existing jail by name may still allow `unnamed-...`
+- this keeps internal auto-generated names distinct without blocking later direct inspection or removal
+
 Each named jail should have durable metadata under a stable runtime path plus a durable record path.
 
 Suggested split:
@@ -201,10 +225,15 @@ Auto-generated jails should be clearly distinguishable from user-named jails.
 
 Suggested options:
 
-- a reserved prefix such as `auto-<hash>`
+- a reserved prefix such as `unnamed-<hash>`
 - or a metadata flag that marks the jail as generated
 
-The prefix is useful for `list`; the metadata flag is useful for future UX.
+The concrete rule for this plan is:
+
+- auto-generated jail names use `unnamed-<hash>`
+- the hash input is the expanded profile content, including cwd expansion
+
+The prefix is useful for `list`; a metadata flag may still be useful later for richer UX.
 
 ### Low-Level Commands
 
