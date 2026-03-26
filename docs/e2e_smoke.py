@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import atexit
+import json
 import os
 import shutil
 import subprocess
@@ -52,6 +53,33 @@ def fail(message: str) -> "NoReturn":
     raise SystemExit(1)
 
 
+def resolve_built_binary_path() -> Path:
+    metadata = run(
+        [
+            "cargo",
+            "metadata",
+            "--manifest-path",
+            str(ROOT_DIR / "Cargo.toml"),
+            "--format-version",
+            "1",
+            "--no-deps",
+        ],
+        stdout=subprocess.PIPE,
+    )
+    target_dir = Path(json.loads(metadata.stdout)["target_directory"])
+    candidates = [
+        target_dir / "debug" / "cowjail",
+        ROOT_DIR / "target" / "debug" / "cowjail",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    fail(
+        "unable to locate built cowjail binary; looked at: "
+        + ", ".join(str(p) for p in candidates)
+    )
+
+
 def prepare_inputs() -> None:
     MOUNT_DIR.mkdir(parents=True, exist_ok=True)
     TARGET_PATH.write_text("before\n", encoding="utf-8")
@@ -99,7 +127,7 @@ def run_low_level_smoke() -> None:
 
 
 def prepare_setuid_binary() -> Path | None:
-    built = ROOT_DIR / "target" / "debug" / "cowjail"
+    built = resolve_built_binary_path()
     suid_copy = WORK_DIR / "cowjail-suid"
     shutil.copy2(built, suid_copy)
 
