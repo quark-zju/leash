@@ -319,6 +319,29 @@ This preserves the current debug-oriented power without forcing the main UX to e
 
 ## Recommended Implementation Order
 
+## Progress Snapshot
+
+Completed:
+
+- [x] Phase 1 (`1`..`5`) jail identity, selector, and stable record/profile binding
+- [x] Phase 2 step `6` namespace runtime directory and named handle paths under `/run/cowjail`
+- [x] Phase 2 step `7` enter logic (`setns`) in run execution path
+- [x] Phase 3 step `10` IPC namespace isolation baseline
+- [x] Phase 3 step `11` privilege drop path with `setgroups/setgid/setuid/PR_SET_NO_NEW_PRIVS`
+- [x] Phase 5 step `17` public `flush` uses selector-based UX
+- [x] Phase 5 step `18` hidden low-level `_mount` / `_flush` commands
+
+In progress:
+
+- [ ] Phase 2 step `8` move FUSE mount lifecycle into named namespace and runtime mountpoint
+- [ ] Phase 2 step `9` finish high-level run path on top of persistent runtime server
+
+Not started:
+
+- [ ] Phase 3 step `12` security boundary documentation update in README
+- [ ] Phase 4 (`13`..`16`) record-to-overlay replay and reboot-style recovery tests
+- [ ] Phase 5 step `19` README workflow rewrite for named runtime reuse
+
 ### Phase 1: Jail identity and selector model
 
 1. `state: add named jail metadata model`
