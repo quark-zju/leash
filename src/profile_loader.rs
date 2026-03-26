@@ -5,7 +5,7 @@ use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use twox_hash::XxHash64;
 
-use crate::{cli, profile, record};
+use crate::{cli, jail, profile, record};
 
 const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
 . rw
@@ -49,17 +49,18 @@ pub(crate) fn append_profile_header(
 }
 
 pub(crate) fn load_profile(profile_path: &Path) -> Result<LoadedProfile> {
-    let cwd = std::env::current_dir().context("failed to get current directory")?;
+    let cwd = jail::current_pwd()?;
     let source = if profile_path == Path::new(cli::DEFAULT_PROFILE) {
         BUILTIN_DEFAULT_PROFILE_SOURCE.to_string()
     } else {
-        fs::read_to_string(profile_path)
-            .with_context(|| format!("failed to read profile file: {}", profile_path.display()))?
+        let resolved = resolve_profile_path(profile_path)?;
+        fs::read_to_string(&resolved)
+            .with_context(|| format!("failed to read profile file: {}", resolved.display()))?
     };
     let source_name = if profile_path == Path::new(cli::DEFAULT_PROFILE) {
         "built-in default profile".to_string()
     } else {
-        format!("profile file: {}", profile_path.display())
+        format!("profile file: {}", resolve_profile_path(profile_path)?.display())
     };
     let profile = profile::Profile::parse(&source, &cwd)
         .with_context(|| format!("failed to parse {source_name}"))?;
@@ -140,4 +141,14 @@ fn record_context_hash(normalized_profile: &str, cwd: &Path) -> u64 {
     hasher.write_u8(0);
     hasher.write(normalized_profile.as_bytes());
     hasher.finish()
+}
+
+fn resolve_profile_path(profile_path: &Path) -> Result<PathBuf> {
+    if profile_path.is_absolute() || profile_path.components().count() > 1 {
+        return Ok(profile_path.to_path_buf());
+    }
+    let name = profile_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("profile name is not valid UTF-8"))?;
+    jail::profile_definition_path(name)
 }

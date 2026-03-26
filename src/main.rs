@@ -1,8 +1,10 @@
 mod cli;
 mod cmd_flush;
+mod cmd_jail;
 mod cmd_mount;
 mod cmd_run;
 mod cowfs;
+mod jail;
 mod op;
 mod profile;
 mod profile_loader;
@@ -25,6 +27,18 @@ fn try_main() -> Result<i32> {
     match cli::parse_env()? {
         Command::Help(topic) => {
             println!("{}", cli::help_text(topic));
+            Ok(0)
+        }
+        Command::Add(add) => {
+            cmd_jail::add_command(add).context("add subcommand failed")?;
+            Ok(0)
+        }
+        Command::List(list) => {
+            cmd_jail::list_command(list).context("list subcommand failed")?;
+            Ok(0)
+        }
+        Command::Rm(rm) => {
+            cmd_jail::rm_command(rm).context("rm subcommand failed")?;
             Ok(0)
         }
         Command::Run(run) => cmd_run::run_command(run).context("run subcommand failed"),

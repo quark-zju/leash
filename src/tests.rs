@@ -1,4 +1,4 @@
-use super::{cli, cmd_flush, op, profile, profile_loader, record};
+use super::{cli, cmd_flush, jail, op, profile, profile_loader, record};
 use fs_err as fs;
 use std::path::Path;
 use tempfile::tempdir;
@@ -23,6 +23,24 @@ fn temp_profile_path(name: &str, content: &str) -> std::path::PathBuf {
     p.push(format!("cowjail-main-{name}-{now}.profile"));
     fs::write(&p, content).expect("write profile");
     p
+}
+
+#[test]
+fn explicit_jail_name_validation_rejects_reserved_and_invalid_names() {
+    jail::validate_explicit_name("good-name_1.2").expect("valid name");
+    assert!(jail::validate_explicit_name("").is_err());
+    assert!(jail::validate_explicit_name(".").is_err());
+    assert!(jail::validate_explicit_name("..").is_err());
+    assert!(jail::validate_explicit_name("bad/name").is_err());
+    assert!(jail::validate_explicit_name("unnamed-1234").is_err());
+    assert!(jail::validate_explicit_name("white space").is_err());
+}
+
+#[test]
+fn auto_jail_name_uses_reserved_prefix() {
+    let name = jail::derive_auto_name("/tmp rw\n");
+    assert!(name.starts_with(jail::AUTO_NAME_PREFIX));
+    assert!(jail::is_generated_name(&name));
 }
 
 #[test]

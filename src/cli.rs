@@ -10,6 +10,9 @@ pub const DEFAULT_PROFILE: &str = "default";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Help(HelpTopic),
+    Add(AddCommand),
+    List(ListCommand),
+    Rm(RmCommand),
     Run(RunCommand),
     Mount(MountCommand),
     Flush(FlushCommand),
@@ -18,9 +21,27 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HelpTopic {
     Root,
+    Add,
+    List,
+    Rm,
     Run,
     Mount,
     Flush,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddCommand {
+    pub name: String,
+    pub profile: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListCommand;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RmCommand {
+    pub name: Option<String>,
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,9 +84,12 @@ where
     let mut args = Arguments::from_vec(raw);
     let subcmd = args
         .subcommand()?
-        .ok_or_else(|| anyhow::anyhow!("missing subcommand (expected: run, mount, flush)"))?;
+        .ok_or_else(|| anyhow::anyhow!("missing subcommand (expected: add, list, rm, run, mount, flush)"))?;
 
     let command = match subcmd.as_str() {
+        "add" => parse_add(args)?,
+        "list" => parse_list(args)?,
+        "rm" => parse_rm(args)?,
         "run" => parse_run(args)?,
         "mount" => parse_mount(args)?,
         "flush" => parse_flush(args)?,
@@ -103,6 +127,51 @@ fn parse_run(mut args: Arguments) -> Result<Command> {
         program,
         args: trailing,
     }))
+}
+
+fn parse_add(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(Command::Help(HelpTopic::Add));
+    }
+    let name = args
+        .value_from_str("--name")
+        .context("add requires --name <name>")?;
+    let profile = args.opt_value_from_str("--profile")?;
+    let extra = args.finish();
+    if !extra.is_empty() {
+        bail!("add got unexpected trailing arguments");
+    }
+    Ok(Command::Add(AddCommand { name, profile }))
+}
+
+fn parse_list(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(Command::Help(HelpTopic::List));
+    }
+    let extra = args.finish();
+    if !extra.is_empty() {
+        bail!("list got unexpected trailing arguments");
+    }
+    Ok(Command::List(ListCommand))
+}
+
+fn parse_rm(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(Command::Help(HelpTopic::Rm));
+    }
+    let name = args.opt_value_from_str("--name")?;
+    let profile = args.opt_value_from_str("--profile")?;
+    if name.is_some() && profile.is_some() {
+        bail!("rm accepts only one of --name <name> or --profile <profile>");
+    }
+    if name.is_none() && profile.is_none() {
+        bail!("rm requires one of --name <name> or --profile <profile>");
+    }
+    let extra = args.finish();
+    if !extra.is_empty() {
+        bail!("rm got unexpected trailing arguments");
+    }
+    Ok(Command::Rm(RmCommand { name, profile }))
 }
 
 fn parse_mount(mut args: Arguments) -> Result<Command> {
@@ -162,7 +231,16 @@ fn parse_pathbuf(raw: &std::ffi::OsStr) -> Result<PathBuf, Infallible> {
 pub fn help_text(topic: HelpTopic) -> &'static str {
     match topic {
         HelpTopic::Root => {
-            "cowjail\n\nUSAGE:\n  cowjail run [--profile <profile>] [--record <record_path>] [-v|--verbose] command ...\n  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n  cowjail flush [--record <record_path>] [--profile <profile>] [--dry-run] [-v|--verbose]\n\nRun `cowjail <subcommand> --help` for details."
+            "cowjail\n\nUSAGE:\n  cowjail add --name <name> [--profile <profile>]\n  cowjail list\n  cowjail rm [--name <name> | --profile <profile>]\n  cowjail run [--profile <profile>] [--record <record_path>] [-v|--verbose] command ...\n  cowjail mount --profile <profile> --record <record_path> [-v|--verbose] <path>\n  cowjail flush [--record <record_path>] [--profile <profile>] [--dry-run] [-v|--verbose]\n\nRun `cowjail <subcommand> --help` for details."
+        }
+        HelpTopic::Add => {
+            "cowjail add\n\nUSAGE:\n  cowjail add --name <name> [--profile <profile>]\n\nOPTIONS:\n  --name <name>         Explicit jail name (required)\n  --profile <profile>   Profile path. Default: default"
+        }
+        HelpTopic::List => {
+            "cowjail list\n\nUSAGE:\n  cowjail list"
+        }
+        HelpTopic::Rm => {
+            "cowjail rm\n\nUSAGE:\n  cowjail rm [--name <name> | --profile <profile>]\n\nOPTIONS:\n  --name <name>         Remove an explicit or auto-generated jail by name\n  --profile <profile>   Remove the jail selected by profile-derived identity"
         }
         HelpTopic::Run => {
             "cowjail run\n\nUSAGE:\n  cowjail run [--profile <profile>] [--record <record_path>] [-v|--verbose] command ...\n\nOPTIONS:\n  --profile <profile>   Profile path. Default: default\n  --record <record>     Record output path. Default: ~/.cache/cowjail/<context-hash>-<timestamp>.cjr\n  -v, --verbose         Print progress logs"
@@ -238,5 +316,27 @@ mod tests {
     fn parse_subcommand_help_flag() {
         let cmd = parse_from(os(&["run", "--help"])).expect("run help should parse");
         assert_eq!(cmd, Command::Help(HelpTopic::Run));
+    }
+
+    #[test]
+    fn parse_add_requires_name() {
+        let err = parse_from(os(&["add"])).expect_err("add without name should fail");
+        assert!(err.to_string().contains("add requires --name"));
+    }
+
+    #[test]
+    fn parse_list_has_no_args() {
+        let cmd = parse_from(os(&["list"])).expect("list should parse");
+        assert_eq!(cmd, Command::List(ListCommand));
+    }
+
+    #[test]
+    fn parse_rm_requires_exactly_one_selector() {
+        let err = parse_from(os(&["rm"])).expect_err("rm without selector should fail");
+        assert!(err.to_string().contains("rm requires"));
+
+        let err = parse_from(os(&["rm", "--name", "a", "--profile", "b"]))
+            .expect_err("rm with two selectors should fail");
+        assert!(err.to_string().contains("only one of"));
     }
 }
