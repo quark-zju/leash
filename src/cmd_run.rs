@@ -8,6 +8,7 @@ use std::process::Command as ProcessCommand;
 use crate::cli::RunCommand;
 use crate::cowfs;
 use crate::jail;
+use crate::ns_runtime;
 use crate::profile_loader::{
     append_profile_header, ensure_record_parent_dir, parse_profile_from_normalized_source,
 };
@@ -37,6 +38,18 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         jail::ResolveMode::EnsureExists,
     )
     .context("failed to resolve run jail")?;
+    let runtime = ns_runtime::ensure_runtime_placeholders(&resolved.paths)
+        .context("failed to ensure named runtime skeleton")?;
+    vlog(
+        run.verbose,
+        format!(
+            "run: runtime={} state_before={:?} state_after={:?} rebuilt={}",
+            runtime.paths.runtime_dir.display(),
+            runtime.state_before,
+            runtime.state_after,
+            runtime.rebuilt
+        ),
+    );
     let jail_profile = parse_profile_from_normalized_source(&resolved.normalized_profile)
         .context("failed to parse resolved jail profile")?;
     let record_path = resolved.paths.record_path.clone();

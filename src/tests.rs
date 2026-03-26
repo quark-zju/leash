@@ -359,6 +359,22 @@ fn ns_runtime_ensure_runtime_with_repairs_partial_runtime() {
 }
 
 #[test]
+fn ns_runtime_ensure_placeholders_sets_ready_state() {
+    let temp = tempdir().expect("tempdir");
+    let mut layout = jail::layout_from_home(temp.path());
+    layout.runtime_root = temp.path().join("run");
+    let jail_paths = jail::jail_paths_in(&layout, "demo");
+
+    let ensured =
+        ns_runtime::ensure_runtime_placeholders(&jail_paths).expect("ensure placeholders");
+    assert_eq!(ensured.state_before, ns_runtime::RuntimeState::SkeletonOnly);
+    assert_eq!(ensured.state_after, ns_runtime::RuntimeState::Ready);
+    assert!(ensured.rebuilt);
+    assert!(jail_paths.mntns_path.exists());
+    assert!(jail_paths.ipcns_path.exists());
+}
+
+#[test]
 fn flush_dry_run_does_not_mark() {
     let path = temp_record_path("dry-run");
     let writer = record::Writer::open_append(&path).expect("writer open");

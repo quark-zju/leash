@@ -171,6 +171,14 @@ where
     })
 }
 
+pub(crate) fn ensure_runtime_placeholders(jail: &JailPaths) -> Result<EnsuredRuntime> {
+    ensure_runtime_with(jail, |paths| {
+        write_placeholder(&paths.mntns_path, b"mntns-placeholder")?;
+        write_placeholder(&paths.ipcns_path, b"ipcns-placeholder")?;
+        Ok(())
+    })
+}
+
 pub(crate) fn remove_runtime(jail: &JailPaths) -> Result<()> {
     let paths = paths_for(jail);
     match fs::remove_dir_all(&paths.runtime_dir) {
@@ -205,6 +213,10 @@ fn remove_if_present(path: &Path) -> Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err).with_context(|| format!("failed to remove {}", path.display())),
     }
+}
+
+fn write_placeholder(path: &Path, bytes: &[u8]) -> Result<()> {
+    fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))
 }
 
 impl Drop for RuntimeLock {
