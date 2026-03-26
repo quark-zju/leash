@@ -206,6 +206,13 @@ fn run_child_in_chroot(
                     format!("chdir failed: {err}"),
                 ));
             }
+            if libc::setgroups(0, std::ptr::null()) != 0 {
+                let err = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    err.kind(),
+                    format!("setgroups([]) failed: {err}"),
+                ));
+            }
             if libc::setgid(rgid) != 0 {
                 let err = std::io::Error::last_os_error();
                 return Err(std::io::Error::new(
