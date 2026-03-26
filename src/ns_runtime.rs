@@ -410,13 +410,72 @@ fn bind_namespace_handle(source: &str, target: &Path) -> Result<()> {
     };
     if rc != 0 {
         let err = std::io::Error::last_os_error();
+        let src_meta = metadata_summary(Path::new(source));
+        let dst_meta = metadata_summary(target);
+        let ids = process_identity_summary();
+        let uid_map = read_text_summary("/proc/self/uid_map", 120);
+        let gid_map = read_text_summary("/proc/self/gid_map", 120);
         return Err(anyhow::anyhow!(
-            "failed to bind namespace handle {} -> {}: {err}",
+            concat!(
+                "failed to bind namespace handle {} -> {}: {}; ",
+                "ids=[{}]; uid_map=[{}]; gid_map=[{}]; src=[{}]; dst=[{}]"
+            ),
             source,
-            target.display()
+            target.display(),
+            err,
+            ids,
+            uid_map,
+            gid_map,
+            src_meta,
+            dst_meta
         ));
     }
     Ok(())
+}
+
+fn process_identity_summary() -> String {
+    let uid = unsafe { libc::getuid() };
+    let euid = unsafe { libc::geteuid() };
+    let gid = unsafe { libc::getgid() };
+    let egid = unsafe { libc::getegid() };
+    format!("uid={uid} euid={euid} gid={gid} egid={egid}")
+}
+
+fn read_text_summary(path: &str, max_len: usize) -> String {
+    match fs::read_to_string(path) {
+        Ok(raw) => {
+            let compact = raw.replace('\n', " | ");
+            let compact = compact.trim();
+            if compact.len() <= max_len {
+                compact.to_string()
+            } else {
+                format!("{}...", &compact[..max_len])
+            }
+        }
+        Err(err) => format!("unavailable: {err}"),
+    }
+}
+
+fn metadata_summary(path: &Path) -> String {
+    use std::os::unix::fs::MetadataExt;
+    match fs::symlink_metadata(path) {
+        Ok(meta) => format!(
+            "kind={} mode={:o} uid={} gid={}",
+            if meta.file_type().is_dir() {
+                "dir"
+            } else if meta.file_type().is_file() {
+                "file"
+            } else if meta.file_type().is_symlink() {
+                "symlink"
+            } else {
+                "other"
+            },
+            meta.mode(),
+            meta.uid(),
+            meta.gid()
+        ),
+        Err(err) => format!("missing/unreadable: {err}"),
+    }
 }
 
 fn bootstrap_namespace_handles(paths: &NsRuntimePaths) -> Result<()> {
