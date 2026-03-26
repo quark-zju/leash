@@ -190,11 +190,10 @@ def run_high_level_smoke() -> bool:
     )
     if run_result.returncode != 0:
         merged = f"{run_result.stdout}\n{run_result.stderr}"
-        if "requires root euid" in merged or "initial user namespace" in merged:
+        if "requires root euid" in merged:
             print(
                 "[high] SKIP: setuid binary did not gain root euid "
-                "or lacks initial user namespace root capabilities "
-                "(likely nosuid/id-mapped environment)"
+                "(likely nosuid mount on work dir)"
             )
             subprocess.run(
                 [str(suid_bin), "rm", "--name", HIGH_LEVEL_JAIL],

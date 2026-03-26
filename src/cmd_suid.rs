@@ -7,10 +7,7 @@ use anyhow::{Context, Result, bail};
 use fs_err as fs;
 
 use crate::cli::LowLevelSuidCommand;
-use crate::privileges;
 use crate::vlog;
-
-const SUDO_REEXEC_ENV: &str = "COWJAIL_SUID_REEXEC";
 
 pub(crate) fn suid_command(cmd: LowLevelSuidCommand) -> Result<()> {
     let exe = std::env::current_exe().context("failed to resolve current executable path")?;
@@ -24,24 +21,10 @@ pub(crate) fn suid_command(cmd: LowLevelSuidCommand) -> Result<()> {
         return Ok(());
     }
 
-    let mut euid = unsafe { libc::geteuid() };
-    let ruid = unsafe { libc::getuid() };
-    if euid != 0 && ruid == 0 {
-        // `sudo` may invoke a setuid binary that changed euid away from 0.
-        // Real uid 0 can still restore effective uid 0 for privileged file ops.
-        if unsafe { libc::seteuid(0) } != 0 {
-            let err = std::io::Error::last_os_error();
-            return Err(anyhow::anyhow!("failed to restore effective uid 0: {err}"));
-        }
-        euid = unsafe { libc::geteuid() };
-    }
-
+    let euid = unsafe { libc::geteuid() };
     if euid != 0 {
-        if std::env::var_os(SUDO_REEXEC_ENV).is_some() {
-            bail!("_suid could not obtain root privileges even after sudo re-exec");
-        }
         let mut sudo = ProcessCommand::new("sudo");
-        sudo.env(SUDO_REEXEC_ENV, "1").arg(&exe).arg("_suid");
+        sudo.arg(&exe).arg("_suid");
         if cmd.verbose {
             sudo.arg("--verbose");
         }
@@ -65,12 +48,6 @@ pub(crate) fn suid_command(cmd: LowLevelSuidCommand) -> Result<()> {
         bail!(
             "_suid completed via sudo but binary is still not setuid-root: {}",
             exe.display()
-        );
-    }
-
-    if !privileges::in_initial_user_namespace()? {
-        bail!(
-            "_suid needs root in the initial user namespace; current root is namespaced and cannot provision required mount capabilities"
         );
     }
 

@@ -24,14 +24,6 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
             euid = euid
         );
     }
-    if !privileges::in_initial_user_namespace()? {
-        bail!(
-            concat!(
-                "cowjail run needs root in the initial user namespace.\n",
-                "Current process is namespaced root and lacks required mount namespace capabilities."
-            )
-        );
-    }
 
     let cwd = jail::current_pwd().context("failed to resolve current working directory")?;
     let resolved = jail::resolve(
