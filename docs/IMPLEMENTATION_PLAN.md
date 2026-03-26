@@ -78,6 +78,31 @@ Suggested split:
 
 The runtime path can disappear on reboot; the durable state must not.
 
+### Concrete Path Layout
+
+This plan now assumes the following concrete layout.
+
+Persistent state that survives reboot:
+
+- `~/.local/state/cowjail/NAME/profile`
+- `~/.local/state/cowjail/NAME/record`
+
+Runtime state under tmpfs:
+
+- `/run/cowjail/NAME/ipc`
+- `/run/cowjail/NAME/mnt`
+
+User-managed profile definitions:
+
+- `~/.config/cowjail/profiles/NAME`
+
+Semantics:
+
+- `~/.config/cowjail/profiles/NAME` stores the user-facing profile definition
+- `~/.local/state/cowjail/NAME/profile` stores the resolved profile content actually bound to the jail
+- the stored jail profile must contain expanded cwd-sensitive paths rather than a symbolic `.` entry
+- `record` is the durable write log for that jail
+
 ## Namespace Design
 
 The proposal to use a mount namespace is correct.
@@ -85,7 +110,7 @@ The proposal to use a mount namespace is correct.
 Recommended behavior:
 
 1. Create a new mount namespace for the jail.
-2. Bind-mount a namespace handle into `/run/cowjail/<name>/mntns` so it can be reopened later.
+2. Bind-mount a namespace handle into `/run/cowjail/<name>/mnt` so it can be reopened later.
 3. Mount the jail FUSE filesystem inside that namespace.
 4. Enter the namespace when running commands or attaching debug mounts.
 
@@ -211,15 +236,14 @@ Proposed rules:
 
 2. `--profile <profile>` with no `--name`
 - Resolve to a deterministic auto-generated jail identity derived from:
-  - normalized profile content
-  - current working directory, because `.` in the profile is cwd-sensitive and users expect pwd to matter
+  - normalized profile content with cwd already expanded
 - `run` creates it if missing.
 - `flush` resolves the same identity.
 - `rm` resolves the same identity but must not auto-create.
 
 3. Neither `--name` nor `--profile`
 - Equivalent to `--profile default`.
-- Cwd still participates in derived identity so separate working directories do not accidentally share the same implicit jail when `.` matters.
+- Cwd still participates indirectly through profile expansion, so separate working directories do not accidentally share the same implicit jail when `.` matters.
 
 Auto-generated jails should be clearly distinguishable from user-named jails.
 
@@ -232,6 +256,16 @@ The concrete rule for this plan is:
 
 - auto-generated jail names use `unnamed-<hash>`
 - the hash input is the expanded profile content, including cwd expansion
+
+### Cwd Resolution Rule
+
+When expanding `.` in a profile and when deriving auto-generated jail identity:
+
+1. Prefer `$PWD` if it exists.
+2. Otherwise, use the current directory reported by the Rust standard library.
+3. Do not canonicalize through symlink expansion.
+
+This preserves the path spelling the user is actually operating in, which is important both for profile meaning and for derived jail identity.
 
 The prefix is useful for `list`; a metadata flag may still be useful later for richer UX.
 
