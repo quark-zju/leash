@@ -461,3 +461,98 @@ fn flush_rename_to_blocked_target_is_rejected() {
     assert!(from.exists());
     assert!(!to.exists());
 }
+
+#[test]
+fn flush_regular_write_into_existing_directory_fails_without_marking() {
+    let temp = tempdir().expect("tempdir");
+    let record = temp.path().join("record.cjr");
+    let target_dir = temp.path().join("target");
+    fs::create_dir_all(&target_dir).expect("mkdir");
+
+    let writer = record::Writer::open_append(&record).expect("writer open");
+    writer
+        .append_cbor(
+            record::TAG_WRITE_OP,
+            &op::Operation::WriteFile {
+                path: target_dir.clone(),
+                state: op::FileState::Regular(b"replacement".to_vec()),
+            },
+        )
+        .expect("append write");
+    writer.sync().expect("sync");
+
+    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    assert!(err
+        .to_string()
+        .contains("refusing to replace directory with regular file"));
+    assert!(target_dir.is_dir());
+    let frames = record::read_frames(&record).expect("read frames");
+    assert!(!frames[0].flushed);
+}
+
+#[cfg(unix)]
+#[test]
+fn flush_symlink_write_into_existing_directory_fails_without_marking() {
+    let temp = tempdir().expect("tempdir");
+    let record = temp.path().join("record.cjr");
+    let target_dir = temp.path().join("target");
+    let symlink_target = temp.path().join("real-target.txt");
+    fs::create_dir_all(&target_dir).expect("mkdir");
+    fs::write(&symlink_target, b"payload").expect("seed target");
+
+    let writer = record::Writer::open_append(&record).expect("writer open");
+    writer
+        .append_cbor(
+            record::TAG_WRITE_OP,
+            &op::Operation::WriteFile {
+                path: target_dir.clone(),
+                state: op::FileState::Symlink(symlink_target),
+            },
+        )
+        .expect("append write");
+    writer.sync().expect("sync");
+
+    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    assert!(err
+        .to_string()
+        .contains("refusing to replace directory with symlink"));
+    assert!(target_dir.is_dir());
+    let frames = record::read_frames(&record).expect("read frames");
+    assert!(!frames[0].flushed);
+}
+
+#[test]
+fn flush_rename_over_non_empty_directory_fails_without_marking() {
+    let temp = tempdir().expect("tempdir");
+    let record = temp.path().join("record.cjr");
+    let from = temp.path().join("from.txt");
+    let target_dir = temp.path().join("target-dir");
+    let child = target_dir.join("child.txt");
+    fs::write(&from, b"rename-me").expect("seed source");
+    fs::create_dir_all(&target_dir).expect("mkdir");
+    fs::write(&child, b"keep").expect("seed child");
+
+    let writer = record::Writer::open_append(&record).expect("writer open");
+    writer
+        .append_cbor(
+            record::TAG_WRITE_OP,
+            &op::Operation::Rename {
+                from: from.clone(),
+                to: target_dir.clone(),
+            },
+        )
+        .expect("append rename");
+    writer.sync().expect("sync");
+
+    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    assert!(
+        err.to_string().contains("failed to rename")
+            || err.to_string().contains("Is a directory")
+            || err.to_string().contains("Directory not empty")
+    );
+    assert!(from.exists());
+    assert!(target_dir.is_dir());
+    assert!(child.exists());
+    let frames = record::read_frames(&record).expect("read frames");
+    assert!(!frames[0].flushed);
+}
