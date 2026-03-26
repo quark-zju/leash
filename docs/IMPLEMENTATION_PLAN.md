@@ -136,6 +136,30 @@ Suggested sequence:
 
 PID namespace is valuable, but it is a larger behavioral change than mount+IPC and does not need to block the named-jail design.
 
+## FUSE Server Lifecycle
+
+The FUSE server should be treated as a long-lived per-jail process.
+
+Key requirements:
+
+- it must not be chrooted
+- it should drop privileges after mount
+- it should run inside the jail mount namespace (so the mount exists there)
+
+Practical plan:
+
+- `run` spawns an internal server entrypoint (reuse `_mount` or add a hidden `fuse-server`)
+- the parent sets up namespaces as needed, then execs the FUSE server
+- after mount completes, the server drops privileges and loops
+
+Runtime status tracking (no persistent pidfd):
+
+- write `/run/cowjail/NAME/fuse.pid`
+- validate liveness by checking `/proc/<pid>/mountinfo` for the jail mountpoint
+- if the PID is gone or no longer owns the mount, restart and refresh the pid file
+
+This avoids PID reuse confusion without requiring a persistent supervisor.
+
 ## Record and State Design
 
 Named jails imply stable records.
