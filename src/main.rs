@@ -622,14 +622,7 @@ fn apply_operation(op: &op::Operation) -> Result<()> {
         op::Operation::Rename { from, to } => {
             validate_abs(from)?;
             validate_abs(to)?;
-            if let Some(parent) = to.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!(
-                        "failed to create parent directories for rename target {}",
-                        to.display()
-                    )
-                })?;
-            }
+            ensure_safe_parent_dirs(to, "rename target")?;
             fs::rename(from, to)
                 .with_context(|| format!("failed to rename {} -> {}", from.display(), to.display()))
         }
@@ -666,11 +659,7 @@ fn validate_abs(path: &Path) -> Result<()> {
 }
 
 fn prepare_file_destination(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!("failed to create parent directories for {}", path.display())
-        })?;
-    }
+    ensure_safe_parent_dirs(path, "file replay destination")?;
 
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => fs::remove_file(path)
@@ -684,6 +673,43 @@ fn prepare_file_destination(path: &Path) -> Result<()> {
         Err(err) => Err(err)
             .with_context(|| format!("failed to inspect replay destination {}", path.display())),
     }
+}
+
+fn ensure_safe_parent_dirs(path: &Path, context: &str) -> Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+
+    let mut current = PathBuf::from("/");
+    for component in parent.components() {
+        use std::path::Component;
+
+        match component {
+            Component::RootDir => {}
+            Component::Normal(seg) => {
+                current.push(seg);
+                match fs::symlink_metadata(&current) {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        bail!(
+                            "refusing to create {context} under symlink parent: {}",
+                            current.display()
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        return Err(err).with_context(|| {
+                            format!("failed to inspect parent {} for {}", current.display(), context)
+                        });
+                    }
+                }
+            }
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {}
+        }
+    }
+
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create parent directories for {}", path.display()))
 }
 
 #[cfg(unix)]

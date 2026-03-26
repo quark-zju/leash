@@ -709,3 +709,85 @@ fn flush_truncate_on_symlink_fails_without_marking_or_modifying_target() {
     let frames = record::read_frames(&record).expect("read frames");
     assert!(!frames[0].flushed);
 }
+
+#[cfg(unix)]
+#[test]
+fn flush_rename_over_symlink_replaces_link_not_target() {
+    use std::os::unix::fs as unix_fs;
+
+    let temp = tempdir().expect("tempdir");
+    let record = temp.path().join("record.cjr");
+    let from = temp.path().join("from.txt");
+    let symlink_target = temp.path().join("real-target.txt");
+    let link_path = temp.path().join("link.txt");
+    fs::write(&from, b"rename-me").expect("seed source");
+    fs::write(&symlink_target, b"keep-target").expect("seed target");
+    unix_fs::symlink(&symlink_target, &link_path).expect("seed symlink");
+
+    let writer = record::Writer::open_append(&record).expect("writer open");
+    writer
+        .append_cbor(
+            record::TAG_WRITE_OP,
+            &op::Operation::Rename {
+                from: from.clone(),
+                to: link_path.clone(),
+            },
+        )
+        .expect("append rename");
+    writer.sync().expect("sync");
+
+    let stats = flush_record(&record, false, None).expect("flush");
+    assert_eq!(stats.marked, 1);
+    assert!(!from.exists());
+    assert_eq!(fs::read(&link_path).expect("read renamed file"), b"rename-me");
+    assert_eq!(fs::read(&symlink_target).expect("read original target"), b"keep-target");
+    assert!(
+        !fs::symlink_metadata(&link_path)
+            .expect("metadata")
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn flush_rename_into_symlink_parent_fails_without_marking_or_modifying_target_tree() {
+    use std::os::unix::fs as unix_fs;
+
+    let temp = tempdir().expect("tempdir");
+    let record = temp.path().join("record.cjr");
+    let from = temp.path().join("from.txt");
+    let real_dir = temp.path().join("real-dir");
+    let symlink_dir = temp.path().join("link-dir");
+    let redirected_target = real_dir.join("renamed.txt");
+    fs::write(&from, b"rename-me").expect("seed source");
+    fs::create_dir_all(&real_dir).expect("mkdir");
+    unix_fs::symlink(&real_dir, &symlink_dir).expect("seed dir symlink");
+
+    let writer = record::Writer::open_append(&record).expect("writer open");
+    writer
+        .append_cbor(
+            record::TAG_WRITE_OP,
+            &op::Operation::Rename {
+                from: from.clone(),
+                to: symlink_dir.join("renamed.txt"),
+            },
+        )
+        .expect("append rename");
+    writer.sync().expect("sync");
+
+    let err = flush_record(&record, false, None).expect_err("flush should fail");
+    assert!(
+        err.to_string()
+            .contains("refusing to create rename target under symlink parent")
+            || err.to_string().contains("failed to create parent directories for rename target")
+    );
+    assert!(from.exists());
+    assert!(fs::symlink_metadata(&symlink_dir)
+        .expect("metadata")
+        .file_type()
+        .is_symlink());
+    assert!(!redirected_target.exists());
+    let frames = record::read_frames(&record).expect("read frames");
+    assert!(!frames[0].flushed);
+}
