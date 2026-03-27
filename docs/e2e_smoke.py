@@ -3,6 +3,7 @@
 import atexit
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -32,8 +33,8 @@ RECORD_PATH = WORK_DIR / "record.cjr"
 PROFILE_PATH = WORK_DIR / "profile"
 TARGET_PATH = WORK_DIR / "host.txt"
 TARGET_PATH_HIGH = WORK_DIR / "host-high.txt"
-# Use a per-run jail name to avoid profile-binding conflicts from leftovers.
-HIGH_LEVEL_JAIL = f"e2e-high-level-{WORK_DIR.name}"
+# Use a random per-run jail name to avoid cross-run/profile binding conflicts.
+HIGH_LEVEL_JAIL = f"e2e-high-level-{secrets.token_hex(6)}"
 RUN_COWJAIL = [
     "cargo",
     "run",
