@@ -110,9 +110,6 @@ impl Writer {
         inner.next_offset += HEADER_LEN as u64 + len;
         inner.dirty = true;
         inner.last_write = Some(Instant::now());
-        // Make appended frames immediately visible to other processes (e.g. `cowjail flush`)
-        // so a flush right after `cowjail run` does not miss buffered operations.
-        flush_inner(&mut inner)?;
         self.flusher_thread.unpark();
         Ok(offset)
     }

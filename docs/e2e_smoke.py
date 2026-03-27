@@ -36,6 +36,7 @@ TARGET_PATH = WORK_DIR / "host.txt"
 TARGET_PATH_HIGH = WORK_DIR / "host-high.txt"
 # Use a random per-run jail name to avoid cross-run/profile binding conflicts.
 HIGH_LEVEL_JAIL = f"e2e-high-level-{secrets.token_hex(6)}"
+HIGH_LEVEL_RECORD_FLUSH_WAIT_SECONDS = 3.0
 
 mount_proc: subprocess.Popen[str] | None = None
 
@@ -251,6 +252,12 @@ def run_high_level_smoke(
         print("[high 4/6] verifying host not changed before flush")
         if TARGET_PATH_HIGH.read_text(encoding="utf-8") != "before-high\n":
             fail("host content changed before high-level flush (unexpected)")
+
+        print(
+            f"[high] waiting {HIGH_LEVEL_RECORD_FLUSH_WAIT_SECONDS:.1f}s "
+            "for async record flush"
+        )
+        time.sleep(HIGH_LEVEL_RECORD_FLUSH_WAIT_SECONDS)
 
         print("[high 5/6] flushing named jail")
         run([str(suid_bin), "flush", "--name", HIGH_LEVEL_JAIL])
