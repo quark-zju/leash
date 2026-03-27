@@ -205,7 +205,7 @@ def run_high_level_smoke(
             "--name",
             HIGH_LEVEL_JAIL,
             "/bin/sh",
-            "-lc",
+            "-c",
             f"printf 'after-high\\n' > '{TARGET_PATH_HIGH}'",
         ]
         if strace_prefix:
