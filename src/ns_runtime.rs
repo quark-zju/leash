@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use fs_err as fs;
-use fs_err::os::unix::fs::OpenOptionsExt;
 use std::ffi::CString;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
@@ -391,9 +390,9 @@ fn write_placeholder(path: &Path, bytes: &[u8]) -> Result<()> {
 
 fn bind_namespace_handle(source: &str, target: &Path) -> Result<()> {
     fs::OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .mode(0)
+        .create(true)
+        .write(true)
+        .truncate(true)
         .open(target)
         .with_context(|| format!("failed to create namespace handle {}", target.display()))?;
     let source_c =
@@ -535,7 +534,7 @@ fn bootstrap_namespace_handles(paths: &NsRuntimePaths) -> Result<()> {
             unsafe { libc::_exit(102) };
         }
 
-        if let Err(err) = bind_namespace_handle("/proc/self/ns/net", &paths.mntns_path) {
+        if let Err(err) = bind_namespace_handle("/proc/self/ns/mnt", &paths.mntns_path) {
             eprintln!("{err:#}");
             unsafe { libc::_exit(103) };
         }
