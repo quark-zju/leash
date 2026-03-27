@@ -36,15 +36,6 @@ TARGET_PATH = WORK_DIR / "host.txt"
 TARGET_PATH_HIGH = WORK_DIR / "host-high.txt"
 # Use a random per-run jail name to avoid cross-run/profile binding conflicts.
 HIGH_LEVEL_JAIL = f"e2e-high-level-{secrets.token_hex(6)}"
-RUN_COWJAIL = [
-    "cargo",
-    "run",
-    "--manifest-path",
-    str(ROOT_DIR / "Cargo.toml"),
-    "--bin",
-    "cowjail",
-    "--",
-]
 
 mount_proc: subprocess.Popen[str] | None = None
 
@@ -139,12 +130,12 @@ def prepare_inputs() -> None:
     )
 
 
-def run_low_level_smoke() -> None:
+def run_low_level_smoke(cowjail_bin: Path) -> None:
     global mount_proc
     print("[low 1/5] starting low-level mount")
     mount_proc = subprocess.Popen(
-        RUN_COWJAIL
-        + [
+        [
+            str(cowjail_bin),
             "_mount",
             "--profile",
             str(PROFILE_PATH),
@@ -171,16 +162,14 @@ def run_low_level_smoke() -> None:
     run(["fusermount", "-u", str(MOUNT_DIR)])
     mount_proc.wait(timeout=5)
     mount_proc = None
-    run(RUN_COWJAIL + ["_flush", "--record", str(RECORD_PATH)])
+    run([str(cowjail_bin), "_flush", "--record", str(RECORD_PATH)])
 
     print("[low 5/5] verifying host changed after flush")
     if TARGET_PATH.read_text(encoding="utf-8") != "after\n":
         fail("host content was not updated by low-level flush")
 
 
-def prepare_setuid_binary() -> Path | None:
-    built = resolve_built_binary_path()
-
+def prepare_setuid_binary(built: Path) -> Path | None:
     try:
         run([str(built), "_suid"], stdout=subprocess.DEVNULL)
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -188,8 +177,10 @@ def prepare_setuid_binary() -> Path | None:
     return built
 
 
-def run_high_level_smoke(strace_prefix: list[str] | None = None) -> bool:
-    suid_bin = prepare_setuid_binary()
+def run_high_level_smoke(
+    cowjail_bin: Path, strace_prefix: list[str] | None = None
+) -> bool:
+    suid_bin = prepare_setuid_binary(cowjail_bin)
     if suid_bin is None:
         print("[high] SKIP: failed to setup setuid binary via _suid")
         return False
@@ -281,9 +272,10 @@ def main() -> int:
         ],
         stdout=subprocess.DEVNULL,
     )
+    cowjail_bin = resolve_built_binary_path()
 
     print("[2/3] running low-level smoke")
-    run_low_level_smoke()
+    run_low_level_smoke(cowjail_bin)
 
     print("[3/3] running high-level smoke")
     strace_prefix: list[str] | None = None
@@ -296,7 +288,7 @@ def main() -> int:
         strace_prefix = ["strace", "-ff", "-o", log_prefix]
         print(f"[high] strace enabled, logs: {log_prefix}.*")
 
-    high_level_ran = run_high_level_smoke(strace_prefix)
+    high_level_ran = run_high_level_smoke(cowjail_bin, strace_prefix)
     if high_level_ran:
         print("smoke test passed (low-level + high-level)")
     else:
