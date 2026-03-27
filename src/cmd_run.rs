@@ -97,6 +97,11 @@ fn run_child_in_chroot(
                     format!("setns(CLONE_NEWIPC) failed: {err}"),
                 ));
             }
+            // FUSE mount access is keyed by fsuid/fsgid, not effective uid.
+            // Align fs creds with the real user before chroot/chdir so kernel-side
+            // FUSE permission checks do not reject the mount root with EACCES.
+            libc::setfsgid(libc::getgid());
+            libc::setfsuid(libc::getuid());
             if libc::chroot(mount_c.as_ptr()) != 0 {
                 let err = std::io::Error::last_os_error();
                 return Err(std::io::Error::new(
