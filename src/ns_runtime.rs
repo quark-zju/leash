@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use fs_err as fs;
 use std::ffi::CString;
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -212,8 +213,18 @@ pub(crate) fn open_namespace_handle(paths: &NsRuntimePaths) -> Result<fs::File> 
 }
 
 pub(crate) fn ensure_runtime_for_exec(jail: &JailPaths) -> Result<ExecRuntime> {
-    let ensured = ensure_runtime_namespaces(jail)?;
-    let ipcns_file = open_namespace_handle(&ensured.paths)?;
+    let mut ensured = ensure_runtime_namespaces(jail)?;
+    let mut ipcns_file = open_namespace_handle(&ensured.paths)?;
+    if !ipcns_handle_usable(&ipcns_file)? {
+        ensured = rebuild_runtime_namespaces(jail)?;
+        ipcns_file = open_namespace_handle(&ensured.paths)?;
+        if !ipcns_handle_usable(&ipcns_file)? {
+            return Err(anyhow::anyhow!(
+                "ipc namespace handle is unusable after rebuild: {}",
+                ensured.paths.ipcns_path.display()
+            ));
+        }
+    }
     Ok(ExecRuntime { ensured, ipcns_file })
 }
 
@@ -495,6 +506,50 @@ fn bootstrap_namespace_handles(paths: &NsRuntimePaths) -> Result<()> {
     Err(anyhow::anyhow!(
         "namespace bootstrap process ended unexpectedly: status={status}"
     ))
+}
+
+fn rebuild_runtime_namespaces(jail: &JailPaths) -> Result<EnsuredRuntime> {
+    let _lock = open_lock(jail)?;
+    let paths = paths_for(jail);
+    let initial_status = inspect(jail)?;
+    let state_before = classify(&initial_status);
+    reset_to_skeleton(&paths)?;
+    bootstrap_namespace_handles(&paths)?;
+    let final_status = inspect(jail)?;
+    let state_after = classify(&final_status);
+    Ok(EnsuredRuntime {
+        paths,
+        state_before,
+        state_after,
+        rebuilt: true,
+    })
+}
+
+fn ipcns_handle_usable(file: &fs::File) -> Result<bool> {
+    let fd = file.as_raw_fd();
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(anyhow::anyhow!(
+            "failed to fork for ipcns validation: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if pid == 0 {
+        let rc = unsafe { libc::setns(fd, libc::CLONE_NEWIPC) };
+        unsafe { libc::_exit(if rc == 0 { 0 } else { 1 }) };
+    }
+    let mut status: libc::c_int = 0;
+    let wait_rc = unsafe { libc::waitpid(pid, &mut status as *mut libc::c_int, 0) };
+    if wait_rc < 0 {
+        return Err(anyhow::anyhow!(
+            "failed waiting ipcns validation child: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if libc::WIFEXITED(status) {
+        return Ok(libc::WEXITSTATUS(status) == 0);
+    }
+    Ok(false)
 }
 
 impl Drop for RuntimeLock {
