@@ -88,7 +88,13 @@ pub(crate) fn profile_definition_path(name: &str) -> Result<PathBuf> {
 }
 
 pub(crate) fn runtime_root() -> PathBuf {
-    PathBuf::from("/run/cowjail")
+    if let Some(raw) = std::env::var_os("XDG_RUNTIME_DIR")
+        && !raw.is_empty()
+    {
+        return PathBuf::from(raw).join("cowjail");
+    }
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(format!("/run/user/{uid}/cowjail"))
 }
 
 pub(crate) fn jail_paths_in(layout: &JailLayout, name: &str) -> JailPaths {
