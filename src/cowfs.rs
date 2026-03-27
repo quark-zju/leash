@@ -65,14 +65,7 @@ impl CowFs {
     }
 
     pub fn mount(self, mountpoint: &Path) -> Result<()> {
-        let options = [
-            OsStr::new("-o"),
-            OsStr::new("default_permissions"),
-            OsStr::new("-o"),
-            OsStr::new("allow_other"),
-            OsStr::new("-o"),
-            OsStr::new("fsname=cowjail"),
-        ];
+        let options = fuse_mount_options();
         fuse::mount(self, mountpoint, &options).with_context(|| {
             format!(
                 "failed to mount fuse filesystem at {}",
@@ -85,14 +78,7 @@ impl CowFs {
         self,
         mountpoint: &Path,
     ) -> Result<fuse::BackgroundSession<'static>> {
-        let options = [
-            OsStr::new("-o"),
-            OsStr::new("default_permissions"),
-            OsStr::new("-o"),
-            OsStr::new("allow_other"),
-            OsStr::new("-o"),
-            OsStr::new("fsname=cowjail"),
-        ];
+        let options = fuse_mount_options();
         // SAFETY: We keep the returned BackgroundSession alive for the entire mounted lifetime.
         unsafe { fuse::spawn_mount(self, mountpoint, &options) }.with_context(|| {
             format!(
@@ -460,6 +446,28 @@ impl CowFs {
         }
         true
     }
+}
+
+fn fuse_mount_options() -> Vec<&'static OsStr> {
+    let mut options = Vec::with_capacity(8);
+    options.push(OsStr::new("-o"));
+    options.push(OsStr::new("default_permissions"));
+    if allow_other_enabled_in_fuse_conf() {
+        options.push(OsStr::new("-o"));
+        options.push(OsStr::new("allow_other"));
+    }
+    options.push(OsStr::new("-o"));
+    options.push(OsStr::new("fsname=cowjail"));
+    options
+}
+
+fn allow_other_enabled_in_fuse_conf() -> bool {
+    let Ok(raw) = fs::read_to_string("/etc/fuse.conf") else {
+        return false;
+    };
+    raw.lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .any(|line| line == "user_allow_other")
 }
 
 enum NodeRef {
