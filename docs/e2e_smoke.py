@@ -224,6 +224,11 @@ def run_high_level_smoke(
             fail("high-level run timed out after 20s at [high 3/6]")
         if run_result.returncode != 0:
             merged = f"{run_result.stdout}\n{run_result.stderr}"
+            if "sudo: a password is required" in merged:
+                fail(
+                    "high-level run trace requires sudo credentials; "
+                    "run `sudo -v` first, then retry with --strace"
+                )
             if "requires root euid" in merged:
                 print(
                     "[high] SKIP: setuid binary did not gain root euid "
@@ -285,8 +290,8 @@ def main() -> int:
             if args.strace_log_prefix
             else f"/tmp/cowjail-e2e-high-run-{os.getpid()}"
         )
-        strace_prefix = ["strace", "-ff", "-o", log_prefix]
-        print(f"[high] strace enabled, logs: {log_prefix}.*")
+        strace_prefix = ["sudo", "-n", "strace", "-ff", "-o", log_prefix]
+        print(f"[high] strace enabled via sudo, logs: {log_prefix}.*")
 
     high_level_ran = run_high_level_smoke(cowjail_bin, strace_prefix)
     if high_level_ran:
