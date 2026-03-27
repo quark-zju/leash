@@ -105,7 +105,19 @@ def prepare_inputs() -> None:
     MOUNT_DIR.mkdir(parents=True, exist_ok=True)
     TARGET_PATH.write_text("before\n", encoding="utf-8")
     TARGET_PATH_HIGH.write_text("before-high\n", encoding="utf-8")
-    PROFILE_PATH.write_text(f"{WORK_DIR} rw\n/tmp ro\n", encoding="utf-8")
+    # Keep the writable test area narrow, but expose basic system paths read-only
+    # so high-level `run ... /bin/sh -lc ...` can resolve the shell and shared libs.
+    PROFILE_PATH.write_text(
+        (
+            f"{WORK_DIR} rw\n"
+            "/tmp ro\n"
+            "/bin ro\n"
+            "/usr ro\n"
+            "/lib ro\n"
+            "/lib64 ro\n"
+        ),
+        encoding="utf-8",
+    )
 
 
 def run_low_level_smoke() -> None:
