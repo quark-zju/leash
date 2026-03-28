@@ -1,7 +1,31 @@
 use crate::cli::HelpTopic;
 
+const HELP_TOPIC_NAMES: &[(&str, HelpTopic)] = &[
+    ("profile", HelpTopic::Profile),
+    ("add", HelpTopic::Add),
+    ("list", HelpTopic::List),
+    ("rm", HelpTopic::Rm),
+    ("run", HelpTopic::Run),
+    ("flush", HelpTopic::Flush),
+    ("_mount", HelpTopic::LowLevelMount),
+    ("_flush", HelpTopic::LowLevelFlush),
+    ("_fuse", HelpTopic::LowLevelFuse),
+    ("_suid", HelpTopic::LowLevelSuid),
+];
+
 pub(crate) fn print_help(topic: HelpTopic, verbose: bool) {
     println!("{}", help_text(topic, verbose));
+}
+
+pub(crate) fn topic_from_name(name: &str) -> Option<HelpTopic> {
+    HELP_TOPIC_NAMES
+        .iter()
+        .find_map(|(n, topic)| (*n == name).then_some(topic.clone()))
+}
+
+#[cfg(test)]
+pub(crate) fn topic_names() -> &'static [(&'static str, HelpTopic)] {
+    HELP_TOPIC_NAMES
 }
 
 pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {

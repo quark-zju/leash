@@ -145,23 +145,9 @@ fn parse_help(args: Arguments) -> Result<Command> {
     let topic = extra[0]
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("help topic must be valid UTF-8"))?;
-    Ok(help_command(parse_help_topic(topic)?, false))
-}
-
-fn parse_help_topic(topic: &str) -> Result<HelpTopic> {
-    match topic {
-        "profile" => Ok(HelpTopic::Profile),
-        "add" => Ok(HelpTopic::Add),
-        "list" => Ok(HelpTopic::List),
-        "rm" => Ok(HelpTopic::Rm),
-        "run" => Ok(HelpTopic::Run),
-        "flush" => Ok(HelpTopic::Flush),
-        "_mount" => Ok(HelpTopic::LowLevelMount),
-        "_flush" => Ok(HelpTopic::LowLevelFlush),
-        "_fuse" => Ok(HelpTopic::LowLevelFuse),
-        "_suid" => Ok(HelpTopic::LowLevelSuid),
-        other => bail!("unknown help topic: {other}"),
-    }
+    let topic = crate::cmd_help::topic_from_name(topic)
+        .ok_or_else(|| anyhow::anyhow!("unknown help topic: {topic}"))?;
+    Ok(help_command(topic, false))
 }
 
 fn help_command(topic: HelpTopic, verbose: bool) -> Command {
@@ -482,6 +468,23 @@ mod tests {
         let text = crate::cmd_help::help_text(HelpTopic::Profile, false);
         assert!(text.contains("ACTIONS:"));
         assert!(text.contains("cow"));
+    }
+
+    #[test]
+    fn parse_help_supports_all_registered_topics() {
+        for (name, topic) in crate::cmd_help::topic_names() {
+            let cmd = parse_from(os(&["help", name]))
+                .unwrap_or_else(|err| panic!("help topic '{name}' should parse: {err:#}"));
+            assert_eq!(
+                cmd,
+                Command::Help {
+                    topic: topic.clone(),
+                    verbose: false,
+                }
+            );
+            let text = crate::cmd_help::help_text(topic.clone(), false);
+            assert!(!text.is_empty());
+        }
     }
 
     #[test]
