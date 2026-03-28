@@ -1,5 +1,6 @@
 use std::hash::Hasher;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -60,6 +61,7 @@ impl Writer {
             .with_context(|| {
                 format!("failed to open record file for append: {}", path.display())
             })?;
+        ensure_record_owned_by_real_user(path)?;
         let next_offset = file
             .metadata()
             .with_context(|| format!("failed to stat record file: {}", path.display()))?
@@ -149,6 +151,28 @@ impl Writer {
             .lock()
             .map_err(|_| anyhow::anyhow!("record writer mutex poisoned"))
     }
+}
+
+fn ensure_record_owned_by_real_user(path: &Path) -> Result<()> {
+    let meta = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to stat record file: {}", path.display()))?;
+    let target_uid = unsafe { libc::getuid() };
+    let target_gid = unsafe { libc::getgid() };
+    if meta.uid() == target_uid && meta.gid() == target_gid {
+        return Ok(());
+    }
+
+    let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .with_context(|| format!("record path contains interior NUL byte: {}", path.display()))?;
+    let rc = unsafe { libc::chown(c_path.as_ptr(), target_uid, target_gid) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        bail!(
+            "failed to chown record file {} to {target_uid}:{target_gid}: {err}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 impl Drop for Writer {
