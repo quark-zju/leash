@@ -107,15 +107,13 @@ pub(crate) fn fuse_command(cmd: LowLevelFuseCommand) -> Result<()> {
 
     loop {
         std::thread::sleep(Duration::from_millis(400));
-        let session_alive = session.is_alive();
-        let session_error = session.last_error_code();
+        let session_alive = !session.guard.is_finished();
         let host_has_mount = crate::ns_runtime::process_has_mount(1, &cmd.mountpoint)?;
         let self_has_mount = crate::ns_runtime::process_has_mount(pid, &cmd.mountpoint)?;
         if !session_alive || !host_has_mount || !self_has_mount {
             crate::vlog!(
-                "_fuse: exiting because mount liveness failed (session_alive={} session_error={:?} host_pid1_has_mount={} self_has_mount={}) for {}",
+                "_fuse: exiting because mount liveness failed (session_alive={} host_pid1_has_mount={} self_has_mount={}) for {}",
                 session_alive,
-                session_error,
                 host_has_mount,
                 self_has_mount,
                 cmd.mountpoint.display(),

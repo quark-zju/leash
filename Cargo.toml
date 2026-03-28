@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
-fuse = { path = "vendor/fuse" }
+fuse = { package = "fuser", version = "0.16.0" }
 fs-err = "3"
 globset = "0.4"
 libc = "0.2"

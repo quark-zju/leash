@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use fs_err as fs;
 use fuse::{
     self, FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
-    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request,
+    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::{EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, EOPNOTSUPP};
 
@@ -87,10 +87,9 @@ impl CowFs {
         self,
         mountpoint: &Path,
         allow_other: bool,
-    ) -> Result<fuse::BackgroundSession<'static>> {
+    ) -> Result<fuse::BackgroundSession> {
         let options = fuse_mount_options(allow_other);
-        // SAFETY: We keep the returned BackgroundSession alive for the entire mounted lifetime.
-        unsafe { fuse::spawn_mount(self, mountpoint, &options) }.with_context(|| {
+        fuse::spawn_mount(self, mountpoint, &options).with_context(|| {
             format!(
                 "failed to mount fuse filesystem in background at {}",
                 mountpoint.display()
@@ -158,6 +157,7 @@ impl CowFs {
             uid: metadata.uid(),
             gid: metadata.gid(),
             rdev: metadata.rdev() as u32,
+            blksize: 4096,
             flags: 0,
         };
         self.apply_atime_override(path, &mut attr);
@@ -195,6 +195,7 @@ impl CowFs {
             uid,
             gid,
             rdev: 0,
+            blksize: 4096,
             flags: 0,
         };
         self.apply_atime_override(path, &mut attr);
@@ -674,7 +675,7 @@ impl Filesystem for CowFs {
         }
     }
 
-    fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
+    fn getattr(&mut self, _req: &Request<'_>, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
         let Some(path) = self.path_for_ino(ino).map(ToOwned::to_owned) else {
             reply.error(ENOENT);
             return;
@@ -769,7 +770,7 @@ impl Filesystem for CowFs {
         reply.ok();
     }
 
-    fn open(&mut self, _req: &Request<'_>, ino: u64, flags: u32, reply: ReplyOpen) {
+    fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
         let Some(path) = self.path_for_ino(ino) else {
             reply.error(ENOENT);
             return;
@@ -779,7 +780,7 @@ impl Filesystem for CowFs {
             return;
         }
         // allow write open only for writable rules.
-        if flags & libc::O_ACCMODE as u32 != libc::O_RDONLY as u32
+        if flags & libc::O_ACCMODE != libc::O_RDONLY
             && self.write_mode(path) == WriteMode::Forbidden
         {
             reply.error(EACCES);
@@ -795,6 +796,8 @@ impl Filesystem for CowFs {
         _fh: u64,
         offset: i64,
         size: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
         let Some(path) = self.path_for_ino(ino).map(ToOwned::to_owned) else {
@@ -896,7 +899,8 @@ impl Filesystem for CowFs {
         parent: u64,
         name: &OsStr,
         _mode: u32,
-        _flags: u32,
+        _umask: u32,
+        _flags: i32,
         reply: ReplyCreate,
     ) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
@@ -963,7 +967,9 @@ impl Filesystem for CowFs {
         _fh: u64,
         offset: i64,
         data: &[u8],
-        _flags: u32,
+        _write_flags: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
         let Some(path) = self.path_for_ino(ino).map(ToOwned::to_owned) else {
@@ -1072,6 +1078,7 @@ impl Filesystem for CowFs {
         parent: u64,
         name: &OsStr,
         _mode: u32,
+        _umask: u32,
         reply: ReplyEntry,
     ) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
@@ -1218,6 +1225,7 @@ impl Filesystem for CowFs {
         name: &OsStr,
         newparent: u64,
         newname: &OsStr,
+        _flags: u32,
         reply: ReplyEmpty,
     ) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
@@ -1271,8 +1279,9 @@ impl Filesystem for CowFs {
         uid: Option<u32>,
         gid: Option<u32>,
         size: Option<u64>,
-        atime: Option<SystemTime>,
-        mtime: Option<SystemTime>,
+        atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
+        _ctime: Option<SystemTime>,
         _fh: Option<u64>,
         _crtime: Option<SystemTime>,
         _chgtime: Option<SystemTime>,
@@ -1296,7 +1305,13 @@ impl Filesystem for CowFs {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
             }
-            WriteMode::Cow => match self.apply_cow_setattr(&path, size, mode, atime, mtime) {
+            WriteMode::Cow => match self.apply_cow_setattr(
+                &path,
+                size,
+                mode,
+                to_system_time(atime),
+                to_system_time(mtime),
+            ) {
                 Ok(attr) => reply.attr(&TTL, &attr),
                 Err(code) => reply.error(code),
             },
@@ -1331,6 +1346,14 @@ impl Filesystem for CowFs {
                 reply.attr(&TTL, &attr);
             }
         }
+    }
+}
+
+fn to_system_time(value: Option<TimeOrNow>) -> Option<SystemTime> {
+    match value {
+        Some(TimeOrNow::SpecificTime(ts)) => Some(ts),
+        Some(TimeOrNow::Now) => Some(SystemTime::now()),
+        None => None,
     }
 }
 
