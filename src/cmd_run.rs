@@ -101,11 +101,6 @@ fn run_child_in_chroot(
                     format!("unshare(CLONE_NEWIPC|CLONE_NEWNS|CLONE_NEWPID) failed: {err}"),
                 ));
             }
-            // CLONE_NEWPID takes effect for subsequent children only.
-            // Enter a tiny pidns init/reaper process and continue execution in its child.
-            if let Err(err) = enter_pid_namespace_worker_or_exit_parent() {
-                return Err(std::io::Error::other(err.to_string()));
-            }
             if let Err(err) = make_mounts_private() {
                 return Err(std::io::Error::other(err.to_string()));
             }
@@ -145,6 +140,11 @@ fn run_child_in_chroot(
                         format!("chdir failed: {err}"),
                     ));
                 }
+            }
+            // CLONE_NEWPID takes effect for subsequent children only.
+            // Fork after mount/chroot so both pidns PID 1 and worker share that setup.
+            if let Err(err) = enter_pid_namespace_worker_or_exit_parent() {
+                return Err(std::io::Error::other(err.to_string()));
             }
             if let Err(err) = privileges::drop_to_real_user() {
                 return Err(std::io::Error::other(err.to_string()));
