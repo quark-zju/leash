@@ -90,6 +90,7 @@ fn try_main() -> Result<i32> {
             Ok(0)
         }
         Command::LowLevelFuse(fuse) => {
+            env_logger::init();
             cmd_fuse::fuse_command(fuse).context("_fuse subcommand failed")?;
             Ok(0)
         }
