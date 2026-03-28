@@ -5,6 +5,7 @@ import atexit
 import json
 import os
 import secrets
+import stat
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,7 @@ RECORD_PATH = WORK_DIR / "record.cjr"
 PROFILE_PATH = WORK_DIR / "profile"
 TARGET_PATH = WORK_DIR / "host.txt"
 TARGET_PATH_HIGH = WORK_DIR / "host-high.txt"
+TARGET_PATH_ATIME = WORK_DIR / "host-atime.txt"
 # Use a random per-run jail name to avoid cross-run/profile binding conflicts.
 HIGH_LEVEL_JAIL = f"e2e-high-level-{secrets.token_hex(6)}"
 HIGH_LEVEL_RECORD_FLUSH_WAIT_SECONDS = 3.0
@@ -116,6 +118,7 @@ def prepare_inputs() -> None:
     MOUNT_DIR.mkdir(parents=True, exist_ok=True)
     TARGET_PATH.write_text("before\n", encoding="utf-8")
     TARGET_PATH_HIGH.write_text("before-high\n", encoding="utf-8")
+    TARGET_PATH_ATIME.write_text("before-atime\n", encoding="utf-8")
     # Keep the writable test area narrow, but expose basic system paths read-only
     # so high-level `run ... /bin/sh -lc ...` can resolve the shell and shared libs.
     PROFILE_PATH.write_text(
@@ -181,6 +184,7 @@ def prepare_setuid_binary(built: Path) -> Path | None:
 def run_high_level_smoke(
     cowjail_bin: Path, strace_prefix: list[str] | None = None
 ) -> bool:
+    pinned_atime_epoch = "1893456000"  # 2030-01-01 00:00:00 UTC
     suid_bin = prepare_setuid_binary(cowjail_bin)
     if suid_bin is None:
         print("[high] SKIP: failed to setup setuid binary via _suid")
@@ -196,7 +200,7 @@ def run_high_level_smoke(
     )
 
     try:
-        print("[high 2/6] creating named jail")
+        print("[high 2/8] creating named jail")
         run(
             [
                 str(suid_bin),
@@ -208,7 +212,10 @@ def run_high_level_smoke(
             ]
         )
 
-        print("[high 3/6] writing via high-level run")
+        original_host_mode = TARGET_PATH_HIGH.stat().st_mode
+        original_host_atime_ns = TARGET_PATH_ATIME.stat().st_atime_ns
+
+        print("[high 3/8] writing and chmod via high-level run")
         run_cmd = [
             str(suid_bin),
             "run",
@@ -216,7 +223,10 @@ def run_high_level_smoke(
             HIGH_LEVEL_JAIL,
             "/bin/sh",
             "-c",
-            f"/bin/echo 'after-high' > '{TARGET_PATH_HIGH}'",
+            (
+                f"/bin/echo 'after-high' > '{TARGET_PATH_HIGH}'"
+                f" && /usr/bin/chmod 755 '{TARGET_PATH_HIGH}'"
+            ),
         ]
         if strace_prefix:
             run_cmd = [*strace_prefix, *run_cmd]
@@ -249,9 +259,35 @@ def run_high_level_smoke(
             print(run_result.stderr, end="", file=sys.stderr)
             fail(f"high-level run failed with exit code {run_result.returncode}")
 
-        print("[high 4/6] verifying host not changed before flush")
+        print("[high 4/8] touching atime in jail view only")
+        atime_probe = run(
+            [
+                str(suid_bin),
+                "run",
+                "--name",
+                HIGH_LEVEL_JAIL,
+                "/bin/sh",
+                "-c",
+                (
+                    f"/usr/bin/touch -a -d '2030-01-01 00:00:00 UTC' '{TARGET_PATH_ATIME}'"
+                    f" && /usr/bin/stat -c '%X' '{TARGET_PATH_ATIME}'"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+        )
+        if atime_probe.stdout.strip() != pinned_atime_epoch:
+            fail(
+                "jail view did not expose pinned atime after touch -a: "
+                f"got {atime_probe.stdout.strip()!r}"
+            )
+
+        print("[high 5/8] verifying host not changed before flush")
         if TARGET_PATH_HIGH.read_text(encoding="utf-8") != "before-high\n":
             fail("host content changed before high-level flush (unexpected)")
+        if TARGET_PATH_HIGH.stat().st_mode != original_host_mode:
+            fail("host mode changed before high-level flush (unexpected)")
+        if TARGET_PATH_ATIME.stat().st_atime_ns != original_host_atime_ns:
+            fail("host atime changed before high-level flush (unexpected)")
 
         print(
             f"[high] waiting {HIGH_LEVEL_RECORD_FLUSH_WAIT_SECONDS:.1f}s "
@@ -259,12 +295,18 @@ def run_high_level_smoke(
         )
         time.sleep(HIGH_LEVEL_RECORD_FLUSH_WAIT_SECONDS)
 
-        print("[high 5/6] flushing named jail")
+        print("[high 6/8] flushing named jail")
         run([str(suid_bin), "flush", "--name", HIGH_LEVEL_JAIL])
 
-        print("[high 6/6] verifying host changed after flush")
+        print("[high 7/8] verifying host changed after flush")
         if TARGET_PATH_HIGH.read_text(encoding="utf-8") != "after-high\n":
             fail("host content was not updated by high-level flush")
+        if TARGET_PATH_HIGH.stat().st_mode & stat.S_IXUSR == 0:
+            fail("host executable bit was not applied by high-level flush")
+        if TARGET_PATH_ATIME.stat().st_atime_ns != original_host_atime_ns:
+            fail("host atime should not be persisted by flush")
+
+        print("[high 8/8] high-level metadata checks passed")
         return True
     finally:
         subprocess.run(
