@@ -56,6 +56,7 @@ There are two replay paths:
 2. `record -> host` (flush-time)
 - used by public `flush` / hidden `_flush`
 - applies operations to host filesystem if allowed by replay policy
+- requires ownership checks against current euid on target paths (or nearest existing parent for create/delete-style ops)
 - marks successfully handled frames as flushed
 
 ## Profiles

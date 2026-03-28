@@ -861,3 +861,35 @@ fn flush_rename_into_symlink_parent_fails_without_marking_or_modifying_target_tr
     let frames = record::read_frames(&record).expect("read frames");
     assert!(!frames[0].flushed);
 }
+
+#[cfg(unix)]
+#[test]
+fn flush_blocks_write_when_parent_not_owned_by_current_user() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+
+    let temp = tempdir().expect("tempdir");
+    let record = temp.path().join("record.cjr");
+    let blocked_target = Path::new("/etc/cowjail-flush-owner-check-target");
+
+    let writer = record::Writer::open_append(&record).expect("writer open");
+    writer
+        .append_cbor(
+            record::TAG_WRITE_OP,
+            &op::Operation::WriteFile {
+                path: blocked_target.to_path_buf(),
+                state: op::FileState::Regular(b"blocked".to_vec()),
+            },
+        )
+        .expect("append write");
+    writer.sync().expect("sync");
+
+    let stats = cmd_flush::flush_record(&record, false, None).expect("flush");
+    assert_eq!(stats.pending, 1);
+    assert_eq!(stats.blocked, 1);
+    assert_eq!(stats.marked, 0);
+
+    let frames = record::read_frames(&record).expect("read frames");
+    assert!(!frames[0].flushed);
+}

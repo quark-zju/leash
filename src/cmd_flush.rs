@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use fs_err as fs;
 use std::collections::{HashMap, HashSet};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::cli::{FlushCommand, LowLevelFlushCommand};
@@ -174,6 +175,10 @@ pub(crate) fn flush_record_with_policy(
                 stats.blocked += 1;
                 continue;
             }
+            if !op_allowed_by_ownership(&item.op)? {
+                stats.blocked += 1;
+                continue;
+            }
             apply_operation(&item.op)?;
         }
         if !dry_run && record_lock.mark_flushed(item.offset)? {
@@ -220,6 +225,95 @@ fn op_paths(op: &op::Operation) -> Vec<&Path> {
         | op::Operation::RemoveDir { path }
         | op::Operation::Truncate { path, .. } => vec![path.as_path()],
         op::Operation::Rename { from, to } => vec![from.as_path(), to.as_path()],
+    }
+}
+
+fn op_allowed_by_ownership(op: &op::Operation) -> Result<bool> {
+    let current_uid = unsafe { libc::geteuid() };
+    let owns = |path: &Path| path_owned_by_uid(path, current_uid);
+    let parent_owns = |path: &Path| parent_owned_by_uid(path, current_uid);
+    match op {
+        op::Operation::WriteFile { path, state } => match state {
+            op::FileState::Deleted => {
+                if path.exists() {
+                    owns(path)
+                } else {
+                    parent_owns(path)
+                }
+            }
+            op::FileState::Regular(_)
+            | op::FileState::Executable(_)
+            | op::FileState::Symlink(_) => {
+                if path.exists() {
+                    owns(path)
+                } else {
+                    parent_owns(path)
+                }
+            }
+        },
+        op::Operation::CreateDir { path } => {
+            if path.exists() {
+                owns(path)
+            } else {
+                parent_owns(path)
+            }
+        }
+        op::Operation::RemoveDir { path } => {
+            if path.exists() {
+                owns(path)
+            } else {
+                parent_owns(path)
+            }
+        }
+        op::Operation::Truncate { path, .. } => owns(path),
+        op::Operation::Rename { from, to } => {
+            if !owns(from)? {
+                return Ok(false);
+            }
+            if to.exists() {
+                owns(to)
+            } else {
+                parent_owns(to)
+            }
+        }
+    }
+}
+
+fn path_owned_by_uid(path: &Path, uid: u32) -> Result<bool> {
+    validate_abs(path)?;
+    match fs::symlink_metadata(path) {
+        Ok(meta) => Ok(meta.uid() == uid),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => {
+            Err(err).with_context(|| format!("failed to inspect ownership: {}", path.display()))
+        }
+    }
+}
+
+fn parent_owned_by_uid(path: &Path, uid: u32) -> Result<bool> {
+    validate_abs(path)?;
+    let Some(mut current) = path.parent() else {
+        return Ok(false);
+    };
+
+    loop {
+        match fs::symlink_metadata(current) {
+            Ok(meta) => return Ok(meta.uid() == uid),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let Some(parent) = current.parent() else {
+                    return Ok(false);
+                };
+                current = parent;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "failed to inspect ownership of parent directory: {}",
+                        current.display()
+                    )
+                });
+            }
+        }
     }
 }
 
