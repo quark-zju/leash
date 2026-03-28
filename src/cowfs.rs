@@ -121,6 +121,9 @@ impl CowFs {
     }
 
     fn access_errno(&self, path: &Path) -> Option<i32> {
+        if is_blocked_proc_thread_self(path) {
+            return Some(ENOENT);
+        }
         match self.profile.visibility(path) {
             Visibility::Hidden | Visibility::Action(RuleAction::Hide) => Some(ENOENT),
             Visibility::Action(RuleAction::Deny) => Some(EACCES),
@@ -916,13 +919,17 @@ impl Filesystem for CowFs {
         reply.data(&buf[..n]);
     }
 
-    fn readlink(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyData) {
+    fn readlink(&mut self, req: &Request<'_>, ino: u64, reply: ReplyData) {
         let Some(path) = self.path_for_ino(ino).map(ToOwned::to_owned) else {
             reply.error(ENOENT);
             return;
         };
         if let Some(errno) = self.access_errno(&path) {
             reply.error(errno);
+            return;
+        }
+        if let Some(rewritten) = rewrite_proc_self_readlink_target(&path, req.pid()) {
+            reply.data(rewritten.as_bytes());
             return;
         }
         if let Some(node) = self.overlay.get(&path) {
@@ -1405,6 +1412,18 @@ fn to_timespec_or_omit(value: Option<TimeOrNow>) -> libc::timespec {
     }
 }
 
+fn is_blocked_proc_thread_self(path: &Path) -> bool {
+    let blocked = Path::new("/proc/thread-self");
+    path == blocked || path.starts_with(blocked)
+}
+
+fn rewrite_proc_self_readlink_target(path: &Path, requester_pid: u32) -> Option<String> {
+    if path == Path::new("/proc/self") {
+        return Some(requester_pid.to_string());
+    }
+    None
+}
+
 fn filetype_from_metadata(metadata: &Metadata) -> FileType {
     let ft = metadata.file_type();
     if ft.is_dir() {
@@ -1781,6 +1800,27 @@ mod tests {
     fn hide_path_returns_enoent() {
         let (_dir, _record_path, fs) = test_fs("/tmp/hide-me hide");
         assert_eq!(fs.access_errno(Path::new("/tmp/hide-me")), Some(ENOENT));
+    }
+
+    #[test]
+    fn proc_thread_self_is_hard_blocked() {
+        assert!(is_blocked_proc_thread_self(Path::new("/proc/thread-self")));
+        assert!(is_blocked_proc_thread_self(Path::new(
+            "/proc/thread-self/fd/0"
+        )));
+        assert!(!is_blocked_proc_thread_self(Path::new("/proc/self")));
+    }
+
+    #[test]
+    fn proc_self_readlink_target_is_rewritten_to_request_pid() {
+        assert_eq!(
+            rewrite_proc_self_readlink_target(Path::new("/proc/self"), 4242),
+            Some("4242".to_string())
+        );
+        assert_eq!(
+            rewrite_proc_self_readlink_target(Path::new("/proc/1"), 4242),
+            None
+        );
     }
 
     #[cfg(unix)]
