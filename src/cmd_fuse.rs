@@ -111,34 +111,17 @@ pub(crate) fn fuse_command(cmd: LowLevelFuseCommand) -> Result<()> {
         let session_error = session.last_error_code();
         let host_has_mount = crate::ns_runtime::process_has_mount(1, &cmd.mountpoint)?;
         let self_has_mount = crate::ns_runtime::process_has_mount(pid, &cmd.mountpoint)?;
-        let mountpoint_healthy = mountpoint_connection_healthy(&cmd.mountpoint)?;
-        if !session_alive || !host_has_mount || !self_has_mount || !mountpoint_healthy {
+        if !session_alive || !host_has_mount || !self_has_mount {
             crate::vlog!(
-                "_fuse: exiting because mount liveness failed (session_alive={} session_error={:?} host_pid1_has_mount={} self_has_mount={} mountpoint_healthy={}) for {}",
+                "_fuse: exiting because mount liveness failed (session_alive={} session_error={:?} host_pid1_has_mount={} self_has_mount={}) for {}",
                 session_alive,
                 session_error,
                 host_has_mount,
                 self_has_mount,
-                mountpoint_healthy,
                 cmd.mountpoint.display(),
             );
             break;
         }
     }
     Ok(())
-}
-
-fn mountpoint_connection_healthy(mountpoint: &std::path::Path) -> Result<bool> {
-    match fs::symlink_metadata(mountpoint) {
-        Ok(_) => Ok(true),
-        Err(err)
-            if matches!(
-                err.raw_os_error(),
-                Some(libc::ENOTCONN | libc::ENODEV | libc::EIO | libc::ENOENT)
-            ) =>
-        {
-            Ok(false)
-        }
-        Err(err) => Err(err).map_err(anyhow::Error::from),
-    }
 }
