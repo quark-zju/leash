@@ -32,5 +32,5 @@ pub(crate) fn mount_command(mount: MountCommand) -> Result<()> {
             mount.record.display()
         ),
     );
-    fs.mount(&mount.path)
+    fs.mount(&mount.path, false)
 }
