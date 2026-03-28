@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use fs_err as fs;
-use std::fs::TryLockError;
 use std::ffi::CString;
+use std::fs::TryLockError;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,8 @@ use crate::run_with_log;
 pub(crate) const LOCK_FILE_NAME: &str = "lock";
 pub(crate) const ROOT_LOCK_FILE_NAME: &str = ".lock";
 pub(crate) const MOUNT_DIR_NAME: &str = "mount";
+pub(crate) const MOUNT_ROOT_DIR_NAME: &str = "root";
+pub(crate) const MOUNT_OLD_ROOT_DIR_NAME: &str = "old-root";
 pub(crate) const FUSE_PID_NAME: &str = "fuse.pid";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +24,8 @@ pub(crate) struct NsRuntimePaths {
     pub(crate) ipcns_path: PathBuf,
     pub(crate) lock_path: PathBuf,
     pub(crate) mount_dir: PathBuf,
+    pub(crate) mount_root_dir: PathBuf,
+    pub(crate) mount_old_root_dir: PathBuf,
     pub(crate) fuse_pid_path: PathBuf,
 }
 
@@ -59,12 +63,15 @@ pub(crate) struct ExecRuntime {
 }
 
 pub(crate) fn paths_for(jail: &JailPaths) -> NsRuntimePaths {
+    let mount_dir = jail.runtime_dir.join(MOUNT_DIR_NAME);
     NsRuntimePaths {
         runtime_dir: jail.runtime_dir.clone(),
         mntns_path: jail.mntns_path.clone(),
         ipcns_path: jail.ipcns_path.clone(),
         lock_path: jail.runtime_dir.join(LOCK_FILE_NAME),
-        mount_dir: jail.runtime_dir.join(MOUNT_DIR_NAME),
+        mount_root_dir: mount_dir.join(MOUNT_ROOT_DIR_NAME),
+        mount_old_root_dir: mount_dir.join(MOUNT_OLD_ROOT_DIR_NAME),
+        mount_dir,
         fuse_pid_path: jail.runtime_dir.join(FUSE_PID_NAME),
     }
 }
@@ -202,6 +209,7 @@ pub(crate) fn ensure_runtime_namespaces(jail: &JailPaths) -> Result<EnsuredRunti
 
 pub(crate) fn ensure_runtime_for_exec(jail: &JailPaths) -> Result<ExecRuntime> {
     let ensured = ensure_runtime_namespaces(jail)?;
+    ensure_exec_mount_layout(jail, &ensured.paths)?;
     Ok(ExecRuntime { ensured })
 }
 
@@ -213,29 +221,34 @@ pub(crate) fn remove_runtime(jail: &JailPaths) -> Result<()> {
     )?;
     run_with_log(
         || remove_known_runtime_artifacts(&paths),
-        || format!("remove runtime artifacts under {}", paths.runtime_dir.display()),
+        || {
+            format!(
+                "remove runtime artifacts under {}",
+                paths.runtime_dir.display()
+            )
+        },
     )
 }
 
 fn unmount_runtime_mount_dir(paths: &NsRuntimePaths) -> Result<()> {
-    let mnt = CString::new(paths.mount_dir.as_os_str().as_bytes())
+    let mnt = CString::new(paths.mount_root_dir.as_os_str().as_bytes())
         .context("mount path contains interior NUL byte")?;
     crate::vlog!(
         "rm: syscall umount2({}, MNT_DETACH)",
-        paths.mount_dir.display()
+        paths.mount_root_dir.display()
     );
     let rc = unsafe { libc::umount2(mnt.as_ptr(), libc::MNT_DETACH) };
     if rc == 0 {
         crate::vlog!(
             "rm: syscall umount2 succeeded: {}",
-            paths.mount_dir.display()
+            paths.mount_root_dir.display()
         );
         return Ok(());
     }
     let err = std::io::Error::last_os_error();
     crate::vlog!(
         "rm: syscall umount2 failed for {}: {}",
-        paths.mount_dir.display(),
+        paths.mount_root_dir.display(),
         err
     );
     if matches!(
@@ -245,7 +258,7 @@ fn unmount_runtime_mount_dir(paths: &NsRuntimePaths) -> Result<()> {
         // Not mounted, already gone, or stale/disconnected endpoint.
         crate::vlog!(
             "rm: syscall umount2 reports already handled for {}: {}",
-            paths.mount_dir.display(),
+            paths.mount_root_dir.display(),
             err
         );
         return Ok(());
@@ -254,7 +267,7 @@ fn unmount_runtime_mount_dir(paths: &NsRuntimePaths) -> Result<()> {
         return Err(err).with_context(|| {
             format!(
                 "umount2(MNT_DETACH) failed for {}",
-                paths.mount_dir.display()
+                paths.mount_root_dir.display()
             )
         });
     }
@@ -312,7 +325,7 @@ fn remove_known_runtime_artifacts(paths: &NsRuntimePaths) -> Result<()> {
     remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.mntns_path)?;
     remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.ipcns_path)?;
 
-    remove_mount_dir_with_retry(paths)?;
+    remove_mount_dirs_with_retry(paths)?;
 
     match fs::remove_dir(&paths.runtime_dir) {
         Ok(()) => Ok(()),
@@ -345,7 +358,10 @@ fn list_unknown_runtime_entries(paths: &NsRuntimePaths) -> Result<Vec<String>> {
             unknown.push(format!("{:?}", name));
             continue;
         };
-        if !matches!(name, LOCK_FILE_NAME | MOUNT_DIR_NAME | FUSE_PID_NAME | "mntns" | "ipcns") {
+        if !matches!(
+            name,
+            LOCK_FILE_NAME | MOUNT_DIR_NAME | FUSE_PID_NAME | "mntns" | "ipcns"
+        ) {
             unknown.push(name.to_string());
         }
     }
@@ -368,9 +384,10 @@ fn remove_file_if_exists_with_owner_fix(runtime_dir: &Path, path: &Path) -> Resu
             crate::vlog!("rm: unlink ok {}", path.display());
             Ok(())
         }
-        Err(err) if err
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|ioe| ioe.kind() == std::io::ErrorKind::PermissionDenied) =>
+        Err(err)
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|ioe| ioe.kind() == std::io::ErrorKind::PermissionDenied) =>
         {
             ensure_owned_by_real_user(runtime_dir)?;
             let retried = remove_file_if_exists(path);
@@ -386,46 +403,96 @@ fn remove_file_if_exists_with_owner_fix(runtime_dir: &Path, path: &Path) -> Resu
     }
 }
 
-fn remove_mount_dir_with_retry(paths: &NsRuntimePaths) -> Result<()> {
-    crate::vlog!("rm: syscall rmdir {}", paths.mount_dir.display());
-    match fs::remove_dir(&paths.mount_dir) {
-        Ok(()) => {
-            crate::vlog!("rm: rmdir ok {}", paths.mount_dir.display());
-            Ok(())
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) if err.raw_os_error() == Some(libc::EBUSY) => {
+fn remove_mount_dirs_with_retry(paths: &NsRuntimePaths) -> Result<()> {
+    remove_dir_if_exists(&paths.mount_old_root_dir)
+        .with_context(|| format!("failed to remove {}", paths.mount_old_root_dir.display()))?;
+
+    if let Err(err) = remove_dir_if_exists(&paths.mount_root_dir) {
+        if err.raw_os_error() == Some(libc::EBUSY) {
             // Last chance for lingering mount references: stop the recorded
-            // FUSE server first, then retry unmount and rmdir.
+            // FUSE server first, then retry unmount and remove mount subdirs.
             crate::vlog!(
-                "rm: mount dir busy, retry cleanup for {}",
-                paths.mount_dir.display()
+                "rm: mount root busy, retry cleanup for {}",
+                paths.mount_root_dir.display()
             );
             terminate_recorded_fuse_server(paths)?;
             unmount_runtime_mount_dir(paths).with_context(|| {
                 format!(
                     "failed to unmount busy runtime mount {}",
-                    paths.mount_dir.display()
+                    paths.mount_root_dir.display()
                 )
             })?;
-            match fs::remove_dir(&paths.mount_dir) {
-                Ok(()) => {
-                    crate::vlog!("rm: rmdir ok after retry {}", paths.mount_dir.display());
-                    Ok(())
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(err) => Err(err).with_context(|| {
-                    format!(
-                        "failed to remove runtime mount dir {} after busy-unmount retry",
-                        paths.mount_dir.display()
-                    )
-                }),
-            }
+            remove_dir_if_exists(&paths.mount_root_dir).with_context(|| {
+                format!(
+                    "failed to remove runtime mount root dir {} after busy-unmount retry",
+                    paths.mount_root_dir.display()
+                )
+            })?;
+        } else {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to remove runtime mount root dir {}",
+                    paths.mount_root_dir.display()
+                )
+            });
         }
-        Err(err) => Err(err).with_context(|| {
-            format!("failed to remove runtime mount dir {}", paths.mount_dir.display())
-        }),
     }
+
+    remove_dir_if_exists(&paths.mount_dir).with_context(|| {
+        format!(
+            "failed to remove runtime mount dir {}",
+            paths.mount_dir.display()
+        )
+    })
+}
+
+fn remove_dir_if_exists(path: &Path) -> std::io::Result<()> {
+    match fs::remove_dir(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn ensure_exec_mount_layout(jail: &JailPaths, paths: &NsRuntimePaths) -> Result<()> {
+    let _lock = open_lock(jail)?;
+    fs::create_dir_all(&paths.mount_dir).with_context(|| {
+        format!(
+            "failed to create mount directory {}",
+            paths.mount_dir.display()
+        )
+    })?;
+    fs::create_dir_all(&paths.mount_root_dir).with_context(|| {
+        format!(
+            "failed to create mount root directory {}",
+            paths.mount_root_dir.display()
+        )
+    })?;
+    fs::create_dir_all(&paths.mount_old_root_dir).with_context(|| {
+        format!(
+            "failed to create mount old-root directory {}",
+            paths.mount_old_root_dir.display()
+        )
+    })?;
+    ensure_owned_by_real_user(&paths.mount_dir)?;
+    ensure_owned_by_real_user(&paths.mount_root_dir)?;
+    ensure_owned_by_real_user(&paths.mount_old_root_dir)?;
+    ensure_dir_is_empty(&paths.mount_old_root_dir)?;
+    Ok(())
+}
+
+fn ensure_dir_is_empty(path: &Path) -> Result<()> {
+    let mut entries = fs::read_dir(path)
+        .with_context(|| format!("failed to read directory {}", path.display()))?;
+    if let Some(entry) = entries.next() {
+        let entry = entry.with_context(|| format!("failed reading entry in {}", path.display()))?;
+        bail!(
+            "expected empty directory for pivot_root put_old {}, found entry {}",
+            path.display(),
+            entry.file_name().to_string_lossy()
+        );
+    }
+    Ok(())
 }
 
 fn terminate_recorded_fuse_server(paths: &NsRuntimePaths) -> Result<()> {
@@ -437,8 +504,7 @@ fn terminate_recorded_fuse_server(paths: &NsRuntimePaths) -> Result<()> {
     if kill_rc != 0 {
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() != Some(libc::ESRCH) {
-            return Err(err)
-                .with_context(|| format!("failed to SIGTERM fuse server pid={pid}"));
+            return Err(err).with_context(|| format!("failed to SIGTERM fuse server pid={pid}"));
         }
         crate::vlog!("rm: kill skipped (pid not found): {pid}");
     } else {
@@ -453,8 +519,7 @@ fn ensure_owned_by_real_user(path: &Path) -> Result<()> {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => {
-            return Err(err)
-                .with_context(|| format!("failed to stat {}", path.display()));
+            return Err(err).with_context(|| format!("failed to stat {}", path.display()));
         }
     };
 
@@ -472,8 +537,12 @@ fn ensure_owned_by_real_user(path: &Path) -> Result<()> {
         .context("path contains interior NUL byte while fixing ownership")?;
     let rc = unsafe { libc::chown(c_path.as_ptr(), target_uid, target_gid) };
     if rc != 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("failed to chown {} to {target_uid}:{target_gid}", path.display()));
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "failed to chown {} to {target_uid}:{target_gid}",
+                path.display()
+            )
+        });
     }
     Ok(())
 }

@@ -157,6 +157,14 @@ fn ns_runtime_paths_track_runtime_layout() {
     assert_eq!(runtime.lock_path, Path::new("/run/cowjail-test/demo/lock"));
     assert_eq!(runtime.mount_dir, Path::new("/run/cowjail-test/demo/mount"));
     assert_eq!(
+        runtime.mount_root_dir,
+        Path::new("/run/cowjail-test/demo/mount/root")
+    );
+    assert_eq!(
+        runtime.mount_old_root_dir,
+        Path::new("/run/cowjail-test/demo/mount/old-root")
+    );
+    assert_eq!(
         runtime.fuse_pid_path,
         Path::new("/run/cowjail-test/demo/fuse.pid")
     );
@@ -315,10 +323,7 @@ fn ns_runtime_ensure_runtime_with_repairs_partial_runtime() {
     })
     .expect("repair runtime");
 
-    assert_eq!(
-        ensured.state_before,
-        ns_runtime::RuntimeState::Ready
-    );
+    assert_eq!(ensured.state_before, ns_runtime::RuntimeState::Ready);
     assert_eq!(ensured.state_after, ns_runtime::RuntimeState::Ready);
     assert!(!ensured.rebuilt);
 }
@@ -345,7 +350,13 @@ fn ns_runtime_ensure_runtime_for_exec_succeeds() {
     let jail_paths = jail::jail_paths_in(&layout, "demo");
     let runtime_paths = ns_runtime::ensure_runtime_dir(&jail_paths).expect("ensure runtime");
     let exec_runtime = ns_runtime::ensure_runtime_for_exec(&jail_paths).expect("ensure exec");
-    assert_eq!(exec_runtime.ensured.paths.runtime_dir, runtime_paths.runtime_dir);
+    assert_eq!(
+        exec_runtime.ensured.paths.runtime_dir,
+        runtime_paths.runtime_dir
+    );
+    assert!(exec_runtime.ensured.paths.mount_dir.is_dir());
+    assert!(exec_runtime.ensured.paths.mount_root_dir.is_dir());
+    assert!(exec_runtime.ensured.paths.mount_old_root_dir.is_dir());
 }
 
 #[test]
