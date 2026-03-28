@@ -23,6 +23,7 @@ const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
 ~/bin ro
 ~/.claude rw
 ~/.codex rw
+~/.agents/ rw
 ~/.config/cowjail deny
 ~/.config/opencode rw
 ~/.config ro
