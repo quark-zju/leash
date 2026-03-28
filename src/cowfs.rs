@@ -456,6 +456,19 @@ impl CowFs {
         }
     }
 
+    fn ensure_dir_empty(&mut self, path: &Path) -> Result<(), i32> {
+        match self.snapshot_node(path)? {
+            Some(OverlayNode::Dir) => {}
+            Some(_) => return Err(ENOTDIR),
+            None => return Err(ENOENT),
+        }
+        if self.list_children(path)?.is_empty() {
+            Ok(())
+        } else {
+            Err(ENOTEMPTY)
+        }
+    }
+
     fn host_attr(&mut self, path: &Path) -> Result<FileAttr, i32> {
         let meta = fs::symlink_metadata(path).map_err(|err| io_errno(&err))?;
         Ok(self.attr_for_path(path, &meta))
@@ -1225,6 +1238,10 @@ impl Filesystem for CowFs {
                 return;
             }
             WriteMode::Cow => {
+                if let Err(code) = self.ensure_dir_empty(&path) {
+                    reply.error(code);
+                    return;
+                }
                 self.overlay.insert(path.clone(), OverlayNode::Deleted);
                 self.atime_overrides.remove(&path);
                 if self.append_record(&Operation::RemoveDir { path }).is_err() {
@@ -1681,6 +1698,20 @@ mod tests {
             .apply_rename_paths(&from, &to)
             .expect_err("rename to own subpath should fail");
         assert_eq!(err, EINVAL);
+    }
+
+    #[test]
+    fn cow_rmdir_rejects_non_empty_directory() {
+        let (dir, _record_path, mut fs) = test_fs("/tmp/** cow");
+        let path = dir.path().join("parent");
+        let child = path.join("child.txt");
+        fs::create_dir_all(&path).expect("mkdir");
+        fs::write(&child, b"x").expect("seed child");
+
+        let err = fs
+            .ensure_dir_empty(&path)
+            .expect_err("non-empty directory should fail");
+        assert_eq!(err, ENOTEMPTY);
     }
 
     #[test]
