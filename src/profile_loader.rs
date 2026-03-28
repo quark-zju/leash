@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use crate::{cli, jail, profile, record};
 
 const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
-. rw
 /tmp rw
 /bin ro
 /sbin ro
@@ -14,9 +13,14 @@ const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
 /lib ro
 /lib64 ro
 /etc ro
-/dev ro
+/dev/stdin ro
+/dev/stdout ro
+/dev/null rw
+/dev/urandom ro
+/dev/random ro
 /proc ro
 /sys ro
+. rw
 ";
 
 #[derive(Debug)]
