@@ -43,6 +43,12 @@ Then bootstrap setuid helper:
 cowjail _suid
 ```
 
+Shell completion: put this line in your shell rc file:
+
+```bash
+source <(cowjail completion)
+```
+
 ## Usage
 
 ### Simple
