@@ -211,6 +211,7 @@ pub(crate) fn ensure_runtime_for_exec(jail: &JailPaths) -> Result<ExecRuntime> {
 
 pub(crate) fn cleanup_before_fuse_start(paths: &NsRuntimePaths) -> Result<()> {
     terminate_recorded_fuse_server(paths)?;
+    cleanup_submounts_under(&paths.mount_dir)?;
     unmount_runtime_mount_dir(paths)?;
     remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.fuse_pid_path)?;
     fs::create_dir_all(&paths.mount_dir).with_context(|| {
@@ -225,6 +226,10 @@ pub(crate) fn cleanup_before_fuse_start(paths: &NsRuntimePaths) -> Result<()> {
 pub(crate) fn remove_runtime(jail: &JailPaths) -> Result<()> {
     let paths = paths_for(jail);
     run_with_log(
+        || cleanup_submounts_under(&paths.mount_dir),
+        || format!("cleanup submounts under {}", paths.mount_dir.display()),
+    )?;
+    run_with_log(
         || unmount_runtime_mount_dir(&paths),
         || format!("unmount {}", paths.mount_dir.display()),
     )?;
@@ -237,6 +242,46 @@ pub(crate) fn remove_runtime(jail: &JailPaths) -> Result<()> {
             )
         },
     )
+}
+
+pub(crate) fn cleanup_submounts_under(root: &Path) -> Result<usize> {
+    let raw = match fs::read_to_string("/proc/self/mountinfo") {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => {
+            return Err(err).context("failed to read /proc/self/mountinfo for submount cleanup");
+        }
+    };
+    let mut points = mountinfo_descendants_of(&raw, root);
+    points.sort_by(|a, b| b.as_os_str().len().cmp(&a.as_os_str().len()));
+    let mut cleaned = 0usize;
+    for mountpoint in points {
+        let c_path = CString::new(mountpoint.as_os_str().as_bytes())
+            .context("mount path contains interior NUL byte during submount cleanup")?;
+        crate::vlog!(
+            "rm: syscall umount2({}, MNT_DETACH) [submount]",
+            mountpoint.display()
+        );
+        let rc = unsafe { libc::umount2(c_path.as_ptr(), libc::MNT_DETACH) };
+        if rc == 0 {
+            cleaned += 1;
+            continue;
+        }
+        let err = std::io::Error::last_os_error();
+        if matches!(
+            err.raw_os_error(),
+            Some(libc::EINVAL | libc::ENOENT | libc::ENOTCONN)
+        ) {
+            continue;
+        }
+        return Err(err).with_context(|| {
+            format!(
+                "umount2(MNT_DETACH) failed for submount {}",
+                mountpoint.display()
+            )
+        });
+    }
+    Ok(cleaned)
 }
 
 fn unmount_runtime_mount_dir(paths: &NsRuntimePaths) -> Result<()> {
@@ -594,9 +639,33 @@ fn mountinfo_has_mountpoint(raw: &str, mountpoint: &Path) -> bool {
     false
 }
 
+fn mountinfo_descendants_of(raw: &str, root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let mut fields = line.split_whitespace();
+        let _id = fields.next();
+        let _parent = fields.next();
+        let _major_minor = fields.next();
+        let _root = fields.next();
+        let Some(enc_mountpoint) = fields.next() else {
+            continue;
+        };
+        let mountpoint = PathBuf::from(decode_mountinfo_path(enc_mountpoint));
+        if mountpoint != root && mountpoint.starts_with(root) {
+            out.push(mountpoint);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 pub(crate) fn mountinfo_has_mountpoint_for_test(raw: &str, mountpoint: &Path) -> bool {
     mountinfo_has_mountpoint(raw, mountpoint)
+}
+
+#[cfg(test)]
+pub(crate) fn mountinfo_descendants_of_for_test(raw: &str, root: &Path) -> Vec<PathBuf> {
+    mountinfo_descendants_of(raw, root)
 }
 
 fn decode_mountinfo_path(input: &str) -> String {

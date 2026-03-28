@@ -390,3 +390,23 @@ fn ns_runtime_mountinfo_parser_handles_escaped_mountpoints() {
         Path::new("/run/cowjail/demo/missing")
     ));
 }
+
+#[test]
+fn ns_runtime_mountinfo_descendants_collects_only_strict_submounts() {
+    let raw = "\
+40 30 0:35 / /run/cowjail/demo/mount rw,nosuid - fuse.cowjail cowjail rw\n\
+41 40 0:36 / /run/cowjail/demo/mount/dev rw,nosuid - tmpfs tmpfs rw\n\
+42 41 0:37 / /run/cowjail/demo/mount/dev/pts rw,nosuid - devpts devpts rw\n\
+43 30 0:38 / /run/cowjail/other/mount rw,nosuid - fuse.cowjail cowjail rw\n";
+    let got = ns_runtime::mountinfo_descendants_of_for_test(
+        raw,
+        Path::new("/run/cowjail/demo/mount"),
+    );
+    assert_eq!(
+        got,
+        vec![
+            Path::new("/run/cowjail/demo/mount/dev").to_path_buf(),
+            Path::new("/run/cowjail/demo/mount/dev/pts").to_path_buf(),
+        ]
+    );
+}
