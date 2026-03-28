@@ -64,7 +64,7 @@ fn try_main() -> Result<i32> {
             Ok(0)
         }
         Command::Show(show) => {
-            set_verbose(false);
+            set_verbose(show.verbose);
             cmd_show::show_command(show).context("show subcommand failed")?;
             Ok(0)
         }

@@ -50,6 +50,7 @@ pub struct ListCommand;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShowCommand {
     pub name: String,
+    pub verbose: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,6 +235,7 @@ fn parse_show(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
         return Ok(help_command(HelpTopic::Show, false));
     }
+    let verbose = args.contains(["-v", "--verbose"]);
     let name = args
         .free_from_str::<String>()
         .context("show requires NAME")?;
@@ -241,7 +243,7 @@ fn parse_show(mut args: Arguments) -> Result<Command> {
     if !extra.is_empty() {
         bail!("show got unexpected trailing arguments");
     }
-    Ok(Command::Show(ShowCommand { name }))
+    Ok(Command::Show(ShowCommand { name, verbose }))
 }
 
 fn parse_rm(mut args: Arguments) -> Result<Command> {
@@ -552,6 +554,18 @@ mod tests {
             other => panic!("expected show, got {other:?}"),
         };
         assert_eq!(show.name, "agent");
+        assert!(!show.verbose);
+    }
+
+    #[test]
+    fn parse_show_verbose_flag() {
+        let cmd = parse_from(os(&["show", "-v", "agent"])).expect("show -v should parse");
+        let show = match cmd {
+            Command::Show(show) => show,
+            other => panic!("expected show, got {other:?}"),
+        };
+        assert_eq!(show.name, "agent");
+        assert!(show.verbose);
     }
 
     #[test]

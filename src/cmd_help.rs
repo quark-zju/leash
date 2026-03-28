@@ -110,9 +110,11 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
         HelpTopic::Show => concat!(
             "cowjail show\n\n",
             "USAGE:\n",
-            "  cowjail show <name>\n\n",
+            "  cowjail show [-v|--verbose] <name>\n\n",
             "DESCRIPTION:\n",
-            "  Print jail profile and pending unflushed write-op count."
+            "  Print jail profile and pending unflushed write-op count.\n\n",
+            "OPTIONS:\n",
+            "  -v, --verbose         Also print pending write paths"
         ),
         HelpTopic::Rm => concat!(
             "cowjail rm\n\n",
