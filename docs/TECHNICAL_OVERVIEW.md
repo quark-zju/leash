@@ -67,7 +67,8 @@ Actions:
 - `ro`
 - `rw` (writable passthrough; applies to host immediately)
 - `cow` (writable copy-on-write; captured and applied by `flush`)
-- `deny`
+- `deny` (visible but blocked with `EACCES`)
+- `hide` (hidden with `ENOENT`)
 
 `.` resolves relative to current working directory at profile load time.
 

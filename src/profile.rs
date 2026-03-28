@@ -10,6 +10,7 @@ pub enum RuleAction {
     Passthrough,
     Cow,
     Deny,
+    Hide,
 }
 
 #[derive(Debug, Clone)]
@@ -132,7 +133,8 @@ fn parse_action(token: &str) -> Result<RuleAction> {
         "rw" => Ok(RuleAction::Passthrough),
         "cow" => Ok(RuleAction::Cow),
         "deny" => Ok(RuleAction::Deny),
-        _ => bail!("action must be one of ro/rw/cow/deny"),
+        "hide" => Ok(RuleAction::Hide),
+        _ => bail!("action must be one of ro/rw/cow/deny/hide"),
     }
 }
 
@@ -142,6 +144,7 @@ fn action_to_str(action: RuleAction) -> &'static str {
         RuleAction::Passthrough => "rw",
         RuleAction::Cow => "cow",
         RuleAction::Deny => "deny",
+        RuleAction::Hide => "hide",
     }
 }
 
@@ -416,6 +419,19 @@ mod tests {
         assert_eq!(
             profile.first_match_action(Path::new("/work/file.txt")),
             Some(RuleAction::Cow)
+        );
+    }
+
+    #[test]
+    fn parse_hide_action() {
+        let profile = parse(
+            r#"
+            /work hide
+            "#,
+        );
+        assert_eq!(
+            profile.first_match_action(Path::new("/work/file.txt")),
+            Some(RuleAction::Hide)
         );
     }
 }

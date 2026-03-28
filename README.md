@@ -4,7 +4,7 @@
 
 It combines:
 
-- profile-based filesystem visibility and write policy (`ro` / `rw` / `cow` / `deny`)
+- profile-based filesystem visibility and write policy (`ro` / `rw` / `cow` / `deny` / `hide`)
 - copy-on-write behavior (`cow`: writes stay in overlay + record first)
 - selective replay (`flush`) to apply only pending writes you accept
 - IPC namespace isolation to reduce escapes via host IPC services (for example `systemd-run`)
@@ -20,7 +20,7 @@ Out of scope:
 
 包含：
 
-- 配置文件控制读写策略（`ro` / `rw` / `cow` / `deny`）
+- 配置文件控制读写策略（`ro` / `rw` / `cow` / `deny` / `hide`）
 - 写隔离（`cow` 写操作先记录，仅在隔离区可见，后可选是否写回真实系统）
 - IPC 隔离，防止如 `systemd-run` 逃过文件系统隔离
 
@@ -65,6 +65,7 @@ Create a custom profile file:
 ```
 
 `rw` means passthrough write (applies to host immediately), while `cow` means delayed write (visible in jail first, applied by `flush`).
+`deny` means path remains visible but access returns permission denied. `hide` means path is hidden as if it does not exist.
 
 ```bash
 cowjail run --profile ~/my-profile -- your-command   # select jail by profile

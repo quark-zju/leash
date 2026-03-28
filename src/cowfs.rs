@@ -115,8 +115,16 @@ impl CowFs {
     fn is_visible(&self, path: &Path) -> bool {
         !matches!(
             self.profile.visibility(path),
-            Visibility::Hidden | Visibility::Action(RuleAction::Deny)
+            Visibility::Hidden | Visibility::Action(RuleAction::Hide)
         )
+    }
+
+    fn access_errno(&self, path: &Path) -> Option<i32> {
+        match self.profile.visibility(path) {
+            Visibility::Hidden | Visibility::Action(RuleAction::Hide) => Some(ENOENT),
+            Visibility::Action(RuleAction::Deny) => Some(EACCES),
+            _ => None,
+        }
     }
 
     fn write_mode(&self, path: &Path) -> WriteMode {
@@ -528,8 +536,8 @@ impl Filesystem for CowFs {
         };
 
         let path = parent_path.join(name);
-        if !self.is_visible(&path) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(&path) {
+            reply.error(errno);
             return;
         }
 
@@ -552,8 +560,8 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if !self.is_visible(&path) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(&path) {
+            reply.error(errno);
             return;
         }
         match self.effective_node(&path) {
@@ -582,8 +590,8 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if !self.is_visible(&path) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(&path) {
+            reply.error(errno);
             return;
         }
 
@@ -647,8 +655,8 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if !self.is_visible(path) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(path) {
+            reply.error(errno);
             return;
         }
         // allow write open only for writable rules.
@@ -674,8 +682,8 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if !self.is_visible(&path) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(&path) {
+            reply.error(errno);
             return;
         }
 
@@ -742,8 +750,8 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if !self.is_visible(&path) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(&path) {
+            reply.error(errno);
             return;
         }
         if let Some(node) = self.overlay.get(&path) {
@@ -777,8 +785,8 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if !self.is_visible(&path) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(&path) {
+            reply.error(errno);
             return;
         }
         match self.write_mode(&path) {
@@ -912,8 +920,8 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if !self.is_visible(&path) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(&path) {
+            reply.error(errno);
             return;
         }
         match self.write_mode(&path) {
@@ -951,8 +959,8 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if !self.is_visible(&path) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(&path) {
+            reply.error(errno);
             return;
         }
         match self.write_mode(&path) {
@@ -999,8 +1007,8 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if !self.is_visible(&path) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(&path) {
+            reply.error(errno);
             return;
         }
         match self.write_mode(&path) {
@@ -1038,8 +1046,8 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if !self.is_visible(&path) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(&path) {
+            reply.error(errno);
             return;
         }
         match self.write_mode(&path) {
@@ -1101,8 +1109,12 @@ impl Filesystem for CowFs {
         };
         let from = parent_path.join(name);
         let to = newparent_path.join(newname);
-        if !self.is_visible(&from) || !self.is_visible(&to) {
-            reply.error(ENOENT);
+        if let Some(errno) = self.access_errno(&from) {
+            reply.error(errno);
+            return;
+        }
+        if let Some(errno) = self.access_errno(&to) {
+            reply.error(errno);
             return;
         }
         match (self.write_mode(&from), self.write_mode(&to)) {
@@ -1155,6 +1167,10 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
+        if let Some(errno) = self.access_errno(&path) {
+            reply.error(errno);
+            return;
+        }
         match self.write_mode(&path) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
@@ -1561,5 +1577,17 @@ mod tests {
                 executable: false
             }) if data == b"fir"
         ));
+    }
+
+    #[test]
+    fn deny_path_returns_eacces() {
+        let (_dir, _record_path, fs) = test_fs("/tmp/deny-me deny");
+        assert_eq!(fs.access_errno(Path::new("/tmp/deny-me")), Some(EACCES));
+    }
+
+    #[test]
+    fn hide_path_returns_enoent() {
+        let (_dir, _record_path, fs) = test_fs("/tmp/hide-me hide");
+        assert_eq!(fs.access_errno(Path::new("/tmp/hide-me")), Some(ENOENT));
     }
 }
