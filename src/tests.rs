@@ -689,6 +689,66 @@ fn flush_blocks_when_profile_header_disallows_write() {
 }
 
 #[test]
+fn flush_profile_header_allows_cow_write_replay() {
+    let (_path_root, path) = temp_record_path("profile-cow-allow-record");
+    let (_target_root, target) = temp_record_path("profile-cow-allow-target");
+    let writer = record::Writer::open_append(&path).expect("writer open");
+
+    let header = ProfileHeaderFrame {
+        normalized_profile: format!("{} cow\n", target.display()),
+    };
+    writer
+        .append_cbor(record::TAG_PROFILE_HEADER, &header)
+        .expect("append header");
+    writer
+        .append_cbor(
+            record::TAG_WRITE_OP,
+            &op::Operation::WriteFile {
+                path: target.clone(),
+                state: op::FileState::Regular(b"cow-ok".to_vec()),
+            },
+        )
+        .expect("append write");
+    writer.sync().expect("sync");
+
+    let stats = cmd_flush::flush_record(&path, false, None).expect("flush");
+    assert_eq!(stats.pending, 1);
+    assert_eq!(stats.blocked, 0);
+    assert_eq!(stats.marked, 1);
+    assert_eq!(fs::read(&target).expect("read target"), b"cow-ok");
+}
+
+#[test]
+fn flush_profile_header_blocks_rw_passthrough_replay() {
+    let (_path_root, path) = temp_record_path("profile-rw-block-record");
+    let (_target_root, target) = temp_record_path("profile-rw-block-target");
+    let writer = record::Writer::open_append(&path).expect("writer open");
+
+    let header = ProfileHeaderFrame {
+        normalized_profile: format!("{} rw\n", target.display()),
+    };
+    writer
+        .append_cbor(record::TAG_PROFILE_HEADER, &header)
+        .expect("append header");
+    writer
+        .append_cbor(
+            record::TAG_WRITE_OP,
+            &op::Operation::WriteFile {
+                path: target.clone(),
+                state: op::FileState::Regular(b"rw-blocked".to_vec()),
+            },
+        )
+        .expect("append write");
+    writer.sync().expect("sync");
+
+    let stats = cmd_flush::flush_record(&path, false, None).expect("flush");
+    assert_eq!(stats.pending, 1);
+    assert_eq!(stats.blocked, 1);
+    assert_eq!(stats.marked, 0);
+    assert!(!target.exists());
+}
+
+#[test]
 fn flush_profile_override_can_allow_previously_blocked_write() {
     let (_path_root, path) = temp_record_path("profile-override-record");
     let (_target_root, target) = temp_record_path("profile-override-target");
@@ -735,7 +795,7 @@ fn load_profile_uses_builtin_default_profile() {
     );
     assert_eq!(
         loaded.profile.first_match_action(Path::new("/tmp")),
-        Some(profile::RuleAction::Cow)
+        Some(profile::RuleAction::Passthrough)
     );
 }
 
