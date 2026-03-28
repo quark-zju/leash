@@ -124,10 +124,7 @@ fn run_child_in_chroot(
                 }
             }
             if let Err(err) = privileges::drop_to_real_user() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    err.to_string(),
-                ));
+                return Err(std::io::Error::other(err.to_string()));
             }
             Ok(())
         });

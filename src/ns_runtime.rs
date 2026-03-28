@@ -90,7 +90,7 @@ pub(crate) fn ensure_runtime_dir(jail: &JailPaths) -> Result<NsRuntimePaths> {
 }
 
 fn open_root_lock(root: &Path) -> Result<RuntimeLock> {
-    fs::create_dir_all(&root)
+    fs::create_dir_all(root)
         .with_context(|| format!("failed to create runtime root directory {}", root.display()))?;
     open_lock_file(root.join(ROOT_LOCK_FILE_NAME))
 }
@@ -410,9 +410,9 @@ fn remove_mount_dir_with_retry(paths: &NsRuntimePaths, verbose: bool) -> Result<
                 verbose,
                 format!("rm: rmdir ok {}", paths.mount_dir.display()),
             );
-            return Ok(());
+            Ok(())
         }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) if err.raw_os_error() == Some(libc::EBUSY) => {
             // Last chance for lingering mount references: stop the recorded
             // FUSE server first, then retry unmount and rmdir.
@@ -433,24 +433,20 @@ fn remove_mount_dir_with_retry(paths: &NsRuntimePaths, verbose: bool) -> Result<
                         verbose,
                         format!("rm: rmdir ok after retry {}", paths.mount_dir.display()),
                     );
-                    return Ok(());
+                    Ok(())
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(err) => {
-                    return Err(err).with_context(|| {
-                        format!(
-                            "failed to remove runtime mount dir {} after busy-unmount retry",
-                            paths.mount_dir.display()
-                        )
-                    });
-                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(err) => Err(err).with_context(|| {
+                    format!(
+                        "failed to remove runtime mount dir {} after busy-unmount retry",
+                        paths.mount_dir.display()
+                    )
+                }),
             }
         }
-        Err(err) => {
-            return Err(err).with_context(|| {
-                format!("failed to remove runtime mount dir {}", paths.mount_dir.display())
-            });
-        }
+        Err(err) => Err(err).with_context(|| {
+            format!("failed to remove runtime mount dir {}", paths.mount_dir.display())
+        }),
     }
 }
 

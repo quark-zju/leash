@@ -197,10 +197,10 @@ fn glob_patterns_for_rule(pattern: &str) -> Vec<String> {
     let base = normalized_base_pattern(pattern);
     let mut out = vec![base.to_string()];
 
-    if let Some(descendant) = descendant_glob(base) {
-        if descendant != base {
-            out.push(descendant);
-        }
+    if let Some(descendant) = descendant_glob(base)
+        && descendant != base
+    {
+        out.push(descendant);
     }
 
     out

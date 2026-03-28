@@ -84,7 +84,7 @@ fn apply_setuid_root(path: &std::path::Path) -> Result<()> {
     let meta = fs::symlink_metadata(path)
         .with_context(|| format!("failed to stat executable {}", path.display()))?;
     let current_mode = meta.permissions().mode();
-    let target_mode = current_mode | libc::S_ISUID as u32;
+    let target_mode = current_mode | libc::S_ISUID;
     if unsafe { libc::chmod(path_c.as_ptr(), target_mode as libc::mode_t) } != 0 {
         let err = std::io::Error::last_os_error();
         return Err(anyhow::anyhow!(
@@ -98,5 +98,5 @@ fn apply_setuid_root(path: &std::path::Path) -> Result<()> {
 }
 
 fn is_suid_root(meta: &std::fs::Metadata) -> bool {
-    meta.uid() == 0 && (meta.mode() & libc::S_ISUID as u32) != 0
+    meta.uid() == 0 && (meta.mode() & libc::S_ISUID) != 0
 }

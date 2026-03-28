@@ -124,7 +124,7 @@ pub(crate) fn list_named_jails_in(layout: &JailLayout) -> Result<Vec<OsString>> 
     }
 
     let mut names = Vec::new();
-    for entry in fs_err::read_dir(&root)
+    for entry in fs_err::read_dir(root)
         .map_err(|err| anyhow::anyhow!("failed to list state root {}: {err}", root.display()))?
     {
         let entry = entry.map_err(|err| {

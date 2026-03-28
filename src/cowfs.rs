@@ -751,7 +751,6 @@ impl Filesystem for CowFs {
         match self.write_mode(&path) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
-                return;
             }
             WriteMode::Cow => {
                 match self.snapshot_node(&path) {
@@ -825,7 +824,6 @@ impl Filesystem for CowFs {
         match self.write_mode(&path) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
-                return;
             }
             WriteMode::Cow => {
                 if offset < 0 {
@@ -958,7 +956,6 @@ impl Filesystem for CowFs {
         match self.write_mode(&path) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
-                return;
             }
             WriteMode::Cow => {
                 match self.snapshot_node(&path) {
@@ -1054,7 +1051,6 @@ impl Filesystem for CowFs {
         match self.write_mode(&path) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
-                return;
             }
             WriteMode::Cow => {
                 match self.snapshot_node(&path) {
@@ -1179,7 +1175,6 @@ impl Filesystem for CowFs {
         match self.write_mode(&path) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
-                return;
             }
             WriteMode::Cow => {
                 let (mut data, executable) = match self.current_regular(&path) {
