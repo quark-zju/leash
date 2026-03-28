@@ -220,14 +220,6 @@ pub(crate) fn remove_runtime_with_verbose(jail: &JailPaths, verbose: bool) -> Re
 }
 
 fn unmount_runtime_mount_dir(paths: &NsRuntimePaths, verbose: bool) -> Result<()> {
-    if !paths.mount_dir.exists() {
-        vlog(
-            verbose,
-            format!("rm: skip umount (mount dir missing): {}", paths.mount_dir.display()),
-        );
-        return Ok(());
-    }
-
     let mnt = CString::new(paths.mount_dir.as_os_str().as_bytes())
         .context("mount path contains interior NUL byte")?;
     vlog(
@@ -246,12 +238,15 @@ fn unmount_runtime_mount_dir(paths: &NsRuntimePaths, verbose: bool) -> Result<()
         return Ok(());
     }
     let err = std::io::Error::last_os_error();
-    if matches!(err.raw_os_error(), Some(libc::EINVAL | libc::ENOENT)) {
-        // Not mounted (or already gone).
+    if matches!(
+        err.raw_os_error(),
+        Some(libc::EINVAL | libc::ENOENT | libc::ENOTCONN)
+    ) {
+        // Not mounted, already gone, or stale/disconnected endpoint.
         vlog(
             verbose,
             format!(
-                "rm: syscall umount2 reports not-mounted/already-gone for {}: {}",
+                "rm: syscall umount2 reports already handled for {}: {}",
                 paths.mount_dir.display(),
                 err
             ),
