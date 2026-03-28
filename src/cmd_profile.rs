@@ -52,7 +52,7 @@ fn list_profiles() -> Result<()> {
 }
 
 fn edit_profile(name: &str) -> Result<()> {
-    let path = resolved_profile_path(name)?;
+    let path = editable_profile_path(name)?;
 
     if std::env::var_os("EDITOR").is_none() {
         bail!("EDITOR is not set");
@@ -79,6 +79,26 @@ fn show_profile(name: &str) -> Result<()> {
         println!();
     }
     Ok(())
+}
+
+fn editable_profile_path(name: &str) -> Result<std::path::PathBuf> {
+    jail::validate_explicit_name(name).context("invalid profile name")?;
+    let path = jail::profile_definition_path(name)?;
+    if path.exists() {
+        return Ok(path);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create profiles dir {}", parent.display()))?;
+    }
+    let content = if name == cli::DEFAULT_PROFILE {
+        profile_loader::builtin_default_profile_source()
+    } else {
+        ""
+    };
+    fs::write(&path, content)
+        .with_context(|| format!("failed to initialize profile at {}", path.display()))?;
+    Ok(path)
 }
 
 fn rm_profile(name: &str) -> Result<()> {
