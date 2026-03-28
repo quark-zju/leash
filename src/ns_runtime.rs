@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use fs_err as fs;
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -83,6 +84,8 @@ pub(crate) fn ensure_runtime_dir(jail: &JailPaths) -> Result<NsRuntimePaths> {
             paths.runtime_dir.display()
         )
     })?;
+    ensure_owned_by_real_user(&root)?;
+    ensure_owned_by_real_user(&paths.runtime_dir)?;
     Ok(paths)
 }
 
@@ -293,10 +296,10 @@ fn remove_known_runtime_artifacts(paths: &NsRuntimePaths) -> Result<()> {
         );
     }
 
-    remove_file_if_exists(&paths.fuse_pid_path)?;
-    remove_file_if_exists(&paths.lock_path)?;
-    remove_file_if_exists(&paths.mntns_path)?;
-    remove_file_if_exists(&paths.ipcns_path)?;
+    remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.fuse_pid_path)?;
+    remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.lock_path)?;
+    remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.mntns_path)?;
+    remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.ipcns_path)?;
 
     match fs::remove_dir(&paths.mount_dir) {
         Ok(()) => {}
@@ -353,6 +356,50 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err).with_context(|| format!("failed to remove file {}", path.display())),
     }
+}
+
+fn remove_file_if_exists_with_owner_fix(runtime_dir: &Path, path: &Path) -> Result<()> {
+    match remove_file_if_exists(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|ioe| ioe.kind() == std::io::ErrorKind::PermissionDenied) =>
+        {
+            ensure_owned_by_real_user(runtime_dir)?;
+            remove_file_if_exists(path)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn ensure_owned_by_real_user(path: &Path) -> Result<()> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to stat {}", path.display()));
+        }
+    };
+
+    let target_uid = unsafe { libc::getuid() };
+    let target_gid = unsafe { libc::getgid() };
+    if meta.uid() == target_uid && meta.gid() == target_gid {
+        return Ok(());
+    }
+
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .context("path contains interior NUL byte while fixing ownership")?;
+    let rc = unsafe { libc::chown(c_path.as_ptr(), target_uid, target_gid) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("failed to chown {} to {target_uid}:{target_gid}", path.display()));
+    }
+    Ok(())
 }
 
 fn is_enotconn(err: &anyhow::Error) -> bool {

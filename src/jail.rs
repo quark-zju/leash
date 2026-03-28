@@ -1,7 +1,9 @@
 use anyhow::{Result, bail};
 use fs_err as fs;
-use std::ffi::OsString;
+use std::ffi::{CString, OsString};
 use std::hash::Hasher;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use twox_hash::XxHash64;
 
@@ -237,6 +239,7 @@ pub(crate) fn materialize_jail(paths: &JailPaths, normalized_profile: &str) -> R
             paths.state_dir.display()
         )
     })?;
+    ensure_owned_by_real_user(&paths.state_dir)?;
     fs::write(&paths.profile_path, normalized_profile).map_err(|err| {
         anyhow::anyhow!(
             "failed to write jail profile file {}: {err}",
@@ -260,12 +263,7 @@ pub(crate) fn materialize_jail(paths: &JailPaths, normalized_profile: &str) -> R
 
 pub(crate) fn remove_jail(paths: &JailPaths) -> Result<()> {
     crate::ns_runtime::remove_runtime(paths)?;
-    fs::remove_dir_all(&paths.state_dir).map_err(|err| {
-        anyhow::anyhow!(
-            "failed to remove jail state directory {}: {err}",
-            paths.state_dir.display()
-        )
-    })
+    remove_known_state_artifacts(paths)
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -296,4 +294,108 @@ pub(crate) fn state_root_from_home(home: &Path) -> PathBuf {
 
 pub(crate) fn profile_definition_path_in(layout: &JailLayout, name: &str) -> PathBuf {
     layout.config_root.join("profiles").join(name)
+}
+
+fn remove_known_state_artifacts(paths: &JailPaths) -> Result<()> {
+    if !paths.state_dir.exists() {
+        return Ok(());
+    }
+    let unknown = list_unknown_state_entries(paths)?;
+    if !unknown.is_empty() {
+        bail!(
+            "refusing to remove state directory {}: found unknown entries: {}",
+            paths.state_dir.display(),
+            unknown.join(", ")
+        );
+    }
+
+    remove_file_if_exists_with_owner_fix(&paths.state_dir, &paths.profile_path)?;
+    remove_file_if_exists_with_owner_fix(&paths.state_dir, &paths.record_path)?;
+    match fs::remove_dir(&paths.state_dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(anyhow::anyhow!(
+            "failed to remove jail state directory {}: {err}",
+            paths.state_dir.display()
+        )),
+    }
+}
+
+fn list_unknown_state_entries(paths: &JailPaths) -> Result<Vec<String>> {
+    let mut unknown = Vec::new();
+    for entry in fs::read_dir(&paths.state_dir).map_err(|err| {
+        anyhow::anyhow!(
+            "failed to read state directory {}: {err}",
+            paths.state_dir.display()
+        )
+    })? {
+        let entry = entry.map_err(|err| {
+            anyhow::anyhow!(
+                "failed to read entry in state directory {}: {err}",
+                paths.state_dir.display()
+            )
+        })?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            unknown.push(format!("{:?}", name));
+            continue;
+        };
+        if !matches!(name, "profile" | "record") {
+            unknown.push(name.to_string());
+        }
+    }
+    unknown.sort();
+    Ok(unknown)
+}
+
+fn remove_file_if_exists_with_owner_fix(state_dir: &Path, path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            ensure_owned_by_real_user(state_dir)?;
+            match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(err) => Err(anyhow::anyhow!(
+                    "failed to remove file {}: {err}",
+                    path.display()
+                )),
+            }
+        }
+        Err(err) => Err(anyhow::anyhow!(
+            "failed to remove file {}: {err}",
+            path.display()
+        )),
+    }
+}
+
+fn ensure_owned_by_real_user(path: &Path) -> Result<()> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(anyhow::anyhow!("failed to stat {}: {err}", path.display()));
+        }
+    };
+    let target_uid = unsafe { libc::getuid() };
+    let target_gid = unsafe { libc::getgid() };
+    if meta.uid() == target_uid && meta.gid() == target_gid {
+        return Ok(());
+    }
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| anyhow::anyhow!("path contains interior NUL: {}", path.display()))?;
+    let rc = unsafe { libc::chown(c_path.as_ptr(), target_uid, target_gid) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(anyhow::anyhow!(
+            "failed to chown {} to {target_uid}:{target_gid}: {err}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
