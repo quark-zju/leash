@@ -77,5 +77,4 @@ pub(crate) fn vlog(verbose: bool, msg: String) {
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;
