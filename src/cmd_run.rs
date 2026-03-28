@@ -1,7 +1,5 @@
 use anyhow::{Context, Result, bail};
-use fs_err as fs;
 use std::ffi::CString;
-use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command as ProcessCommand;
@@ -42,16 +40,12 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         runtime.ensured.state_after,
         runtime.ensured.rebuilt
     );
-    let fuse_pid = ensure_fuse_server(
+    ensure_fuse_server(
         &resolved.paths,
         &runtime.ensured.paths,
         &resolved.paths.profile_path,
         &resolved.paths.record_path,
         run.verbose,
-    )?;
-    let ipcns_file = run_with_log(
-        || open_process_ipcns(fuse_pid),
-        || format!("open ipc namespace from fuse pid {fuse_pid}"),
     )?;
 
     crate::vlog!(
@@ -60,7 +54,7 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         cwd.display()
     );
     let status = run_with_log(
-        || run_child_in_chroot(&run, &runtime.ensured.paths.mount_dir, &cwd, ipcns_file),
+        || run_child_in_chroot(&run, &runtime.ensured.paths.mount_dir, &cwd),
         || format!("execute jailed command {:?}", run.program),
     );
 
@@ -72,23 +66,21 @@ fn run_child_in_chroot(
     run: &RunCommand,
     mountpoint: &Path,
     old_cwd: &Path,
-    ipcns_file: fs::File,
 ) -> Result<std::process::ExitStatus> {
     let mount_c = CString::new(mountpoint.as_os_str().as_encoded_bytes())
         .context("mount path contains interior NUL byte")?;
     let cwd_c = CString::new(old_cwd.as_os_str().as_encoded_bytes())
         .context("cwd contains interior NUL byte")?;
-    let ipcns_fd = ipcns_file.as_raw_fd();
 
     let mut cmd = ProcessCommand::new(&run.program);
     cmd.args(&run.args);
     unsafe {
         cmd.pre_exec(move || {
-            if libc::setns(ipcns_fd, libc::CLONE_NEWIPC) != 0 {
+            if libc::unshare(libc::CLONE_NEWIPC) != 0 {
                 let err = std::io::Error::last_os_error();
                 return Err(std::io::Error::new(
                     err.kind(),
-                    format!("setns(CLONE_NEWIPC) failed: {err}"),
+                    format!("unshare(CLONE_NEWIPC) failed: {err}"),
                 ));
             }
             // FUSE mount access is keyed by fsuid/fsgid, not effective uid.
@@ -171,7 +163,6 @@ fn ensure_fuse_server(
         .arg(&runtime_paths.mount_dir)
         .arg("--pid-path")
         .arg(&runtime_paths.fuse_pid_path)
-        .env("COWJAIL_UNSHARE_IPC", "1")
         // Detach _fuse from caller stdio; otherwise a failing `cowjail run` can
         // keep capture_output() callers blocked because _fuse still holds pipes.
         .stdin(Stdio::null())
@@ -195,12 +186,6 @@ fn ensure_fuse_server(
         );
     }
     Ok(pid)
-}
-
-fn open_process_ipcns(pid: u32) -> Result<fs::File> {
-    let path = std::path::PathBuf::from(format!("/proc/{pid}/ns/ipc"));
-    fs::File::open(&path)
-        .with_context(|| format!("failed to open ipc namespace handle {}", path.display()))
 }
 
 fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {

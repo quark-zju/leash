@@ -21,7 +21,7 @@ Out of scope:
 
 Main components:
 
-- `run`: resolve/select jail, ensure per-jail runtime + FUSE server, join server IPC namespace, execute command in jail
+- `run`: resolve/select jail, ensure per-jail runtime + FUSE server, create a fresh IPC namespace for the jailed child, execute command in jail
 - `_fuse` (hidden): internal long-lived FUSE server entrypoint for a jail runtime
 - `flush`: replay pending record operations onto host filesystem
 - `add` / `rm` / `list`: named jail lifecycle
@@ -96,5 +96,5 @@ These low-level commands are intentionally separate from normal workflow docs.
 
 - `run` does not persist a separate mount namespace handle for jail reuse.
 - `_fuse` mounts a per-jail FUSE view under the runtime directory (`.../mount`).
-- `run` joins the FUSE server IPC namespace (`setns(CLONE_NEWIPC)`), then `chroot`s to that mount, then drops privileges to the real user.
+- `run` creates a fresh IPC namespace for the child (`unshare(CLONE_NEWIPC)`), then `chroot`s to the jail mount, then drops privileges to the real user.
 - `rm` unmounts runtime FUSE mountpoints and removes known runtime/state artifacts conservatively.
