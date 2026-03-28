@@ -644,9 +644,9 @@ impl Filesystem for CowFs {
             entries.push(entry);
         }
 
-        for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
-            reply.add(entry.0, (i + 1) as i64, entry.1, entry.2.as_os_str());
-        }
+        append_readdir_entries(&entries, offset, |ino, next_offset, kind, name| {
+            reply.add(ino, next_offset, kind, name)
+        });
         reply.ok();
     }
 
@@ -1281,6 +1281,21 @@ fn regular_state(data: Vec<u8>, executable: bool) -> FileState {
     }
 }
 
+fn append_readdir_entries<F>(
+    entries: &[(u64, FileType, std::ffi::OsString)],
+    offset: i64,
+    mut add: F,
+) where
+    F: FnMut(u64, i64, FileType, &OsStr) -> bool,
+{
+    let start = if offset <= 0 { 0 } else { offset as usize };
+    for (i, entry) in entries.iter().enumerate().skip(start) {
+        if add(entry.0, (i + 1) as i64, entry.1, entry.2.as_os_str()) {
+            break;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1589,5 +1604,43 @@ mod tests {
     fn hide_path_returns_enoent() {
         let (_dir, _record_path, fs) = test_fs("/tmp/hide-me hide");
         assert_eq!(fs.access_errno(Path::new("/tmp/hide-me")), Some(ENOENT));
+    }
+
+    #[test]
+    fn readdir_append_stops_when_buffer_is_full() {
+        let entries = vec![
+            (1, FileType::Directory, std::ffi::OsString::from(".")),
+            (2, FileType::Directory, std::ffi::OsString::from("..")),
+            (3, FileType::RegularFile, std::ffi::OsString::from("a")),
+            (4, FileType::RegularFile, std::ffi::OsString::from("b")),
+        ];
+        let mut seen = Vec::new();
+        let mut calls = 0usize;
+        append_readdir_entries(&entries, 0, |ino, next_offset, _kind, name| {
+            calls += 1;
+            seen.push((ino, next_offset, name.to_os_string()));
+            calls >= 2
+        });
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], (1, 1, std::ffi::OsString::from(".")));
+        assert_eq!(seen[1], (2, 2, std::ffi::OsString::from("..")));
+    }
+
+    #[test]
+    fn readdir_append_respects_offset() {
+        let entries = vec![
+            (1, FileType::Directory, std::ffi::OsString::from(".")),
+            (2, FileType::Directory, std::ffi::OsString::from("..")),
+            (3, FileType::RegularFile, std::ffi::OsString::from("a")),
+            (4, FileType::RegularFile, std::ffi::OsString::from("b")),
+        ];
+        let mut seen = Vec::new();
+        append_readdir_entries(&entries, 2, |ino, next_offset, _kind, name| {
+            seen.push((ino, next_offset, name.to_os_string()));
+            false
+        });
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], (3, 3, std::ffi::OsString::from("a")));
+        assert_eq!(seen[1], (4, 4, std::ffi::OsString::from("b")));
     }
 }
