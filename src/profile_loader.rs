@@ -23,8 +23,11 @@ const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
 ~/bin ro
 ~/.claude rw
 ~/.codex rw
+~/.config/cowjail deny
 ~/.config/opencode rw
 ~/.config ro
+~/.local/state/cowjail deny
+~/.local/state/opencode/ rw
 ~/.gitconfig* ro
 ~/.gitignore* ro
 ~/.ssh deny
