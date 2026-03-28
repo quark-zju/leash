@@ -1,4 +1,5 @@
-use anyhow::{Context, Result, bail};
+use crate::profile::{self, RuleAction};
+use anyhow::{Result, bail};
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
@@ -12,21 +13,20 @@ pub(crate) enum MountPlanEntry {
 #[derive(Debug, Clone)]
 struct RuleLine {
     path: PathBuf,
-    action: Action,
+    action: RuleAction,
     line_no: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Action {
-    ReadOnly,
-    ReadWrite,
-    Cow,
-    Deny,
-    Hide,
-}
-
 pub(crate) fn build_mount_plan(normalized_profile: &str) -> Result<Vec<MountPlanEntry>> {
-    let rules = parse_rules(normalized_profile)?;
+    let parsed = profile::parse_normalized_rule_lines(normalized_profile)?;
+    let rules: Vec<RuleLine> = parsed
+        .into_iter()
+        .map(|line| RuleLine {
+            path: line.path,
+            action: line.action,
+            line_no: line.line_no,
+        })
+        .collect();
     let mut plan = Vec::new();
 
     for rule in &rules {
@@ -54,8 +54,8 @@ pub(crate) fn build_mount_plan(normalized_profile: &str) -> Result<Vec<MountPlan
                 bail!("line {}: /proc only allows the exact path /proc", rule.line_no);
             }
             let read_only = match rule.action {
-                Action::ReadOnly => true,
-                Action::ReadWrite => false,
+                RuleAction::ReadOnly => true,
+                RuleAction::Passthrough => false,
                 _ => bail!("line {}: /proc only supports ro or rw", rule.line_no),
             };
             plan.push(MountPlanEntry::Proc {
@@ -69,8 +69,8 @@ pub(crate) fn build_mount_plan(normalized_profile: &str) -> Result<Vec<MountPlan
                 bail!("line {}: /sys only allows the exact path /sys", rule.line_no);
             }
             let read_only = match rule.action {
-                Action::ReadOnly => true,
-                Action::ReadWrite => false,
+                RuleAction::ReadOnly => true,
+                RuleAction::Passthrough => false,
                 _ => bail!("line {}: /sys only supports ro or rw", rule.line_no),
             };
             plan.push(MountPlanEntry::Sys {
@@ -80,14 +80,14 @@ pub(crate) fn build_mount_plan(normalized_profile: &str) -> Result<Vec<MountPlan
             continue;
         }
 
-        if under_dev && matches!(rule.action, Action::ReadOnly | Action::ReadWrite) {
+        if under_dev && matches!(rule.action, RuleAction::ReadOnly | RuleAction::Passthrough) {
             let meta = std::fs::symlink_metadata(&rule.path);
             let Ok(meta) = meta else {
                 continue;
             };
             let ft = meta.file_type();
             if ft.is_char_device() || ft.is_dir() {
-                let read_only = rule.action == Action::ReadOnly;
+                let read_only = rule.action == RuleAction::ReadOnly;
                 plan.push(MountPlanEntry::Bind {
                     path: rule.path.clone(),
                     read_only,
@@ -122,43 +122,6 @@ fn validate_bind_conflicts(rules: &[RuleLine], plan: &[MountPlanEntry]) -> Resul
         }
     }
     Ok(())
-}
-
-fn parse_rules(normalized_profile: &str) -> Result<Vec<RuleLine>> {
-    let mut out = Vec::new();
-    for (idx, line) in normalized_profile.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let mut parts = trimmed.split_whitespace();
-        let path = parts
-            .next()
-            .with_context(|| format!("line {} missing path", idx + 1))?;
-        let action = parts
-            .next()
-            .with_context(|| format!("line {} missing action", idx + 1))?;
-        if parts.next().is_some() {
-            bail!("line {} has extra tokens", idx + 1);
-        }
-        out.push(RuleLine {
-            path: PathBuf::from(path),
-            action: parse_action(action).with_context(|| format!("line {} invalid action", idx + 1))?,
-            line_no: idx + 1,
-        });
-    }
-    Ok(out)
-}
-
-fn parse_action(value: &str) -> Result<Action> {
-    match value {
-        "ro" => Ok(Action::ReadOnly),
-        "rw" => Ok(Action::ReadWrite),
-        "cow" => Ok(Action::Cow),
-        "deny" => Ok(Action::Deny),
-        "hide" => Ok(Action::Hide),
-        _ => bail!("action must be one of ro/rw/cow/deny/hide"),
-    }
 }
 
 fn has_glob_syntax(value: &str) -> bool {

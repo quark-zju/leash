@@ -22,6 +22,7 @@ struct Rule {
 struct ParsedRuleLine {
     pattern: String,
     action: RuleAction,
+    line_no: usize,
 }
 
 #[derive(Debug)]
@@ -52,7 +53,7 @@ impl Profile {
         let mut implicit_visible_ancestors = BTreeSet::new();
         let mut implicit_ancestor_globset_builder = GlobSetBuilder::new();
         let mut implicit_ancestor_globs = BTreeSet::new();
-        for (idx, line) in parsed.iter().enumerate() {
+        for line in &parsed {
             let action = line.action;
             let pattern = line.pattern.clone();
             if action != RuleAction::Deny {
@@ -69,7 +70,9 @@ impl Profile {
                 let glob = GlobBuilder::new(&glob_pattern)
                     .literal_separator(true)
                     .build()
-                    .with_context(|| format!("line {} has invalid glob: {glob_pattern}", idx + 1))?;
+                    .with_context(|| {
+                        format!("line {} has invalid glob: {glob_pattern}", line.line_no)
+                    })?;
                 globset_builder.add(glob);
                 glob_to_rule.push(rule_idx);
             }
@@ -147,6 +150,33 @@ pub fn normalize_source(profile_src: &str, launch_cwd: &Path) -> Result<String> 
     Ok(out)
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct NormalizedRuleLine {
+    pub(crate) path: PathBuf,
+    pub(crate) action: RuleAction,
+    pub(crate) line_no: usize,
+}
+
+pub(crate) fn parse_normalized_rule_lines(profile_src: &str) -> Result<Vec<NormalizedRuleLine>> {
+    let parsed = parse_lines(profile_src, Path::new("/"))?;
+    let mut out = Vec::with_capacity(parsed.len());
+    for line in parsed {
+        let path = PathBuf::from(&line.pattern);
+        if !path.is_absolute() {
+            bail!(
+                "line {} normalized profile path must be absolute",
+                line.line_no
+            );
+        }
+        out.push(NormalizedRuleLine {
+            path,
+            action: line.action,
+            line_no: line.line_no,
+        });
+    }
+    Ok(out)
+}
+
 fn parse_action(token: &str) -> Result<RuleAction> {
     match token {
         "ro" => Ok(RuleAction::ReadOnly),
@@ -191,7 +221,11 @@ fn parse_lines(profile_src: &str, cwd: &Path) -> Result<Vec<ParsedRuleLine>> {
             .with_context(|| format!("line {} has invalid action", idx + 1))?;
         let pattern = normalize_pattern(pattern_token, cwd)
             .with_context(|| format!("line {} has invalid pattern", idx + 1))?;
-        out.push(ParsedRuleLine { pattern, action });
+        out.push(ParsedRuleLine {
+            pattern,
+            action,
+            line_no: idx + 1,
+        });
     }
     Ok(out)
 }
@@ -555,6 +589,18 @@ mod tests {
             profile.first_match_action(Path::new("/work/file.txt")),
             Some(RuleAction::Hide)
         );
+    }
+
+    #[test]
+    fn parse_normalized_rule_lines_reuses_profile_action_parser() {
+        let lines = parse_normalized_rule_lines("/etc ro\n/tmp rw\n").expect("should parse");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].path, PathBuf::from("/etc"));
+        assert_eq!(lines[0].action, RuleAction::ReadOnly);
+        assert_eq!(lines[0].line_no, 1);
+        assert_eq!(lines[1].path, PathBuf::from("/tmp"));
+        assert_eq!(lines[1].action, RuleAction::Passthrough);
+        assert_eq!(lines[1].line_no, 2);
     }
 
 }
