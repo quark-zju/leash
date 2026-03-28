@@ -1,6 +1,14 @@
 # Profile Guide
 
-This document is the single source of truth for profile syntax, size configuration, and the built-in default profile used by `cowjail`.
+This document is the single source of truth for profile syntax, size configuration, and default profile behavior used by `cowjail`.
+
+## Managing Profiles
+
+- `cowjail profile list`: list profile files under `~/.config/cowjail/profiles`
+- `cowjail profile edit [name]`: open profile in `$EDITOR`
+  - `name` is optional; default is `default`
+  - short names (no `/`) are resolved under `~/.config/cowjail/profiles`
+  - names follow the same validation rules as jail names
 
 ## Syntax
 
@@ -44,9 +52,14 @@ You can set record max size via a profile comment directive:
 
 Default record max size is `2gb` when no directive is provided.
 
-## Built-In Default Profile
+## Default Profile Resolution
 
-When `--profile default` is used, the following built-in profile source is loaded:
+When `--profile default` is used (or `run/add/flush` omit `--profile`), `cowjail` resolves profile source in this order:
+
+1. `~/.config/cowjail/profiles/default` when the file exists
+2. built-in fallback source when the file is missing
+
+Built-in fallback source:
 
 ```text
 /tmp rw
