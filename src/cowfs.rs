@@ -75,7 +75,7 @@ impl CowFs {
 
     pub fn mount(self, mountpoint: &Path, allow_other: bool) -> Result<()> {
         let options = fuse_mount_options(allow_other);
-        fuse::mount(self, mountpoint, &options).with_context(|| {
+        fuse::mount2(self, mountpoint, &options).with_context(|| {
             format!(
                 "failed to mount fuse filesystem at {}",
                 mountpoint.display()
@@ -89,7 +89,7 @@ impl CowFs {
         allow_other: bool,
     ) -> Result<fuse::BackgroundSession> {
         let options = fuse_mount_options(allow_other);
-        fuse::spawn_mount(self, mountpoint, &options).with_context(|| {
+        fuse::spawn_mount2(self, mountpoint, &options).with_context(|| {
             format!(
                 "failed to mount fuse filesystem in background at {}",
                 mountpoint.display()
@@ -621,16 +621,13 @@ impl CowFs {
     }
 }
 
-fn fuse_mount_options(allow_other: bool) -> Vec<&'static OsStr> {
-    let mut options = Vec::with_capacity(8);
-    options.push(OsStr::new("-o"));
-    options.push(OsStr::new("default_permissions"));
+fn fuse_mount_options(allow_other: bool) -> Vec<fuse::MountOption> {
+    let mut options = Vec::with_capacity(3);
+    options.push(fuse::MountOption::DefaultPermissions);
     if allow_other {
-        options.push(OsStr::new("-o"));
-        options.push(OsStr::new("allow_other"));
+        options.push(fuse::MountOption::AllowOther);
     }
-    options.push(OsStr::new("-o"));
-    options.push(OsStr::new("fsname=cowjail"));
+    options.push(fuse::MountOption::FSName("cowjail".to_string()));
     options
 }
 
