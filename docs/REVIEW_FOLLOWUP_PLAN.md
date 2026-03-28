@@ -3,6 +3,8 @@
 This plan captures practical follow-up work after external security and correctness review.
 It is intentionally scoped to changes that improve safety/correctness without large architecture rewrites.
 
+Detailed item-by-item disposition is tracked in `docs/REVIEW_ITEM_TRACKER.md`.
+
 ## Scope Decision
 
 In scope for near-term:
