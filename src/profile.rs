@@ -366,4 +366,40 @@ mod tests {
             Some(RuleAction::Deny)
         );
     }
+
+    #[test]
+    fn parse_ignores_blank_and_comment_lines() {
+        let profile = parse(
+            r#"
+            # system base
+            /etc ro
+
+            # workspace in cow mode
+            /work rw
+            "#,
+        );
+        assert_eq!(
+            profile.first_match_action(Path::new("/etc/passwd")),
+            Some(RuleAction::ReadOnly)
+        );
+        assert_eq!(
+            profile.first_match_action(Path::new("/work/file.txt")),
+            Some(RuleAction::ReadWrite)
+        );
+    }
+
+    #[test]
+    fn normalize_source_drops_blank_and_comment_lines() {
+        let normalized = normalize_source(
+            r#"
+            # only effective rules remain
+            /etc ro
+
+            /work rw
+            "#,
+            Path::new("/work"),
+        )
+        .expect("normalize source");
+        assert_eq!(normalized, "/etc ro\n/work rw\n");
+    }
 }
