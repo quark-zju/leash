@@ -63,6 +63,10 @@ Example:
   - only exact `/proc` is supported (no glob, no subpaths)
   - action must be `ro` or `rw`
   - implemented as `procfs` mount in the child mount namespace
+- `/sys`:
+  - only exact `/sys` is supported (no glob, no subpaths)
+  - action must be `ro` or `rw`
+  - implemented as `sysfs` mount in the child mount namespace
 - `/dev`:
   - glob is not allowed; use explicit paths
   - for `ro`/`rw` rules that point to a host character device or directory, `cowjail` automatically plans bind mounts in the child mount namespace

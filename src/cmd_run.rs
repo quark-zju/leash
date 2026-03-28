@@ -239,9 +239,10 @@ fn apply_mount_plan_in_namespace(
 }
 
 fn apply_one_mount_in_namespace(mount_root: &Path, entry: &MountPlanEntry) -> Result<()> {
-    let (path, read_only, procfs) = match entry {
-        MountPlanEntry::Bind { path, read_only } => (path, *read_only, false),
-        MountPlanEntry::Proc { path, read_only } => (path, *read_only, true),
+    let (path, read_only, procfs, sysfs) = match entry {
+        MountPlanEntry::Bind { path, read_only } => (path, *read_only, false, false),
+        MountPlanEntry::Proc { path, read_only } => (path, *read_only, true, false),
+        MountPlanEntry::Sys { path, read_only } => (path, *read_only, false, true),
     };
     let rel = path
         .strip_prefix("/")
@@ -253,6 +254,10 @@ fn apply_one_mount_in_namespace(mount_root: &Path, entry: &MountPlanEntry) -> Re
     };
     if procfs {
         mount_procfs(&target, read_only)?;
+        return Ok(());
+    }
+    if sysfs {
+        mount_sysfs(&target, read_only)?;
         return Ok(());
     }
 
@@ -374,6 +379,30 @@ fn mount_procfs(target: &Path, read_only: bool) -> Result<()> {
     if rc != 0 {
         return Err(std::io::Error::last_os_error())
             .with_context(|| format!("mount procfs failed at {}", target.display()));
+    }
+    if read_only {
+        remount_read_only(target)?;
+    }
+    Ok(())
+}
+
+fn mount_sysfs(target: &Path, read_only: bool) -> Result<()> {
+    let target_c = CString::new(target.as_os_str().as_encoded_bytes())
+        .context("sysfs target path contains interior NUL byte")?;
+    let fstype = CString::new("sysfs").expect("literal has no NUL");
+    let source = CString::new("sysfs").expect("literal has no NUL");
+    let rc = unsafe {
+        libc::mount(
+            source.as_ptr(),
+            target_c.as_ptr(),
+            fstype.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("mount sysfs failed at {}", target.display()));
     }
     if read_only {
         remount_read_only(target)?;
