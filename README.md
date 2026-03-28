@@ -85,6 +85,7 @@ cowjail flush --name agent --dry-run                 # review pending changes
 cowjail flush --name agent                           # apply pending changes
 cowjail list                                         # list known jails
 cowjail rm --name agent                              # remove jail
+cowjail rm 'unnamed-*'                               # remove jails by name glob
 ```
 
 ## More Docs

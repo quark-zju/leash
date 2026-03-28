@@ -111,7 +111,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "NOTES:\n",
             "  () means required choice, [] means optional\n\n",
             "OPTIONS:\n",
-            "  --name <name>         Remove a jail by name (same as positional NAME)\n",
+            "  --name <name>         Remove by jail name or glob (same as positional NAME)\n",
             "  --profile <profile>   Remove the jail selected by profile-derived identity\n",
             "  -v, --verbose         Print cleanup syscall progress",
         ),
