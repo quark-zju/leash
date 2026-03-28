@@ -153,7 +153,7 @@ impl CowFs {
     fn write_mode(&self, path: &Path) -> WriteMode {
         match self.profile.first_match_action(path) {
             Some(RuleAction::Cow) => WriteMode::Cow,
-            Some(RuleAction::Passthrough) => WriteMode::Passthrough,
+            Some(RuleAction::Passthrough | RuleAction::BindPassthrough) => WriteMode::Passthrough,
             _ => WriteMode::Forbidden,
         }
     }
