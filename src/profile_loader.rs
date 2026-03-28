@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::{cli, jail, profile, record};
 
 const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
-/tmp cow
+/tmp rw
 /bin ro
 /sbin ro
 /usr ro
@@ -20,6 +20,7 @@ const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
 /dev/random ro
 /proc ro
 /sys ro
+/home/*/.ssh deny
 . cow
 ";
 
