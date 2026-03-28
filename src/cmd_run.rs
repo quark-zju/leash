@@ -9,6 +9,8 @@ use std::time::Duration;
 use crate::cli::RunCommand;
 use crate::jail;
 use crate::ns_runtime;
+use crate::profile;
+use crate::profile_loader;
 use crate::privileges;
 use crate::run_with_log;
 
@@ -39,13 +41,19 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         runtime.ensured.state_after,
         runtime.ensured.rebuilt
     );
-    ensure_fuse_server(
+    let fuse = ensure_fuse_server(
         &resolved.paths,
         &runtime.ensured.paths,
         &resolved.paths.profile_path,
         &resolved.paths.record_path,
         run.verbose,
     )?;
+    if fuse.started_new {
+        run_with_log(
+            || apply_profile_bind_mounts(&runtime.ensured.paths.mount_dir, &resolved.normalized_profile),
+            || format!("apply bind mounts under {}", runtime.ensured.paths.mount_dir.display()),
+        )?;
+    }
 
     crate::vlog!(
         "run: preparing child chroot to {} then chdir to {}",
@@ -128,13 +136,17 @@ fn run_child_in_chroot(
     child.wait().context("failed waiting for child command")
 }
 
+struct FuseEnsureResult {
+    started_new: bool,
+}
+
 fn ensure_fuse_server(
     jail_paths: &crate::jail::JailPaths,
     runtime_paths: &ns_runtime::NsRuntimePaths,
     profile_path: &Path,
     record_path: &Path,
     verbose: bool,
-) -> Result<u32> {
+) -> Result<FuseEnsureResult> {
     let _lock = ns_runtime::open_lock(jail_paths)?;
     if let Some(pid) = ns_runtime::read_fuse_pid(runtime_paths)?
         && ns_runtime::process_has_mount(pid, &runtime_paths.mount_dir)?
@@ -144,7 +156,9 @@ fn ensure_fuse_server(
             pid,
             runtime_paths.mount_dir.display()
         );
-        return Ok(pid);
+        return Ok(FuseEnsureResult {
+            started_new: false,
+        });
     }
 
     crate::vlog!(
@@ -209,7 +223,97 @@ fn ensure_fuse_server(
             runtime_paths.mount_dir.display()
         );
     }
-    Ok(pid)
+    Ok(FuseEnsureResult {
+        started_new: true,
+    })
+}
+
+fn apply_profile_bind_mounts(mount_root: &Path, normalized_profile: &str) -> Result<()> {
+    let profile = profile_loader::parse_profile_from_normalized_source(normalized_profile)?;
+    let bind_mounts = profile.bind_mounts();
+    if bind_mounts.is_empty() {
+        return Ok(());
+    }
+    for bind in bind_mounts {
+        apply_one_bind_mount(mount_root, bind)?;
+    }
+    Ok(())
+}
+
+fn apply_one_bind_mount(mount_root: &Path, bind: &profile::BindMount) -> Result<()> {
+    let source = &bind.source;
+    let rel = source
+        .strip_prefix("/")
+        .with_context(|| format!("bind source must be absolute: {}", source.display()))?;
+    let target = if rel.as_os_str().is_empty() {
+        mount_root.to_path_buf()
+    } else {
+        mount_root.join(rel)
+    };
+
+    let src_meta = std::fs::metadata(source)
+        .with_context(|| format!("bind source does not exist or is inaccessible: {}", source.display()))?;
+    let dst_meta = std::fs::metadata(&target)
+        .with_context(|| format!("bind target path does not exist in jail view: {}", target.display()))?;
+
+    if src_meta.is_dir() != dst_meta.is_dir() {
+        bail!(
+            "bind source/target type mismatch: source={} target={}",
+            source.display(),
+            target.display()
+        );
+    }
+
+    bind_mount(source, &target)?;
+    if bind.read_only {
+        remount_bind_read_only(&target)?;
+    }
+    Ok(())
+}
+
+fn bind_mount(source: &Path, target: &Path) -> Result<()> {
+    let src_c = CString::new(source.as_os_str().as_encoded_bytes())
+        .context("bind source path contains interior NUL byte")?;
+    let dst_c = CString::new(target.as_os_str().as_encoded_bytes())
+        .context("bind target path contains interior NUL byte")?;
+    let rc = unsafe {
+        libc::mount(
+            src_c.as_ptr(),
+            dst_c.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND as libc::c_ulong,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "bind mount failed: {} -> {}",
+                source.display(),
+                target.display()
+            )
+        });
+    }
+    Ok(())
+}
+
+fn remount_bind_read_only(target: &Path) -> Result<()> {
+    let dst_c = CString::new(target.as_os_str().as_encoded_bytes())
+        .context("bind target path contains interior NUL byte")?;
+    let rc = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            dst_c.as_ptr(),
+            std::ptr::null(),
+            (libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY) as libc::c_ulong,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("bind remount read-only failed: {}", target.display()));
+    }
+    Ok(())
 }
 
 fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {

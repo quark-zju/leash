@@ -52,6 +52,8 @@ Example:
 - `ro`: read-only
 - `rw`: writable passthrough (writes apply to host immediately)
 - `cow`: writable copy-on-write (writes are captured first and applied by `flush`)
+- `bind-rw`: bind mount passthrough (mounted during `run`)
+- `bind-ro`: bind mount read-only (mounted during `run`)
 - `deny`: path remains visible, access returns `EACCES`
 - `hide`: path behaves as non-existent (`ENOENT`)
 
