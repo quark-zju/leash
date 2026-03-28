@@ -188,6 +188,9 @@ fn enter_pid_namespace_worker_or_exit_parent() -> Result<()> {
         return Err(std::io::Error::last_os_error()).context("fork for pidns worker failed");
     }
     if worker_pid > 0 {
+        if let Err(_err) = privileges::drop_to_real_user() {
+            unsafe { libc::_exit(1) };
+        }
         run_pidns_init_reaper(worker_pid);
     }
     Ok(())
