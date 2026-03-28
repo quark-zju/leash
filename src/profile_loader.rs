@@ -131,7 +131,10 @@ fn parse_record_max_size_override(source: &str) -> Result<Option<Option<u64>>> {
         }
         let assignment = body["set ".len()..].trim();
         let Some((key, value)) = assignment.split_once('=') else {
-            anyhow::bail!("line {} has invalid set directive (expected key = value)", idx + 1);
+            anyhow::bail!(
+                "line {} has invalid set directive (expected key = value)",
+                idx + 1
+            );
         };
         if key.trim() != "max_size" {
             continue;

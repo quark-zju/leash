@@ -491,8 +491,8 @@ mod tests {
     #[test]
     fn append_fails_when_record_limit_would_be_exceeded() {
         let (_dir, path) = temp_record_path("size-limit");
-        let writer = Writer::open_append_with_max_size(&path, Some(HEADER_LEN as u64))
-            .expect("writer open");
+        let writer =
+            Writer::open_append_with_max_size(&path, Some(HEADER_LEN as u64)).expect("writer open");
         let err = writer
             .append_payload(TAG_WRITE_OP, b"x")
             .expect_err("append should fail at limit");

@@ -1,12 +1,12 @@
 use anyhow::{Context, Result, bail};
 use fs_err as fs;
 use std::ffi::CString;
+#[cfg(test)]
+use std::fs::TryLockError;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-#[cfg(test)]
-use std::fs::TryLockError;
 
 use crate::jail::JailPaths;
 use crate::run_with_log;
