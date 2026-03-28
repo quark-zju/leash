@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 
 use crate::cli::{AddCommand, ListCommand, RmCommand};
 use crate::jail;
+use crate::privileges;
 
 pub(crate) fn add_command(add: AddCommand) -> Result<()> {
     if let Some(name) = add.name.as_deref() {
@@ -25,6 +26,7 @@ pub(crate) fn list_command(_list: ListCommand) -> Result<()> {
 }
 
 pub(crate) fn rm_command(rm: RmCommand) -> Result<()> {
+    privileges::require_root_euid("cowjail rm")?;
     let resolved = jail::resolve(
         rm.name.as_deref(),
         rm.profile.as_deref(),

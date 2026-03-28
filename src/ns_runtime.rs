@@ -4,7 +4,6 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::jail::JailPaths;
@@ -269,52 +268,12 @@ fn unmount_runtime_mount_dir(paths: &NsRuntimePaths, verbose: bool) -> Result<()
             )
         });
     }
-
-    // Non-root callers may need fusermount for FUSE unmounts.
-    vlog(
-        verbose,
+    Err(err).with_context(|| {
         format!(
-            "rm: exec fusermount -u -z {}",
+            "umount2(MNT_DETACH) permission denied for {}",
             paths.mount_dir.display()
-        ),
-    );
-    let output = Command::new("fusermount")
-        .arg("-u")
-        .arg("-z")
-        .arg(&paths.mount_dir)
-        .output()
-        .with_context(|| "failed to execute fusermount -u".to_string())?;
-    if output.status.success() {
-        vlog(
-            verbose,
-            format!(
-                "rm: fusermount succeeded for {}",
-                paths.mount_dir.display()
-            ),
-        );
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("not found in /etc/mtab") {
-        // fusermount consults mtab, which can be stale/absent for some setups.
-        // Treat this as a soft failure and let later rmdir+retry logic decide
-        // whether a live mount still exists (EBUSY path).
-        vlog(
-            verbose,
-            format!(
-                "rm: fusermount mtab-miss, treating as soft success for {}",
-                paths.mount_dir.display()
-            ),
-        );
-        return Ok(());
-    }
-    Err(anyhow::anyhow!(
-        "fusermount -u {} failed: status={} stderr={}",
-        paths.mount_dir.display(),
-        output.status,
-        stderr.trim()
-    ))
+        )
+    })
 }
 
 fn remove_known_runtime_artifacts(paths: &NsRuntimePaths, verbose: bool) -> Result<()> {

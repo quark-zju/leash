@@ -15,16 +15,7 @@ use crate::privileges;
 use crate::vlog;
 
 pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
-    let euid = unsafe { libc::geteuid() };
-    if euid != 0 {
-        bail!(
-            concat!(
-                "cowjail run requires root euid (current euid={euid}).\n",
-                "Run `cowjail _suid` once to set setuid-root on the current binary."
-            ),
-            euid = euid
-        );
-    }
+    privileges::require_root_euid("cowjail run")?;
 
     let cwd = jail::current_pwd().context("failed to resolve current working directory")?;
     let resolved = jail::resolve(
