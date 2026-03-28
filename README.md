@@ -29,6 +29,20 @@ Out of scope:
 - 网络/容器隔离
 - 非 Linux 系统支持
 
+## Install
+
+Install from GitHub:
+
+```bash
+cargo install --git https://github.com/quark-zju/cowjail cowjail
+```
+
+Then bootstrap setuid helper:
+
+```bash
+cowjail _suid
+```
+
 ## Usage
 
 ### Simple
