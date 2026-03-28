@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command as ProcessCommand;
@@ -15,6 +15,7 @@ use crate::run_with_log;
 
 pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
     privileges::require_root_euid("cowjail run")?;
+    set_process_name(c"cowjail-run")?;
 
     let cwd = run_with_log(jail::current_pwd, || {
         "resolve current working directory".to_string()
@@ -153,6 +154,9 @@ fn run_child_in_chroot(
     let mut child = cmd
         .spawn()
         .context("failed to spawn child command in jail")?;
+    run_with_log(privileges::drop_root_euid_if_needed, || {
+        "drop outer run euid after child spawn".to_string()
+    })?;
     child.wait().context("failed waiting for child command")
 }
 
@@ -168,6 +172,7 @@ fn enter_pid_namespace_worker_or_reap() -> Result<()> {
         if let Err(_err) = privileges::drop_to_real_user() {
             unsafe { libc::_exit(1) };
         }
+        let _ = set_process_name(c"cowjail-init");
         run_pidns_init_reaper(worker_pid);
     }
     Ok(())
@@ -227,6 +232,14 @@ fn close_fds_best_effort_from(first: libc::c_uint) {
             libc::close(fd);
         }
     }
+}
+
+fn set_process_name(name: &CStr) -> Result<()> {
+    let rc = unsafe { libc::prctl(libc::PR_SET_NAME, name.as_ptr() as libc::c_ulong, 0, 0, 0) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).context("prctl(PR_SET_NAME) failed");
+    }
+    Ok(())
 }
 
 fn try_close_range(first: libc::c_uint) -> Result<()> {
