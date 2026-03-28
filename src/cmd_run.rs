@@ -163,6 +163,7 @@ fn enter_pid_namespace_worker_or_reap() -> Result<()> {
         return Err(std::io::Error::last_os_error()).context("fork for pidns worker failed");
     }
     if worker_pid > 0 {
+        close_all_fds_best_effort();
         if let Err(_err) = privileges::drop_to_real_user() {
             unsafe { libc::_exit(1) };
         }
@@ -213,6 +214,57 @@ fn exit_from_wait_status(status: libc::c_int) -> ! {
         unsafe { libc::_exit(128 + sig) };
     }
     unsafe { libc::_exit(1) }
+}
+
+fn close_all_fds_best_effort() {
+    // Keep only stdio for diagnostics from PID 1 reaper.
+    if try_close_range(3).is_ok() {
+        return;
+    }
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let max_fd: i32 = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } == 0
+        && lim.rlim_cur > 0
+        && lim.rlim_cur < i32::MAX as libc::rlim_t
+    {
+        lim.rlim_cur as i32
+    } else {
+        65536
+    };
+    for fd in 3..max_fd {
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
+fn try_close_range(first: libc::c_uint) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                first,
+                libc::c_uint::MAX,
+                0 as libc::c_uint,
+            )
+        };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        if matches!(
+            err.raw_os_error(),
+            Some(libc::ENOSYS | libc::EINVAL | libc::EPERM)
+        ) {
+            return Err(anyhow::anyhow!("close_range unavailable: {err}"));
+        }
+        return Err(err).context("close_range failed");
+    }
+    #[allow(unreachable_code)]
+    Err(anyhow::anyhow!("close_range is unsupported on this platform"))
 }
 
 fn ensure_fuse_server(
