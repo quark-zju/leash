@@ -99,6 +99,25 @@ These low-level commands are intentionally separate from normal workflow docs.
 - `run` creates a fresh IPC namespace for the child (`unshare(CLONE_NEWIPC)`), then `chroot`s to the jail mount, then drops privileges to the real user.
 - `rm` unmounts runtime FUSE mountpoints and removes known runtime/state artifacts conservatively.
 
+## Lock Files
+
+`cowjail` uses three lock domains:
+
+1. Runtime root lock (`${runtime_root}/.lock`)
+- Acquired during runtime directory creation.
+- Protects concurrent creation/ownership-fix of runtime root and per-jail runtime directories.
+
+2. Per-jail runtime lock (`.../<name>/lock`)
+- Acquired before runtime state inspection/mutation and before `_fuse` reuse-or-start logic.
+- Protects:
+  - runtime skeleton ensure/classify transitions
+  - `fuse.pid` read + mount-check + potential new `_fuse` spawn sequence
+  - runtime cleanup (`rm`) ordering
+
+3. Record file lock (on `state/<name>/record`)
+- Acquired by `flush` replay path.
+- Protects frame reads and `mark_flushed` tag updates from interleaving with other flushes.
+
 ## See Also
 
 - Runtime paths and lifecycle details: [`docs/RUNTIME_LAYOUT.md`](RUNTIME_LAYOUT.md)
