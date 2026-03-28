@@ -28,6 +28,16 @@ pub(crate) fn builtin_default_profile_source() -> &'static str {
     BUILTIN_DEFAULT_PROFILE_SOURCE
 }
 
+pub(crate) fn default_profile_source_for_help() -> String {
+    let Ok(path) = resolve_profile_path(Path::new(cli::DEFAULT_PROFILE)) else {
+        return BUILTIN_DEFAULT_PROFILE_SOURCE.to_string();
+    };
+    match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(_) => BUILTIN_DEFAULT_PROFILE_SOURCE.to_string(),
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct LoadedProfile {
     pub(crate) profile: profile::Profile,
@@ -58,21 +68,21 @@ pub(crate) fn append_profile_header(
 
 pub(crate) fn load_profile(profile_path: &Path) -> Result<LoadedProfile> {
     let cwd = jail::current_pwd()?;
-    let source = if profile_path == Path::new(cli::DEFAULT_PROFILE) {
-        BUILTIN_DEFAULT_PROFILE_SOURCE.to_string()
-    } else {
-        let resolved = resolve_profile_path(profile_path)?;
-        fs::read_to_string(&resolved)
-            .with_context(|| format!("failed to read profile file: {}", resolved.display()))?
+    let resolved = resolve_profile_path(profile_path)?;
+    let source = match fs::read_to_string(&resolved) {
+        Ok(raw) => raw,
+        Err(err)
+            if err.kind() == std::io::ErrorKind::NotFound
+                && profile_path == Path::new(cli::DEFAULT_PROFILE) =>
+        {
+            BUILTIN_DEFAULT_PROFILE_SOURCE.to_string()
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to read profile file: {}", resolved.display()));
+        }
     };
-    let source_name = if profile_path == Path::new(cli::DEFAULT_PROFILE) {
-        "built-in default profile".to_string()
-    } else {
-        format!(
-            "profile file: {}",
-            resolve_profile_path(profile_path)?.display()
-        )
-    };
+    let source_name = format!("profile file: {}", resolved.display());
     let profile = profile::Profile::parse(&source, &cwd)
         .with_context(|| format!("failed to parse {source_name}"))?;
     let normalized_source = profile::normalize_source(&source, &cwd)
@@ -115,6 +125,7 @@ fn resolve_profile_path(profile_path: &Path) -> Result<PathBuf> {
     let name = profile_path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("profile name is not valid UTF-8"))?;
+    jail::validate_explicit_name(name).context("invalid profile name")?;
     jail::profile_definition_path(name)
 }
 

@@ -10,6 +10,7 @@ pub const DEFAULT_PROFILE: &str = "default";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Help { topic: HelpTopic, verbose: bool },
+    Profile(ProfileCommand),
     Add(AddCommand),
     List(ListCommand),
     Show(ShowCommand),
@@ -36,6 +37,17 @@ pub enum HelpTopic {
     LowLevelFlush,
     LowLevelFuse,
     LowLevelSuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileCommand {
+    pub action: ProfileAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileAction {
+    List,
+    Edit { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,11 +134,14 @@ where
 
     let mut args = Arguments::from_vec(raw);
     let subcmd = args.subcommand()?.ok_or_else(|| {
-        anyhow::anyhow!("missing subcommand (expected: add, list, show, rm, run, flush)")
+        anyhow::anyhow!(
+            "missing subcommand (expected: profile, add, list, show, rm, run, flush)"
+        )
     })?;
 
     let command = match subcmd.as_str() {
         "help" => parse_help(args)?,
+        "profile" => parse_profile(args)?,
         "add" => parse_add(args)?,
         "list" => parse_list(args)?,
         "show" => parse_show(args)?,
@@ -157,6 +172,42 @@ fn parse_help(args: Arguments) -> Result<Command> {
     let topic = crate::cmd_help::topic_from_name(topic)
         .ok_or_else(|| anyhow::anyhow!("unknown help topic: {topic}"))?;
     Ok(help_command(topic, false))
+}
+
+fn parse_profile(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(help_command(HelpTopic::Profile, false));
+    }
+    let extra = args.finish();
+    if extra.is_empty() {
+        bail!("profile requires subcommand: list or edit");
+    }
+    let subcmd = extra[0]
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("profile subcommand must be valid UTF-8"))?;
+    match subcmd {
+        "list" => {
+            if extra.len() != 1 {
+                bail!("profile list got unexpected trailing arguments");
+            }
+            Ok(Command::Profile(ProfileCommand {
+                action: ProfileAction::List,
+            }))
+        }
+        "edit" => {
+            if extra.len() != 2 {
+                bail!("profile edit requires NAME");
+            }
+            let name = extra[1]
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("profile NAME must be valid UTF-8"))?
+                .to_string();
+            Ok(Command::Profile(ProfileCommand {
+                action: ProfileAction::Edit { name },
+            }))
+        }
+        other => bail!("unknown profile subcommand: {other}"),
+    }
 }
 
 fn help_command(topic: HelpTopic, verbose: bool) -> Command {
@@ -476,6 +527,31 @@ mod tests {
                 topic: HelpTopic::Root,
                 verbose: false,
             }
+        );
+    }
+
+    #[test]
+    fn parse_profile_list_subcommand() {
+        let cmd = parse_from(os(&["profile", "list"])).expect("profile list should parse");
+        assert_eq!(
+            cmd,
+            Command::Profile(ProfileCommand {
+                action: ProfileAction::List
+            })
+        );
+    }
+
+    #[test]
+    fn parse_profile_edit_subcommand() {
+        let cmd =
+            parse_from(os(&["profile", "edit", "default"])).expect("profile edit should parse");
+        assert_eq!(
+            cmd,
+            Command::Profile(ProfileCommand {
+                action: ProfileAction::Edit {
+                    name: "default".to_string()
+                }
+            })
         );
     }
 

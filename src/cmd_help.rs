@@ -40,6 +40,8 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "USAGE:\n",
             "  cowjail <subcommand> [options]\n\n",
             "COMMON:\n",
+            "  cowjail profile list\n",
+            "  cowjail profile edit <name>\n",
             "  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n",
             "  cowjail flush [--name <name> | <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n",
             "  cowjail help profile\n",
@@ -63,6 +65,8 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "USAGE:\n",
             "  cowjail <subcommand> [options]\n\n",
             "COMMON:\n",
+            "  cowjail profile list\n",
+            "  cowjail profile edit <name>\n",
             "  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n",
             "  cowjail flush [--name <name> | <name> | --profile <profile>] [--dry-run] [-v|--verbose]\n",
             "  cowjail help profile\n\n",
@@ -197,8 +201,8 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
 
 fn profile_help_text() -> String {
     let mut out = String::from(help_text(HelpTopic::Profile, false));
-    out.push_str("\n\nDEFAULT PROFILE (built-in `default`):\n");
-    for line in profile_loader::builtin_default_profile_source().lines() {
+    out.push_str("\n\nDEFAULT PROFILE (`~/.config/cowjail/profiles/default`, fallback built-in):\n");
+    for line in profile_loader::default_profile_source_for_help().lines() {
         out.push_str("  ");
         out.push_str(line);
         out.push('\n');
