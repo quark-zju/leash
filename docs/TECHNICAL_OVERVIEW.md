@@ -99,6 +99,31 @@ These low-level commands are intentionally separate from normal workflow docs.
 - `run` creates a fresh IPC namespace for the child (`unshare(CLONE_NEWIPC)`), then `chroot`s to the jail mount, then drops privileges to the real user.
 - `rm` unmounts runtime FUSE mountpoints and removes known runtime/state artifacts conservatively.
 
+## Explicit Trade-Offs and Assumptions
+
+These are intentional design choices, not accidental omissions.
+
+- FUSE privilege transition ordering:
+  - `_fuse` mounts, starts background request handling, then drops to real user.
+  - On Linux NPTL, credential changes apply process-wide, so worker threads also lose root credentials after the drop.
+  - This ordering is accepted, but relies on current Linux threading credential semantics.
+- `chroot` instead of `pivot_root`:
+  - `run` uses `chroot` for simpler setup and compatibility with current flow.
+  - `cowjail` treats this as risk reduction, not a full container boundary.
+  - Privilege drop plus `PR_SET_NO_NEW_PRIVS` are the main post-setup containment controls.
+- Userspace COW + record log instead of kernel overlayfs:
+  - Primary goal is replayability and auditability of per-operation changes.
+  - Profile actions (`deny` and `hide`, in addition to `ro`/`rw`/`cow`) are enforced in one userspace path.
+  - overlayfs would improve kernel-level fidelity/performance, but does not provide the same operation-log semantics.
+- Record integrity trust model:
+  - Replay assumes per-user state directories are owned and writable only by that same user.
+  - If an attacker can directly edit `state/<name>/record`, replay trust is already broken.
+  - `flush` still gates operations through profile policy checks; this limits but does not eliminate impact of state compromise.
+- Known filesystem compatibility gaps:
+  - hardlinks are not supported by the current FUSE layer.
+  - mmap-heavy workloads may degrade or fail depending on access pattern.
+  - metadata fidelity is intentionally limited compared with a full kernel filesystem stack.
+
 ## Lock Files
 
 `cowjail` uses three lock domains:
