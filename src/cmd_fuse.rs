@@ -70,6 +70,11 @@ pub(crate) fn fuse_command(cmd: LowLevelFuseCommand) -> Result<()> {
             "_fuse: user_allow_other not set; temporarily switching real uid/gid to root for allow_other mount"
         );
     }
+    // Keep the background session alive in this process, then drop privileges.
+    // On Linux/NPTL credential changes are process-wide, so worker threads
+    // spawned by mount_background also lose root credentials after the drop.
+    // If that kernel/userspace assumption changes, this ordering must be
+    // revisited because the mount thread is created before drop_to_real_user().
     let _session = if needs_real_root_for_allow_other {
         run_with_log(
             || {
