@@ -22,6 +22,9 @@ This document is the single source of truth for profile syntax, size configurati
 Profile is line-based and evaluated with first-match-wins.
 
 - Rule format: `pattern action`
+- Directive format: `%directive ...`
+- `%include <name>`: inline include another profile by short name (no `/`); missing file is ignored
+- `%set max_size = <size|none>`: set record max size override
 - Comment: lines starting with `#`
 - Match order: top to bottom, first matched rule is used
 - Relative rules:
@@ -50,16 +53,16 @@ Example:
 
 ## Record Size Configuration
 
-You can set record max size via a profile comment directive:
+You can set record max size via a profile directive:
 
 ```text
-# set max_size = 3gb
+%set max_size = 3gb
 ```
 
 - Supported units: `b`, `kb`, `mb`, `gb` (case-insensitive)
 - Numeric separators: `_` are allowed in numbers (for example `2_048mb`)
 - Disable size limit: `none`, `off`, or `unlimited`
-- Last `# set max_size = ...` directive in the file takes effect
+- Last `%set max_size = ...` directive in the expanded profile takes effect
 
 Default record max size is `2gb` when no directive is provided.
 

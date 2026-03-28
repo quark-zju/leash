@@ -93,12 +93,15 @@ pub(crate) fn load_profile(profile_path: &Path) -> Result<LoadedProfile> {
                 .with_context(|| format!("failed to read profile file: {}", resolved.display()));
         }
     };
+    let expanded_source = expand_includes(&source)?;
+    let parse_source = strip_directive_lines(&expanded_source);
+
     let source_name = format!("profile file: {}", resolved.display());
-    let profile = profile::Profile::parse(&source, &cwd)
+    let profile = profile::Profile::parse(&parse_source, &cwd)
         .with_context(|| format!("failed to parse {source_name}"))?;
-    let normalized_source = profile::normalize_source(&source, &cwd)
+    let normalized_source = profile::normalize_source(&parse_source, &cwd)
         .with_context(|| format!("failed to normalize {source_name}"))?;
-    let record_max_size_bytes = match parse_record_max_size_override(&source)
+    let record_max_size_bytes = match parse_record_max_size_override(&expanded_source)
         .with_context(|| format!("failed to parse max_size from {source_name}"))?
     {
         Some(override_value) => override_value,
@@ -140,14 +143,95 @@ fn resolve_profile_path(profile_path: &Path) -> Result<PathBuf> {
     jail::profile_definition_path(name)
 }
 
+fn expand_includes(source: &str) -> Result<String> {
+    let mut stack = Vec::new();
+    expand_includes_with(source, &mut stack, &mut read_named_profile_source)
+}
+
+fn expand_includes_with<F>(source: &str, stack: &mut Vec<String>, resolver: &mut F) -> Result<String>
+where
+    F: FnMut(&str) -> Result<Option<String>>,
+{
+    let mut out = String::new();
+    for (idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        let Some(body) = trimmed.strip_prefix('%') else {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+        let directive = body.trim();
+        if directive.starts_with("set ") {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if !directive.starts_with("include") {
+            anyhow::bail!("line {} has unknown profile directive", idx + 1);
+        }
+        let mut parts = directive.split_whitespace();
+        let Some(keyword) = parts.next() else {
+            anyhow::bail!("line {} has empty profile directive", idx + 1);
+        };
+        if keyword != "include" {
+            anyhow::bail!("line {} has unknown profile directive", idx + 1);
+        }
+        let Some(name) = parts.next() else {
+            anyhow::bail!("line {} has invalid include directive", idx + 1);
+        };
+        if parts.next().is_some() {
+            anyhow::bail!("line {} has invalid include directive", idx + 1);
+        }
+        jail::validate_explicit_name(name).context("invalid include profile name")?;
+        if stack.iter().any(|in_stack| in_stack == name) {
+            anyhow::bail!("cyclic profile include detected for '{name}'");
+        }
+        let Some(included_source) = resolver(name)? else {
+            continue;
+        };
+        stack.push(name.to_string());
+        let nested = expand_includes_with(&included_source, stack, resolver)
+            .with_context(|| format!("failed to expand include '{name}'"))?;
+        stack.pop();
+        out.push_str(&nested);
+    }
+    Ok(out)
+}
+
+fn read_named_profile_source(name: &str) -> Result<Option<String>> {
+    let path = jail::profile_definition_path(name)?;
+    match fs::read_to_string(&path) {
+        Ok(raw) => Ok(Some(raw)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => {
+            Err(err).with_context(|| format!("failed to read included profile {}", path.display()))
+        }
+    }
+}
+
+fn strip_directive_lines(source: &str) -> String {
+    let mut out = String::new();
+    for line in source.lines() {
+        if line.trim_start().starts_with('%') {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 fn parse_record_max_size_override(source: &str) -> Result<Option<Option<u64>>> {
     let mut parsed = None;
     for (idx, line) in source.lines().enumerate() {
         let trimmed = line.trim();
-        if !trimmed.starts_with('#') {
+        let body = if trimmed.starts_with('%') {
+            trimmed.trim_start_matches('%').trim()
+        } else if trimmed.starts_with('#') {
+            trimmed.trim_start_matches('#').trim()
+        } else {
             continue;
-        }
-        let body = trimmed.trim_start_matches('#').trim();
+        };
         if !body.starts_with("set ") {
             continue;
         }
@@ -210,20 +294,67 @@ fn parse_byte_size(raw: &str) -> Result<Option<u64>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_RECORD_MAX_SIZE_BYTES, parse_byte_size, parse_record_max_size_override};
+    use super::{
+        DEFAULT_RECORD_MAX_SIZE_BYTES, expand_includes_with, parse_byte_size,
+        parse_record_max_size_override, strip_directive_lines,
+    };
+    use std::collections::BTreeMap;
 
     #[test]
     fn parse_max_size_directive_gb() {
-        let src = "# set max_size = 3gb\n/tmp rw\n";
+        let src = "%set max_size = 3gb\n/tmp rw\n";
         let size = parse_record_max_size_override(src).expect("directive should parse");
         assert_eq!(size, Some(Some(3 * 1024 * 1024 * 1024)));
     }
 
     #[test]
     fn parse_max_size_directive_can_disable_limit() {
-        let src = "# set max_size = none\n/tmp rw\n";
+        let src = "%set max_size = none\n/tmp rw\n";
         let size = parse_record_max_size_override(src).expect("directive should parse");
         assert_eq!(size, Some(None));
+    }
+
+    #[test]
+    fn parse_max_size_comment_directive_remains_compatible() {
+        let src = "# set max_size = 2gb\n/tmp rw\n";
+        let size = parse_record_max_size_override(src).expect("directive should parse");
+        assert_eq!(size, Some(Some(2 * 1024 * 1024 * 1024)));
+    }
+
+    #[test]
+    fn include_expands_named_profile_inline() {
+        let mut includes = BTreeMap::new();
+        includes.insert("base".to_string(), "/etc ro\n".to_string());
+        let mut resolver = |name: &str| Ok(includes.get(name).cloned());
+        let mut stack = Vec::new();
+        let expanded = expand_includes_with("%include base\n/tmp rw\n", &mut stack, &mut resolver)
+            .expect("include should expand");
+        assert_eq!(expanded, "/etc ro\n/tmp rw\n");
+    }
+
+    #[test]
+    fn include_missing_profile_is_ignored() {
+        let mut resolver = |_name: &str| Ok(None);
+        let mut stack = Vec::new();
+        let expanded =
+            expand_includes_with("%include missing\n/tmp rw\n", &mut stack, &mut resolver)
+                .expect("missing include should be ignored");
+        assert_eq!(expanded, "/tmp rw\n");
+    }
+
+    #[test]
+    fn include_rejects_non_short_name() {
+        let mut resolver = |_name: &str| Ok(None);
+        let mut stack = Vec::new();
+        let err = expand_includes_with("%include nested/base\n", &mut stack, &mut resolver)
+            .expect_err("include name with slash should fail");
+        assert!(err.to_string().contains("invalid include profile name"));
+    }
+
+    #[test]
+    fn strip_directives_removes_percent_lines() {
+        let stripped = strip_directive_lines("%set max_size = 3gb\n/tmp rw\n");
+        assert_eq!(stripped, "/tmp rw\n");
     }
 
     #[test]
