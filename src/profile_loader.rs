@@ -24,6 +24,10 @@ const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
 . cow
 ";
 
+pub(crate) fn builtin_default_profile_source() -> &'static str {
+    BUILTIN_DEFAULT_PROFILE_SOURCE
+}
+
 #[derive(Debug)]
 pub(crate) struct LoadedProfile {
     pub(crate) profile: profile::Profile,

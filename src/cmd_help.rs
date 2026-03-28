@@ -1,4 +1,5 @@
 use crate::cli::HelpTopic;
+use crate::profile_loader;
 
 const HELP_TOPIC_NAMES: &[(&str, HelpTopic)] = &[
     ("profile", HelpTopic::Profile),
@@ -14,7 +15,10 @@ const HELP_TOPIC_NAMES: &[(&str, HelpTopic)] = &[
 ];
 
 pub(crate) fn print_help(topic: HelpTopic, verbose: bool) {
-    println!("{}", help_text(topic, verbose));
+    match topic {
+        HelpTopic::Profile => println!("{}", profile_help_text()),
+        _ => println!("{}", help_text(topic, verbose)),
+    }
 }
 
 pub(crate) fn topic_from_name(name: &str) -> Option<HelpTopic> {
@@ -174,4 +178,15 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "  -v, --verbose         Print progress logs",
         ),
     }
+}
+
+fn profile_help_text() -> String {
+    let mut out = String::from(help_text(HelpTopic::Profile, false));
+    out.push_str("\n\nDEFAULT PROFILE (built-in `default`):\n");
+    for line in profile_loader::builtin_default_profile_source().lines() {
+        out.push_str("  ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
