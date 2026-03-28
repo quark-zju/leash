@@ -15,7 +15,7 @@ use fuser::{
 use libc::{EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, EOPNOTSUPP};
 
 use crate::op::{FileState, Operation};
-use crate::profile::{Profile, RuleAction, Visibility};
+use crate::profile::{BindMount, Profile, RuleAction, Visibility};
 use crate::record;
 
 const TTL: Duration = Duration::from_secs(1);
@@ -23,6 +23,7 @@ const ROOT_INO: u64 = 1;
 
 pub struct CowFs {
     profile: Profile,
+    bind_mounts: Vec<BindMount>,
     record: record::Writer,
     mount_root: Option<PathBuf>,
     next_ino: u64,
@@ -58,6 +59,7 @@ enum WriteMode {
 
 impl CowFs {
     pub fn new(profile: Profile, record: record::Writer) -> Self {
+        let bind_mounts = profile.bind_mounts().to_vec();
         let mut ino_to_path = std::collections::HashMap::new();
         let mut path_to_ino = std::collections::HashMap::new();
         ino_to_path.insert(ROOT_INO, std::path::PathBuf::from("/"));
@@ -65,6 +67,7 @@ impl CowFs {
 
         Self {
             profile,
+            bind_mounts,
             record,
             mount_root: None,
             next_ino: ROOT_INO + 1,
@@ -132,6 +135,9 @@ impl CowFs {
         if is_blocked_proc_thread_self(path) {
             return Some(ENOENT);
         }
+        if matches!(self.bind_behavior(path), Some(BindPathBehavior::Descendant)) {
+            return Some(ENOENT);
+        }
         match self.profile.visibility(path) {
             Visibility::Hidden | Visibility::Action(RuleAction::Hide) => Some(ENOENT),
             Visibility::Action(RuleAction::Deny) => Some(EACCES),
@@ -141,6 +147,9 @@ impl CowFs {
     }
 
     fn path_is_directory(&self, path: &Path) -> bool {
+        if let Some(behavior) = self.bind_behavior(path) {
+            return matches!(behavior, BindPathBehavior::Root { is_dir: true });
+        }
         if let Some(node) = self.overlay.get(path) {
             return matches!(node, OverlayNode::Dir);
         }
@@ -150,10 +159,47 @@ impl CowFs {
         }
     }
 
+    fn bind_behavior(&self, path: &Path) -> Option<BindPathBehavior> {
+        let mut selected: Option<(&BindMount, bool)> = None;
+        for bind in &self.bind_mounts {
+            if path == bind.source.as_path() {
+                let better = selected
+                    .as_ref()
+                    .is_none_or(|(prev, _)| bind.source.as_os_str().len() > prev.source.as_os_str().len());
+                if better {
+                    selected = Some((bind, true));
+                }
+                continue;
+            }
+            if path.starts_with(bind.source.as_path()) {
+                let better = selected
+                    .as_ref()
+                    .is_none_or(|(prev, _)| bind.source.as_os_str().len() > prev.source.as_os_str().len());
+                if better {
+                    selected = Some((bind, false));
+                }
+            }
+        }
+        let (bind, is_root) = selected?;
+        let is_dir = self.bind_source_is_dir(bind);
+        if is_root {
+            Some(BindPathBehavior::Root { is_dir })
+        } else {
+            Some(BindPathBehavior::Descendant)
+        }
+    }
+
+    fn bind_source_is_dir(&self, bind: &BindMount) -> bool {
+        match fs::symlink_metadata(&bind.source) {
+            Ok(meta) => meta.file_type().is_dir(),
+            Err(_) => true,
+        }
+    }
+
     fn write_mode(&self, path: &Path) -> WriteMode {
         match self.profile.first_match_action(path) {
             Some(RuleAction::Cow) => WriteMode::Cow,
-            Some(RuleAction::Passthrough | RuleAction::BindPassthrough) => WriteMode::Passthrough,
+            Some(RuleAction::Passthrough) => WriteMode::Passthrough,
             _ => WriteMode::Forbidden,
         }
     }
@@ -231,6 +277,21 @@ impl CowFs {
     }
 
     fn effective_node(&self, path: &Path) -> Result<Option<NodeRef>, i32> {
+        if let Some(behavior) = self.bind_behavior(path) {
+            return match behavior {
+                BindPathBehavior::Root { is_dir } => {
+                    if is_dir {
+                        Ok(Some(NodeRef::Overlay(OverlayNode::Dir)))
+                    } else {
+                        Ok(Some(NodeRef::Overlay(OverlayNode::Regular {
+                            data: Vec::new(),
+                            executable: false,
+                        })))
+                    }
+                }
+                BindPathBehavior::Descendant => Ok(None),
+            };
+        }
         if let Some(node) = self.overlay.get(path) {
             return match node {
                 OverlayNode::Deleted => Ok(None),
@@ -248,6 +309,12 @@ impl CowFs {
         &mut self,
         parent: &Path,
     ) -> Result<Vec<(u64, FileType, std::ffi::OsString)>, i32> {
+        if matches!(
+            self.bind_behavior(parent),
+            Some(BindPathBehavior::Root { is_dir: true })
+        ) {
+            return Ok(Vec::new());
+        }
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
@@ -693,6 +760,12 @@ impl CowFs {
         }
         true
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindPathBehavior {
+    Root { is_dir: bool },
+    Descendant,
 }
 
 fn fuse_mount_options(allow_other: bool) -> Vec<fuser::MountOption> {
@@ -1863,6 +1936,24 @@ mod tests {
     fn hide_path_returns_enoent() {
         let (_dir, _record_path, fs) = test_fs("/tmp/hide-me hide");
         assert_eq!(fs.access_errno(Path::new("/tmp/hide-me")), Some(ENOENT));
+    }
+
+    #[test]
+    fn bind_mount_root_is_dummy_and_descendants_hidden() {
+        let (_dir, _record_path, mut fs) = test_fs("/proc bind-ro");
+        assert_eq!(fs.access_errno(Path::new("/proc")), None);
+        assert_eq!(fs.access_errno(Path::new("/proc/self")), Some(ENOENT));
+        assert!(matches!(
+            fs.effective_node(Path::new("/proc")).expect("effective root"),
+            Some(NodeRef::Overlay(OverlayNode::Dir))
+        ));
+        assert!(
+            fs.effective_node(Path::new("/proc/self"))
+                .expect("effective descendant")
+                .is_none()
+        );
+        let children = fs.list_children(Path::new("/proc")).expect("list children");
+        assert!(children.is_empty());
     }
 
     #[test]

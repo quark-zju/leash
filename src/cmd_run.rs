@@ -34,6 +34,11 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         || ns_runtime::ensure_runtime_for_exec(&resolved.paths),
         || "ensure runtime".to_string(),
     )?;
+    let parsed_profile = run_with_log(
+        || profile_loader::parse_profile_from_normalized_source(&resolved.normalized_profile),
+        || "parse resolved jail profile".to_string(),
+    )?;
+    let bind_mounts = parsed_profile.bind_mounts().to_vec();
     crate::vlog!(
         "run: runtime={} state_before={:?} state_after={:?} rebuilt={}",
         runtime.ensured.paths.runtime_dir.display(),
@@ -41,19 +46,13 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         runtime.ensured.state_after,
         runtime.ensured.rebuilt
     );
-    let fuse = ensure_fuse_server(
+    ensure_fuse_server(
         &resolved.paths,
         &runtime.ensured.paths,
         &resolved.paths.profile_path,
         &resolved.paths.record_path,
         run.verbose,
     )?;
-    if fuse.started_new {
-        run_with_log(
-            || apply_profile_bind_mounts(&runtime.ensured.paths.mount_dir, &resolved.normalized_profile),
-            || format!("apply bind mounts under {}", runtime.ensured.paths.mount_dir.display()),
-        )?;
-    }
 
     crate::vlog!(
         "run: preparing child chroot to {} then chdir to {}",
@@ -61,7 +60,7 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         cwd.display()
     );
     let status = run_with_log(
-        || run_child_in_chroot(&run, &runtime.ensured.paths.mount_dir, &cwd),
+        || run_child_in_chroot(&run, &runtime.ensured.paths.mount_dir, &cwd, bind_mounts.clone()),
         || format!("execute jailed command {:?}", run.program),
     );
 
@@ -73,7 +72,9 @@ fn run_child_in_chroot(
     run: &RunCommand,
     mountpoint: &Path,
     old_cwd: &Path,
+    bind_mounts: Vec<profile::BindMount>,
 ) -> Result<std::process::ExitStatus> {
+    let mount_root = mountpoint.to_path_buf();
     let mount_c = CString::new(mountpoint.as_os_str().as_encoded_bytes())
         .context("mount path contains interior NUL byte")?;
     let cwd_c = CString::new(old_cwd.as_os_str().as_encoded_bytes())
@@ -83,12 +84,18 @@ fn run_child_in_chroot(
     cmd.args(&run.args);
     unsafe {
         cmd.pre_exec(move || {
-            if libc::unshare(libc::CLONE_NEWIPC) != 0 {
+            if libc::unshare(libc::CLONE_NEWIPC | libc::CLONE_NEWNS) != 0 {
                 let err = std::io::Error::last_os_error();
                 return Err(std::io::Error::new(
                     err.kind(),
-                    format!("unshare(CLONE_NEWIPC) failed: {err}"),
+                    format!("unshare(CLONE_NEWIPC|CLONE_NEWNS) failed: {err}"),
                 ));
+            }
+            if let Err(err) = make_mounts_private() {
+                return Err(std::io::Error::other(err.to_string()));
+            }
+            if let Err(err) = apply_profile_mounts_in_namespace(&mount_root, &bind_mounts) {
+                return Err(std::io::Error::other(err.to_string()));
             }
             // FUSE mount access is keyed by fsuid/fsgid, not effective uid.
             // Align fs creds with the real user before chroot/chdir so kernel-side
@@ -136,17 +143,13 @@ fn run_child_in_chroot(
     child.wait().context("failed waiting for child command")
 }
 
-struct FuseEnsureResult {
-    started_new: bool,
-}
-
 fn ensure_fuse_server(
     jail_paths: &crate::jail::JailPaths,
     runtime_paths: &ns_runtime::NsRuntimePaths,
     profile_path: &Path,
     record_path: &Path,
     verbose: bool,
-) -> Result<FuseEnsureResult> {
+) -> Result<()> {
     let _lock = ns_runtime::open_lock(jail_paths)?;
     if let Some(pid) = ns_runtime::read_fuse_pid(runtime_paths)?
         && ns_runtime::process_has_mount(pid, &runtime_paths.mount_dir)?
@@ -156,9 +159,7 @@ fn ensure_fuse_server(
             pid,
             runtime_paths.mount_dir.display()
         );
-        return Ok(FuseEnsureResult {
-            started_new: false,
-        });
+        return Ok(());
     }
 
     crate::vlog!(
@@ -223,24 +224,23 @@ fn ensure_fuse_server(
             runtime_paths.mount_dir.display()
         );
     }
-    Ok(FuseEnsureResult {
-        started_new: true,
-    })
+    Ok(())
 }
 
-fn apply_profile_bind_mounts(mount_root: &Path, normalized_profile: &str) -> Result<()> {
-    let profile = profile_loader::parse_profile_from_normalized_source(normalized_profile)?;
-    let bind_mounts = profile.bind_mounts();
+fn apply_profile_mounts_in_namespace(
+    mount_root: &Path,
+    bind_mounts: &[profile::BindMount],
+) -> Result<()> {
     if bind_mounts.is_empty() {
         return Ok(());
     }
     for bind in bind_mounts {
-        apply_one_bind_mount(mount_root, bind)?;
+        apply_one_mount_in_namespace(mount_root, bind)?;
     }
     Ok(())
 }
 
-fn apply_one_bind_mount(mount_root: &Path, bind: &profile::BindMount) -> Result<()> {
+fn apply_one_mount_in_namespace(mount_root: &Path, bind: &profile::BindMount) -> Result<()> {
     let source = &bind.source;
     let rel = source
         .strip_prefix("/")
@@ -250,6 +250,10 @@ fn apply_one_bind_mount(mount_root: &Path, bind: &profile::BindMount) -> Result<
     } else {
         mount_root.join(rel)
     };
+    if source == Path::new("/proc") {
+        mount_procfs(&target, bind.read_only)?;
+        return Ok(());
+    }
 
     let src_meta = std::fs::metadata(source)
         .with_context(|| format!("bind source does not exist or is inaccessible: {}", source.display()))?;
@@ -267,6 +271,23 @@ fn apply_one_bind_mount(mount_root: &Path, bind: &profile::BindMount) -> Result<
     bind_mount(source, &target)?;
     if bind.read_only {
         remount_bind_read_only(&target)?;
+    }
+    Ok(())
+}
+
+fn make_mounts_private() -> Result<()> {
+    let root = CString::new("/").expect("literal '/' cannot contain NUL");
+    let rc = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            root.as_ptr(),
+            std::ptr::null(),
+            (libc::MS_REC | libc::MS_PRIVATE) as libc::c_ulong,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).context("mount(MS_PRIVATE) failed");
     }
     Ok(())
 }
@@ -312,6 +333,49 @@ fn remount_bind_read_only(target: &Path) -> Result<()> {
     if rc != 0 {
         return Err(std::io::Error::last_os_error())
             .with_context(|| format!("bind remount read-only failed: {}", target.display()));
+    }
+    Ok(())
+}
+
+fn remount_read_only(target: &Path) -> Result<()> {
+    let dst_c = CString::new(target.as_os_str().as_encoded_bytes())
+        .context("remount target path contains interior NUL byte")?;
+    let rc = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            dst_c.as_ptr(),
+            std::ptr::null(),
+            (libc::MS_REMOUNT | libc::MS_RDONLY) as libc::c_ulong,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("remount read-only failed: {}", target.display()));
+    }
+    Ok(())
+}
+
+fn mount_procfs(target: &Path, read_only: bool) -> Result<()> {
+    let target_c = CString::new(target.as_os_str().as_encoded_bytes())
+        .context("procfs target path contains interior NUL byte")?;
+    let fstype = CString::new("proc").expect("literal has no NUL");
+    let source = CString::new("proc").expect("literal has no NUL");
+    let rc = unsafe {
+        libc::mount(
+            source.as_ptr(),
+            target_c.as_ptr(),
+            fstype.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("mount procfs failed at {}", target.display()));
+    }
+    if read_only {
+        remount_read_only(target)?;
     }
     Ok(())
 }
