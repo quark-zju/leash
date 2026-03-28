@@ -5,6 +5,7 @@ mod cmd_fuse;
 mod cmd_jail;
 mod cmd_mount;
 mod cmd_run;
+mod cmd_show;
 mod cmd_suid;
 mod cowfs;
 mod jail;
@@ -60,6 +61,11 @@ fn try_main() -> Result<i32> {
         Command::List(list) => {
             set_verbose(false);
             cmd_jail::list_command(list).context("list subcommand failed")?;
+            Ok(0)
+        }
+        Command::Show(show) => {
+            set_verbose(false);
+            cmd_show::show_command(show).context("show subcommand failed")?;
             Ok(0)
         }
         Command::Rm(rm) => {

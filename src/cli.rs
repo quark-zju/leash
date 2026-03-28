@@ -12,6 +12,7 @@ pub enum Command {
     Help { topic: HelpTopic, verbose: bool },
     Add(AddCommand),
     List(ListCommand),
+    Show(ShowCommand),
     Rm(RmCommand),
     Run(RunCommand),
     Flush(FlushCommand),
@@ -27,6 +28,7 @@ pub enum HelpTopic {
     Profile,
     Add,
     List,
+    Show,
     Rm,
     Run,
     Flush,
@@ -44,6 +46,11 @@ pub struct AddCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListCommand;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShowCommand {
+    pub name: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RmCommand {
@@ -114,13 +121,14 @@ where
 
     let mut args = Arguments::from_vec(raw);
     let subcmd = args.subcommand()?.ok_or_else(|| {
-        anyhow::anyhow!("missing subcommand (expected: add, list, rm, run, flush)")
+        anyhow::anyhow!("missing subcommand (expected: add, list, show, rm, run, flush)")
     })?;
 
     let command = match subcmd.as_str() {
         "help" => parse_help(args)?,
         "add" => parse_add(args)?,
         "list" => parse_list(args)?,
+        "show" => parse_show(args)?,
         "rm" => parse_rm(args)?,
         "run" => parse_run(args)?,
         "flush" => parse_flush(args)?,
@@ -220,6 +228,20 @@ fn parse_list(mut args: Arguments) -> Result<Command> {
         bail!("list got unexpected trailing arguments");
     }
     Ok(Command::List(ListCommand))
+}
+
+fn parse_show(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(help_command(HelpTopic::Show, false));
+    }
+    let name = args
+        .free_from_str::<String>()
+        .context("show requires NAME")?;
+    let extra = args.finish();
+    if !extra.is_empty() {
+        bail!("show got unexpected trailing arguments");
+    }
+    Ok(Command::Show(ShowCommand { name }))
 }
 
 fn parse_rm(mut args: Arguments) -> Result<Command> {
@@ -514,6 +536,22 @@ mod tests {
     fn parse_list_has_no_args() {
         let cmd = parse_from(os(&["list"])).expect("list should parse");
         assert_eq!(cmd, Command::List(ListCommand));
+    }
+
+    #[test]
+    fn parse_show_requires_name() {
+        let err = parse_from(os(&["show"])).expect_err("show without name should fail");
+        assert!(err.to_string().contains("show requires NAME"));
+    }
+
+    #[test]
+    fn parse_show_accepts_name() {
+        let cmd = parse_from(os(&["show", "agent"])).expect("show with name should parse");
+        let show = match cmd {
+            Command::Show(show) => show,
+            other => panic!("expected show, got {other:?}"),
+        };
+        assert_eq!(show.name, "agent");
     }
 
     #[test]

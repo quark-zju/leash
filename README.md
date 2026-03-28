@@ -83,6 +83,7 @@ cowjail run --name agent -- your-command arg1 arg2   # run in the jail
 cowjail run --name agent -- another-command args     # run in the same jail
 cowjail flush --name agent --dry-run                 # review pending changes
 cowjail flush --name agent                           # apply pending changes
+cowjail show agent                                   # show profile + pending write count
 cowjail list                                         # list known jails
 cowjail rm --name agent                              # remove jail
 cowjail rm 'unnamed-*'                               # remove jails by name glob

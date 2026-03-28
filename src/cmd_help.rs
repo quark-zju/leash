@@ -5,6 +5,7 @@ const HELP_TOPIC_NAMES: &[(&str, HelpTopic)] = &[
     ("profile", HelpTopic::Profile),
     ("add", HelpTopic::Add),
     ("list", HelpTopic::List),
+    ("show", HelpTopic::Show),
     ("rm", HelpTopic::Rm),
     ("run", HelpTopic::Run),
     ("flush", HelpTopic::Flush),
@@ -45,6 +46,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "\n",
             "NAMED JAILS:\n",
             "  cowjail add [<name> | --name <name>] [--profile <profile>]\n",
+            "  cowjail show <name>\n",
             "  cowjail rm (<name> | --name <name> | --profile <profile>) [-v|--verbose]\n",
             "  cowjail list\n",
             "\n",
@@ -66,6 +68,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "  cowjail help profile\n\n",
             "NAMED JAILS:\n",
             "  cowjail add [<name> | --name <name>] [--profile <profile>]\n",
+            "  cowjail show <name>\n",
             "  cowjail rm (<name> | --name <name> | --profile <profile>) [-v|--verbose]\n",
             "  cowjail list\n\n",
             "Run `cowjail --help -v` to list low-level debugging commands.\n",
@@ -104,6 +107,13 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> &'static str {
             "  --profile <profile>   Profile path. Default: default",
         ),
         HelpTopic::List => concat!("cowjail list\n\n", "USAGE:\n", "  cowjail list"),
+        HelpTopic::Show => concat!(
+            "cowjail show\n\n",
+            "USAGE:\n",
+            "  cowjail show <name>\n\n",
+            "DESCRIPTION:\n",
+            "  Print jail profile and pending unflushed write-op count."
+        ),
         HelpTopic::Rm => concat!(
             "cowjail rm\n\n",
             "USAGE:\n",
