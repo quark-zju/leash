@@ -78,6 +78,12 @@ Built-in fallback source:
 /dev/null rw
 /dev/urandom ro
 /dev/random ro
-/home/*/.ssh deny
+~/bin ro
+~/.claude rw
+~/.codex rw
+~/.config ro
+~/.gitconfig* ro
+~/.gitignore* ro
+~/.ssh deny
 . cow
 ```

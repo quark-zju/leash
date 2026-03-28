@@ -20,7 +20,13 @@ const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
 /dev/null rw
 /dev/urandom ro
 /dev/random ro
-/home/*/.ssh deny
+~/bin ro
+~/.claude rw
+~/.codex rw
+~/.config ro
+~/.gitconfig* ro
+~/.gitignore* ro
+~/.ssh deny
 . cow
 ";
 
