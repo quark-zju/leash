@@ -16,6 +16,22 @@ This document describes how `cowjail` handles privilege transitions and why.
 
 These commands fail fast when `euid != 0`.
 
+## Entry Points That Auto-Drop Elevated EUID
+
+When running as a setuid-root binary (`ruid != 0`, `euid == 0`), these commands
+drop to the real user before doing any work:
+
+- `cowjail help`
+- `cowjail add`
+- `cowjail list`
+- `cowjail show`
+- `cowjail flush`
+- low-level `_mount`
+- low-level `_flush`
+
+This keeps read/metadata/update workflows from accidentally executing with root
+effective privileges.
+
 ## `_suid` Bootstrap
 
 `cowjail _suid` ensures the current binary is setuid-root:
