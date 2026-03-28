@@ -12,20 +12,30 @@ use crate::cli::RunCommand;
 use crate::jail;
 use crate::ns_runtime;
 use crate::privileges;
+use crate::run_with_log;
 use crate::vlog;
 
 pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
     privileges::require_root_euid("cowjail run")?;
 
-    let cwd = jail::current_pwd().context("failed to resolve current working directory")?;
-    let resolved = jail::resolve(
-        run.name.as_deref(),
-        run.profile.as_deref(),
-        jail::ResolveMode::EnsureExists,
-    )
-    .context("failed to resolve run jail")?;
-    let runtime =
-        ns_runtime::ensure_runtime_for_exec(&resolved.paths).context("failed to ensure runtime")?;
+    let cwd = run_with_log(
+        jail::current_pwd,
+        || "resolve current working directory".to_string(),
+    )?;
+    let resolved = run_with_log(
+        || {
+            jail::resolve(
+                run.name.as_deref(),
+                run.profile.as_deref(),
+                jail::ResolveMode::EnsureExists,
+            )
+        },
+        || "resolve run jail".to_string(),
+    )?;
+    let runtime = run_with_log(
+        || ns_runtime::ensure_runtime_for_exec(&resolved.paths),
+        || "ensure runtime".to_string(),
+    )?;
     vlog(
         run.verbose,
         format!(
@@ -43,8 +53,10 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         &resolved.paths.record_path,
         run.verbose,
     )?;
-    let ipcns_file = open_process_ipcns(fuse_pid)
-        .with_context(|| format!("failed to open ipc namespace from fuse pid {fuse_pid}"))?;
+    let ipcns_file = run_with_log(
+        || open_process_ipcns(fuse_pid),
+        || format!("open ipc namespace from fuse pid {fuse_pid}"),
+    )?;
 
     vlog(
         run.verbose,
@@ -54,13 +66,10 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
             cwd.display()
         ),
     );
-    let status = run_child_in_chroot(
-        &run,
-        &runtime.ensured.paths.mount_dir,
-        &cwd,
-        ipcns_file,
-    )
-    .with_context(|| format!("failed to execute jailed command {:?}", run.program));
+    let status = run_with_log(
+        || run_child_in_chroot(&run, &runtime.ensured.paths.mount_dir, &cwd, ipcns_file),
+        || format!("execute jailed command {:?}", run.program),
+    );
 
     let status = status?;
     Ok(exit_code_from_status(status))

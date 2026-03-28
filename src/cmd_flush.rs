@@ -11,6 +11,7 @@ use crate::profile_loader::{
     ProfileHeaderFrame, load_profile, parse_profile_from_normalized_source,
 };
 use crate::record;
+use crate::run_with_log;
 use crate::vlog;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -30,18 +31,26 @@ struct PendingOp {
 }
 
 pub(crate) fn flush_command(flush: FlushCommand) -> Result<()> {
-    let resolved = jail::resolve(
-        flush.name.as_deref(),
-        flush.profile.as_deref(),
-        jail::ResolveMode::MustExist,
-    )
-    .context("failed to resolve flush jail")?;
+    let resolved = run_with_log(
+        || {
+            jail::resolve(
+                flush.name.as_deref(),
+                flush.profile.as_deref(),
+                jail::ResolveMode::MustExist,
+            )
+        },
+        || "resolve flush jail".to_string(),
+    )?;
     let record_path = resolved.paths.record_path.clone();
-    let replay_profile = parse_profile_from_normalized_source(&resolved.normalized_profile)
-        .context("failed to parse resolved jail profile")?;
+    let replay_profile = run_with_log(
+        || parse_profile_from_normalized_source(&resolved.normalized_profile),
+        || "parse resolved jail profile".to_string(),
+    )?;
 
-    let stats = flush_record_with_policy(&record_path, flush.dry_run, Some(replay_profile))
-        .with_context(|| format!("failed to flush record file {}", record_path.display()))?;
+    let stats = run_with_log(
+        || flush_record_with_policy(&record_path, flush.dry_run, Some(replay_profile)),
+        || format!("flush record file {}", record_path.display()),
+    )?;
     vlog(
         flush.verbose,
         format!(
@@ -71,8 +80,10 @@ pub(crate) fn flush_command(flush: FlushCommand) -> Result<()> {
 }
 
 pub(crate) fn low_level_flush_command(flush: LowLevelFlushCommand) -> Result<()> {
-    let stats = flush_record(&flush.record, flush.dry_run, flush.profile.as_deref())
-        .with_context(|| format!("failed to flush record file {}", flush.record.display()))?;
+    let stats = run_with_log(
+        || flush_record(&flush.record, flush.dry_run, flush.profile.as_deref()),
+        || format!("flush record file {}", flush.record.display()),
+    )?;
     vlog(
         flush.verbose,
         format!(
