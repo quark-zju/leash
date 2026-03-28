@@ -5,6 +5,8 @@ This document is the single source of truth for profile syntax, size configurati
 ## Managing Profiles
 
 - `cowjail profile list`: list profile files under `~/.config/cowjail/profiles`
+- `cowjail profile show [name]`: print profile source
+  - `name` is optional; default is `default`
 - `cowjail profile edit [name]`: open profile in `$EDITOR`
   - `name` is optional; default is `default`
   - short names (no `/`) are resolved under `~/.config/cowjail/profiles`

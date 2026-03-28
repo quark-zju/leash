@@ -174,6 +174,7 @@ fn root_help_text(verbose: bool) -> String {
         "  cowjail <subcommand> [options]\n\n",
         "PROFILE:\n",
         "  cowjail profile list\n",
+        "  cowjail profile show [name]\n",
         "  cowjail profile edit [name]\n\n",
         "COMMON:\n",
         "  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n",
