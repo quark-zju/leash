@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use fs_err as fs;
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::jail::JailPaths;
@@ -200,6 +203,8 @@ pub(crate) fn ensure_runtime_for_exec(jail: &JailPaths) -> Result<ExecRuntime> {
 
 pub(crate) fn remove_runtime(jail: &JailPaths) -> Result<()> {
     let paths = paths_for(jail);
+    unmount_runtime_mount_dir(&paths)
+        .with_context(|| format!("failed to unmount runtime mount {}", paths.mount_dir.display()))?;
     match fs::remove_dir_all(&paths.runtime_dir) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -210,6 +215,49 @@ pub(crate) fn remove_runtime(jail: &JailPaths) -> Result<()> {
             )
         }),
     }
+}
+
+fn unmount_runtime_mount_dir(paths: &NsRuntimePaths) -> Result<()> {
+    if !paths.mount_dir.exists() {
+        return Ok(());
+    }
+    if !mountinfo_has_mountpoint(&fs::read_to_string("/proc/self/mountinfo")?, &paths.mount_dir) {
+        return Ok(());
+    }
+
+    let mnt = CString::new(paths.mount_dir.as_os_str().as_bytes())
+        .context("mount path contains interior NUL byte")?;
+    let rc = unsafe { libc::umount2(mnt.as_ptr(), libc::MNT_DETACH) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    if err.kind() != std::io::ErrorKind::PermissionDenied {
+        return Err(err).with_context(|| {
+            format!(
+                "umount2(MNT_DETACH) failed for {}",
+                paths.mount_dir.display()
+            )
+        });
+    }
+
+    // Non-root callers may need fusermount for FUSE unmounts.
+    let output = Command::new("fusermount")
+        .arg("-u")
+        .arg(&paths.mount_dir)
+        .output()
+        .with_context(|| "failed to execute fusermount -u".to_string())?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(anyhow::anyhow!(
+        "fusermount -u {} failed: status={} stderr={}",
+        paths.mount_dir.display(),
+        output.status,
+        stderr.trim()
+    ))
 }
 
 pub(crate) fn read_fuse_pid(paths: &NsRuntimePaths) -> Result<Option<u32>> {
