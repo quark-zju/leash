@@ -45,8 +45,6 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "  ro      Read-only visibility\n",
             "  rw      Writable passthrough (applies to host immediately)\n",
             "  cow     Writable copy-on-write (captured and applied by flush)\n",
-            "  bind-rw Bind mount passthrough (mounted during run)\n",
-            "  bind-ro Bind mount read-only (mounted during run)\n",
             "  deny    Visible but access is denied (EACCES)\n",
             "  hide    Hidden/inaccessible (ENOENT)\n\n",
             "NOTES:\n",

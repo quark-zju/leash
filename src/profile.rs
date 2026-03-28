@@ -9,8 +9,6 @@ pub enum RuleAction {
     ReadOnly,
     Passthrough,
     Cow,
-    BindReadOnly,
-    BindPassthrough,
     Deny,
     Hide,
 }
@@ -18,12 +16,6 @@ pub enum RuleAction {
 #[derive(Debug, Clone)]
 struct Rule {
     action: RuleAction,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BindMount {
-    pub source: PathBuf,
-    pub read_only: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +31,6 @@ pub struct Profile {
     glob_to_rule: Vec<usize>,
     implicit_visible_ancestors: BTreeSet<PathBuf>,
     implicit_ancestor_globset: GlobSet,
-    bind_mounts: Vec<BindMount>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,8 +52,6 @@ impl Profile {
         let mut implicit_visible_ancestors = BTreeSet::new();
         let mut implicit_ancestor_globset_builder = GlobSetBuilder::new();
         let mut implicit_ancestor_globs = BTreeSet::new();
-        let mut bind_mounts = Vec::new();
-
         for (idx, line) in parsed.iter().enumerate() {
             let action = line.action;
             let pattern = line.pattern.clone();
@@ -71,15 +60,6 @@ impl Profile {
                 for ancestor_glob in implicit_ancestor_globs_for_rule(&pattern) {
                     implicit_ancestor_globs.insert(ancestor_glob);
                 }
-            }
-            if matches!(action, RuleAction::BindReadOnly | RuleAction::BindPassthrough) {
-                if has_glob_syntax(&pattern) {
-                    bail!("line {} bind-* action does not allow glob pattern", idx + 1);
-                }
-                bind_mounts.push(BindMount {
-                    source: PathBuf::from(&pattern),
-                    read_only: action == RuleAction::BindReadOnly,
-                });
             }
 
             let rule_idx = rules.len();
@@ -115,7 +95,6 @@ impl Profile {
             glob_to_rule,
             implicit_visible_ancestors,
             implicit_ancestor_globset,
-            bind_mounts,
         })
     }
 
@@ -152,10 +131,6 @@ impl Profile {
 
         Visibility::Hidden
     }
-
-    pub fn bind_mounts(&self) -> &[BindMount] {
-        &self.bind_mounts
-    }
 }
 
 pub fn normalize_source(profile_src: &str, launch_cwd: &Path) -> Result<String> {
@@ -177,11 +152,9 @@ fn parse_action(token: &str) -> Result<RuleAction> {
         "ro" => Ok(RuleAction::ReadOnly),
         "rw" => Ok(RuleAction::Passthrough),
         "cow" => Ok(RuleAction::Cow),
-        "bind-ro" => Ok(RuleAction::BindReadOnly),
-        "bind-rw" => Ok(RuleAction::BindPassthrough),
         "deny" => Ok(RuleAction::Deny),
         "hide" => Ok(RuleAction::Hide),
-        _ => bail!("action must be one of ro/rw/cow/bind-ro/bind-rw/deny/hide"),
+        _ => bail!("action must be one of ro/rw/cow/deny/hide"),
     }
 }
 
@@ -190,8 +163,6 @@ fn action_to_str(action: RuleAction) -> &'static str {
         RuleAction::ReadOnly => "ro",
         RuleAction::Passthrough => "rw",
         RuleAction::Cow => "cow",
-        RuleAction::BindReadOnly => "bind-ro",
-        RuleAction::BindPassthrough => "bind-rw",
         RuleAction::Deny => "deny",
         RuleAction::Hide => "hide",
     }
@@ -586,40 +557,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parse_bind_actions_and_collect_bind_mounts() {
-        let profile = parse(
-            r#"
-            /dev/pts bind-rw
-            /proc bind-ro
-            "#,
-        );
-        assert_eq!(
-            profile.first_match_action(Path::new("/dev/pts/0")),
-            Some(RuleAction::BindPassthrough)
-        );
-        assert_eq!(
-            profile.first_match_action(Path::new("/proc/self/maps")),
-            Some(RuleAction::BindReadOnly)
-        );
-        assert_eq!(
-            profile.bind_mounts(),
-            &[
-                BindMount {
-                    source: PathBuf::from("/dev/pts"),
-                    read_only: false
-                },
-                BindMount {
-                    source: PathBuf::from("/proc"),
-                    read_only: true
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn bind_actions_reject_glob_patterns() {
-        let err = Profile::parse("/dev/* bind-rw\n", Path::new("/work")).expect_err("must fail");
-        assert!(err.to_string().contains("does not allow glob pattern"));
-    }
 }

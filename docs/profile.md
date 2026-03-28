@@ -52,10 +52,21 @@ Example:
 - `ro`: read-only
 - `rw`: writable passthrough (writes apply to host immediately)
 - `cow`: writable copy-on-write (writes are captured first and applied by `flush`)
-- `bind-rw`: bind mount passthrough (mounted during `run`)
-- `bind-ro`: bind mount read-only (mounted during `run`)
 - `deny`: path remains visible, access returns `EACCES`
 - `hide`: path behaves as non-existent (`ENOENT`)
+
+## Automatic Mount Handling
+
+`cowjail` keeps profile syntax simple (`ro/rw/cow/deny/hide`) and applies special mount behavior internally during `run`:
+
+- `/proc`:
+  - only exact `/proc` is supported (no glob, no subpaths)
+  - action must be `ro` or `rw`
+  - implemented as `procfs` mount in the child mount namespace
+- `/dev`:
+  - glob is not allowed; use explicit paths
+  - for `ro`/`rw` rules that point to a host character device or directory, `cowjail` automatically plans bind mounts in the child mount namespace
+  - once a path is auto-promoted to bind mount root (for example `/dev/pts`), descendant profile rules under that root are rejected as conflicts
 
 ## Record Size Configuration
 

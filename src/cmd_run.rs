@@ -8,9 +8,8 @@ use std::time::Duration;
 
 use crate::cli::RunCommand;
 use crate::jail;
+use crate::mount_plan::{self, MountPlanEntry};
 use crate::ns_runtime;
-use crate::profile;
-use crate::profile_loader;
 use crate::privileges;
 use crate::run_with_log;
 
@@ -34,11 +33,10 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         || ns_runtime::ensure_runtime_for_exec(&resolved.paths),
         || "ensure runtime".to_string(),
     )?;
-    let parsed_profile = run_with_log(
-        || profile_loader::parse_profile_from_normalized_source(&resolved.normalized_profile),
-        || "parse resolved jail profile".to_string(),
+    let mount_plan = run_with_log(
+        || mount_plan::build_mount_plan(&resolved.normalized_profile),
+        || "build run mount plan".to_string(),
     )?;
-    let bind_mounts = parsed_profile.bind_mounts().to_vec();
     crate::vlog!(
         "run: runtime={} state_before={:?} state_after={:?} rebuilt={}",
         runtime.ensured.paths.runtime_dir.display(),
@@ -60,7 +58,7 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         cwd.display()
     );
     let status = run_with_log(
-        || run_child_in_chroot(&run, &runtime.ensured.paths.mount_dir, &cwd, bind_mounts.clone()),
+        || run_child_in_chroot(&run, &runtime.ensured.paths.mount_dir, &cwd, mount_plan.clone()),
         || format!("execute jailed command {:?}", run.program),
     );
 
@@ -72,7 +70,7 @@ fn run_child_in_chroot(
     run: &RunCommand,
     mountpoint: &Path,
     old_cwd: &Path,
-    bind_mounts: Vec<profile::BindMount>,
+    mount_plan: Vec<MountPlanEntry>,
 ) -> Result<std::process::ExitStatus> {
     let mount_root = mountpoint.to_path_buf();
     let mount_c = CString::new(mountpoint.as_os_str().as_encoded_bytes())
@@ -94,7 +92,7 @@ fn run_child_in_chroot(
             if let Err(err) = make_mounts_private() {
                 return Err(std::io::Error::other(err.to_string()));
             }
-            if let Err(err) = apply_profile_mounts_in_namespace(&mount_root, &bind_mounts) {
+            if let Err(err) = apply_mount_plan_in_namespace(&mount_root, &mount_plan) {
                 return Err(std::io::Error::other(err.to_string()));
             }
             // FUSE mount access is keyed by fsuid/fsgid, not effective uid.
@@ -227,49 +225,52 @@ fn ensure_fuse_server(
     Ok(())
 }
 
-fn apply_profile_mounts_in_namespace(
+fn apply_mount_plan_in_namespace(
     mount_root: &Path,
-    bind_mounts: &[profile::BindMount],
+    mount_plan: &[MountPlanEntry],
 ) -> Result<()> {
-    if bind_mounts.is_empty() {
+    if mount_plan.is_empty() {
         return Ok(());
     }
-    for bind in bind_mounts {
-        apply_one_mount_in_namespace(mount_root, bind)?;
+    for entry in mount_plan {
+        apply_one_mount_in_namespace(mount_root, entry)?;
     }
     Ok(())
 }
 
-fn apply_one_mount_in_namespace(mount_root: &Path, bind: &profile::BindMount) -> Result<()> {
-    let source = &bind.source;
-    let rel = source
+fn apply_one_mount_in_namespace(mount_root: &Path, entry: &MountPlanEntry) -> Result<()> {
+    let (path, read_only, procfs) = match entry {
+        MountPlanEntry::Bind { path, read_only } => (path, *read_only, false),
+        MountPlanEntry::Proc { path, read_only } => (path, *read_only, true),
+    };
+    let rel = path
         .strip_prefix("/")
-        .with_context(|| format!("bind source must be absolute: {}", source.display()))?;
+        .with_context(|| format!("mount path must be absolute: {}", path.display()))?;
     let target = if rel.as_os_str().is_empty() {
         mount_root.to_path_buf()
     } else {
         mount_root.join(rel)
     };
-    if source == Path::new("/proc") {
-        mount_procfs(&target, bind.read_only)?;
+    if procfs {
+        mount_procfs(&target, read_only)?;
         return Ok(());
     }
 
-    let src_meta = std::fs::metadata(source)
-        .with_context(|| format!("bind source does not exist or is inaccessible: {}", source.display()))?;
+    let src_meta = std::fs::metadata(path)
+        .with_context(|| format!("bind source does not exist or is inaccessible: {}", path.display()))?;
     let dst_meta = std::fs::metadata(&target)
         .with_context(|| format!("bind target path does not exist in jail view: {}", target.display()))?;
 
     if src_meta.is_dir() != dst_meta.is_dir() {
         bail!(
             "bind source/target type mismatch: source={} target={}",
-            source.display(),
+            path.display(),
             target.display()
         );
     }
 
-    bind_mount(source, &target)?;
-    if bind.read_only {
+    bind_mount(path, &target)?;
+    if read_only {
         remount_bind_read_only(&target)?;
     }
     Ok(())

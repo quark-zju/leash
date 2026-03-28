@@ -11,6 +11,7 @@ mod cmd_show;
 mod cmd_suid;
 mod cowfs;
 mod jail;
+mod mount_plan;
 mod ns_runtime;
 mod op;
 mod privileges;
