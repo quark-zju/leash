@@ -248,6 +248,11 @@ fn unmount_runtime_mount_dir(paths: &NsRuntimePaths) -> Result<()> {
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("not found in /etc/mtab") && !is_mountpoint_in_mountinfo(&paths.mount_dir) {
+        // fusermount consults mtab, which can be stale/absent for some setups.
+        // If kernel mountinfo confirms it is already gone, treat as success.
+        return Ok(());
+    }
     Err(anyhow::anyhow!(
         "fusermount -u {} failed: status={} stderr={}",
         paths.mount_dir.display(),
@@ -396,6 +401,13 @@ fn remove_mount_dir_with_retry(paths: &NsRuntimePaths) -> Result<()> {
             });
         }
     }
+}
+
+fn is_mountpoint_in_mountinfo(mountpoint: &Path) -> bool {
+    let Ok(raw) = fs::read_to_string("/proc/self/mountinfo") else {
+        return false;
+    };
+    mountinfo_has_mountpoint(&raw, mountpoint)
 }
 
 fn ensure_owned_by_real_user(path: &Path) -> Result<()> {
