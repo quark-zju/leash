@@ -217,8 +217,7 @@ fn exit_from_wait_status(status: libc::c_int) -> ! {
 }
 
 fn close_all_fds_best_effort() {
-    // Keep only stdio for diagnostics from PID 1 reaper.
-    if try_close_range(3).is_ok() {
+    if try_close_range(0).is_ok() {
         return;
     }
     let mut lim = libc::rlimit {
@@ -233,7 +232,7 @@ fn close_all_fds_best_effort() {
     } else {
         65536
     };
-    for fd in 3..max_fd {
+    for fd in 0..max_fd {
         unsafe {
             libc::close(fd);
         }
