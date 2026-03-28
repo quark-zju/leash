@@ -109,15 +109,32 @@ pub(crate) fn fuse_command(cmd: LowLevelFuseCommand) -> Result<()> {
         std::thread::sleep(Duration::from_millis(400));
         let host_has_mount = crate::ns_runtime::process_has_mount(1, &cmd.mountpoint)?;
         let self_has_mount = crate::ns_runtime::process_has_mount(pid, &cmd.mountpoint)?;
-        if !host_has_mount || !self_has_mount {
+        let mountpoint_healthy = mountpoint_connection_healthy(&cmd.mountpoint)?;
+        if !host_has_mount || !self_has_mount || !mountpoint_healthy {
             crate::vlog!(
-                "_fuse: exiting because mount liveness failed (host_pid1_has_mount={} self_has_mount={}) for {}",
+                "_fuse: exiting because mount liveness failed (host_pid1_has_mount={} self_has_mount={} mountpoint_healthy={}) for {}",
                 host_has_mount,
                 self_has_mount,
+                mountpoint_healthy,
                 cmd.mountpoint.display(),
             );
             break;
         }
     }
     Ok(())
+}
+
+fn mountpoint_connection_healthy(mountpoint: &std::path::Path) -> Result<bool> {
+    match fs::symlink_metadata(mountpoint) {
+        Ok(_) => Ok(true),
+        Err(err)
+            if matches!(
+                err.raw_os_error(),
+                Some(libc::ENOTCONN | libc::ENODEV | libc::EIO | libc::ENOENT)
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(err) => Err(err).map_err(anyhow::Error::from),
+    }
 }
