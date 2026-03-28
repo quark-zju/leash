@@ -160,7 +160,6 @@ impl CowFs {
 
     fn attr_for_path(&mut self, path: &Path, metadata: &Metadata) -> FileAttr {
         let kind = filetype_from_metadata(path, metadata);
-        let size = display_size_for_path(path, metadata, kind);
         let ino = self.ensure_ino(path);
         let atime = system_time_from_unix(metadata.atime(), metadata.atime_nsec());
         let mtime = system_time_from_unix(metadata.mtime(), metadata.mtime_nsec());
@@ -168,7 +167,7 @@ impl CowFs {
 
         let mut attr = FileAttr {
             ino,
-            size,
+            size: metadata.len(),
             blocks: metadata.blocks(),
             atime,
             mtime,
@@ -919,15 +918,13 @@ impl Filesystem for CowFs {
                 return;
             }
         };
-        if !is_masked_dev_stream(path.as_path()) {
-            if offset < 0 {
-                reply.error(EIO);
-                return;
-            }
-            if file.seek(SeekFrom::Start(offset as u64)).is_err() {
-                reply.error(EIO);
-                return;
-            }
+        if offset < 0 {
+            reply.error(EIO);
+            return;
+        }
+        if file.seek(SeekFrom::Start(offset as u64)).is_err() {
+            reply.error(EIO);
+            return;
         }
 
         let mut buf = vec![0u8; size as usize];
@@ -1102,6 +1099,10 @@ impl Filesystem for CowFs {
                 reply.written(data.len() as u32);
             }
             WriteMode::Passthrough => {
+                if offset < 0 {
+                    reply.error(EIO);
+                    return;
+                }
                 let mut file = match fs::OpenOptions::new().write(true).open(&path) {
                     Ok(file) => file,
                     Err(err) => {
@@ -1109,15 +1110,9 @@ impl Filesystem for CowFs {
                         return;
                     }
                 };
-                if !is_masked_dev_stream(path.as_path()) {
-                    if offset < 0 {
-                        reply.error(EIO);
-                        return;
-                    }
-                    if let Err(err) = file.seek(SeekFrom::Start(offset as u64)) {
-                        reply.error(io_errno(&err));
-                        return;
-                    }
+                if let Err(err) = file.seek(SeekFrom::Start(offset as u64)) {
+                    reply.error(io_errno(&err));
+                    return;
                 }
                 if let Err(err) = file.write_all(data) {
                     reply.error(io_errno(&err));
@@ -1528,19 +1523,6 @@ fn should_mask_char_device_as_regular(path: &Path) -> bool {
             || p == Path::new("/dev/urandom")
             || p == Path::new("/dev/random")
     )
-}
-
-fn is_masked_dev_stream(path: &Path) -> bool {
-    should_mask_char_device_as_regular(path)
-}
-
-fn display_size_for_path(path: &Path, metadata: &Metadata, kind: FileType) -> u64 {
-    if kind == FileType::RegularFile {
-        if path == Path::new("/dev/urandom") || path == Path::new("/dev/random") {
-            return 1u64 << 62;
-        }
-    }
-    metadata.len()
 }
 
 fn overlay_filetype(node: &OverlayNode) -> FileType {
@@ -1962,14 +1944,6 @@ mod tests {
         assert!(should_mask_char_device_as_regular(Path::new("/dev/random")));
         assert!(!should_mask_char_device_as_regular(Path::new("/dev/tty")));
         assert!(!should_mask_char_device_as_regular(Path::new("/tmp/dev/random")));
-    }
-
-    #[test]
-    fn masked_dev_stream_detection_matches_masked_nodes() {
-        assert!(is_masked_dev_stream(Path::new("/dev/null")));
-        assert!(is_masked_dev_stream(Path::new("/dev/urandom")));
-        assert!(is_masked_dev_stream(Path::new("/dev/random")));
-        assert!(!is_masked_dev_stream(Path::new("/dev/tty")));
     }
 
     #[cfg(unix)]
