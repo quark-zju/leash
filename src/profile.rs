@@ -30,6 +30,7 @@ pub struct Profile {
     globset: GlobSet,
     glob_to_rule: Vec<usize>,
     implicit_visible_ancestors: BTreeSet<PathBuf>,
+    implicit_ancestor_globset: GlobSet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,12 +50,17 @@ impl Profile {
         let mut globset_builder = GlobSetBuilder::new();
         let mut glob_to_rule = Vec::new();
         let mut implicit_visible_ancestors = BTreeSet::new();
+        let mut implicit_ancestor_globset_builder = GlobSetBuilder::new();
+        let mut implicit_ancestor_globs = BTreeSet::new();
 
         for (idx, line) in parsed.iter().enumerate() {
             let action = line.action;
             let pattern = line.pattern.clone();
             if action != RuleAction::Deny {
                 gather_implicit_ancestors(&pattern, &mut implicit_visible_ancestors);
+                for ancestor_glob in implicit_ancestor_globs_for_rule(&pattern) {
+                    implicit_ancestor_globs.insert(ancestor_glob);
+                }
             }
 
             let rule_idx = rules.len();
@@ -73,12 +79,23 @@ impl Profile {
         let globset = globset_builder
             .build()
             .context("failed to build globset for profile")?;
+        for glob_pattern in implicit_ancestor_globs {
+            let glob = GlobBuilder::new(&glob_pattern)
+                .literal_separator(true)
+                .build()
+                .with_context(|| format!("invalid implicit ancestor glob: {glob_pattern}"))?;
+            implicit_ancestor_globset_builder.add(glob);
+        }
+        let implicit_ancestor_globset = implicit_ancestor_globset_builder
+            .build()
+            .context("failed to build implicit ancestor globset for profile")?;
 
         Ok(Self {
             rules,
             globset,
             glob_to_rule,
             implicit_visible_ancestors,
+            implicit_ancestor_globset,
         })
     }
 
@@ -107,6 +124,9 @@ impl Profile {
         }
 
         if self.implicit_visible_ancestors.contains(&normalized) {
+            return Visibility::ImplicitAncestor;
+        }
+        if self.implicit_ancestor_globset.is_match(&normalized) {
             return Visibility::ImplicitAncestor;
         }
 
@@ -254,6 +274,36 @@ fn gather_implicit_ancestors(pattern: &str, output: &mut BTreeSet<PathBuf>) {
     }
 }
 
+fn implicit_ancestor_globs_for_rule(pattern: &str) -> Vec<String> {
+    let base = normalized_base_pattern(pattern);
+    let path = Path::new(base);
+    let mut out = Vec::new();
+
+    if base != "/" {
+        out.push("/".to_string());
+    }
+
+    let components: Vec<String> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(seg) => Some(seg.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+    if components.len() <= 1 {
+        return out;
+    }
+
+    let count = components.len().saturating_sub(1);
+    let mut prefix = String::new();
+    for component in components.into_iter().take(count) {
+        prefix.push('/');
+        prefix.push_str(&component);
+        out.push(prefix.clone());
+    }
+    out
+}
+
 fn fixed_prefix(pattern: &str) -> PathBuf {
     let wildcard_idx = pattern.find(['*', '?', '[']).unwrap_or(pattern.len());
     let prefix = &pattern[..wildcard_idx];
@@ -394,6 +444,23 @@ mod tests {
         assert_eq!(
             profile.first_match_action(Path::new("/home/alice/.ssh/id_rsa")),
             Some(RuleAction::Deny)
+        );
+    }
+
+    #[test]
+    fn glob_rule_makes_wildcard_ancestors_traversable() {
+        let profile = parse(
+            r#"
+            /proc/*/exe ro
+            "#,
+        );
+        assert_eq!(
+            profile.visibility(Path::new("/proc/1234")),
+            Visibility::ImplicitAncestor
+        );
+        assert_eq!(
+            profile.first_match_action(Path::new("/proc/1234/exe")),
+            Some(RuleAction::ReadOnly)
         );
     }
 
