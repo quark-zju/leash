@@ -47,75 +47,96 @@ fn main() {
 }
 
 fn try_main() -> Result<i32> {
-    match cli::parse_env()? {
+    let cmd = cli::parse_env()?;
+    set_verbose(command_verbose(&cmd));
+    if let Some(reason) = require_priviledge_reason(&cmd) {
+        crate::vlog!("privileges: keeping elevated euid, reason: {reason}");
+    } else {
+        drop_privileges_for_unprivileged_command()?;
+    }
+
+    match cmd {
         Command::Help { topic, verbose } => {
-            set_verbose(verbose);
-            drop_privileges_for_unprivileged_command("help")?;
             cmd_help::print_help(topic, verbose);
             Ok(0)
         }
         Command::Add(add) => {
-            set_verbose(false);
-            drop_privileges_for_unprivileged_command("add")?;
             cmd_jail::add_command(add).context("add subcommand failed")?;
             Ok(0)
         }
         Command::List(list) => {
-            set_verbose(false);
-            drop_privileges_for_unprivileged_command("list")?;
             cmd_jail::list_command(list).context("list subcommand failed")?;
             Ok(0)
         }
         Command::Show(show) => {
-            set_verbose(show.verbose);
-            drop_privileges_for_unprivileged_command("show")?;
             cmd_show::show_command(show).context("show subcommand failed")?;
             Ok(0)
         }
         Command::Rm(rm) => {
-            set_verbose(rm.verbose);
             cmd_jail::rm_command(rm).context("rm subcommand failed")?;
             Ok(0)
         }
         Command::Run(run) => {
-            set_verbose(run.verbose);
             cmd_run::run_command(run).context("run subcommand failed")
         }
         Command::LowLevelMount(mount) => {
-            set_verbose(mount.verbose);
-            drop_privileges_for_unprivileged_command("_mount")?;
             cmd_mount::mount_command(mount).context("_mount subcommand failed")?;
             Ok(0)
         }
         Command::Flush(flush) => {
-            set_verbose(flush.verbose);
-            drop_privileges_for_unprivileged_command("flush")?;
             cmd_flush::flush_command(flush).context("flush subcommand failed")?;
             Ok(0)
         }
         Command::LowLevelFlush(flush) => {
-            set_verbose(flush.verbose);
-            drop_privileges_for_unprivileged_command("_flush")?;
             cmd_flush::low_level_flush_command(flush).context("_flush subcommand failed")?;
             Ok(0)
         }
         Command::LowLevelFuse(fuse) => {
-            set_verbose(fuse.verbose);
             cmd_fuse::fuse_command(fuse).context("_fuse subcommand failed")?;
             Ok(0)
         }
         Command::LowLevelSuid(suid) => {
-            set_verbose(suid.verbose);
             cmd_suid::suid_command(suid).context("_suid subcommand failed")?;
             Ok(0)
         }
     }
 }
 
-fn drop_privileges_for_unprivileged_command(command: &str) -> Result<()> {
+fn command_verbose(cmd: &Command) -> bool {
+    match cmd {
+        Command::Help { verbose, .. } => *verbose,
+        Command::Show(show) => show.verbose,
+        Command::Rm(rm) => rm.verbose,
+        Command::Run(run) => run.verbose,
+        Command::LowLevelMount(mount) => mount.verbose,
+        Command::Flush(flush) => flush.verbose,
+        Command::LowLevelFlush(flush) => flush.verbose,
+        Command::LowLevelFuse(fuse) => fuse.verbose,
+        Command::LowLevelSuid(suid) => suid.verbose,
+        Command::Add(_) | Command::List(_) => false,
+    }
+}
+
+fn require_priviledge_reason(cmd: &Command) -> Option<&'static str> {
+    match cmd {
+        Command::Run(_) => Some("run requires root for chroot and runtime setup"),
+        Command::Rm(_) => Some("rm may need root to clean state/runtime artifacts"),
+        Command::LowLevelFuse(_) => Some("_fuse requires root euid to mount FUSE daemon"),
+        Command::LowLevelSuid(_) => Some("_suid updates binary ownership/mode"),
+        Command::Help { .. }
+        | Command::Add(_)
+        | Command::List(_)
+        | Command::Show(_)
+        | Command::LowLevelMount(_)
+        | Command::Flush(_)
+        | Command::LowLevelFlush(_) => None,
+    }
+}
+
+fn drop_privileges_for_unprivileged_command() -> Result<()> {
     run_with_log(
         privileges::drop_root_euid_if_needed,
-        || format!("drop elevated privileges before '{command}'"),
+        || "drop elevated privileges for unprivileged command".to_string(),
     )?;
     Ok(())
 }
