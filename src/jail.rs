@@ -246,6 +246,7 @@ pub(crate) fn materialize_jail(paths: &JailPaths, normalized_profile: &str) -> R
             paths.profile_path.display()
         )
     })?;
+    ensure_owned_by_real_user(&paths.profile_path)?;
     if !paths.record_path.exists() {
         fs::OpenOptions::new()
             .create(true)
@@ -258,6 +259,7 @@ pub(crate) fn materialize_jail(paths: &JailPaths, normalized_profile: &str) -> R
                 )
             })?;
     }
+    ensure_owned_by_real_user(&paths.record_path)?;
     Ok(())
 }
 
