@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::ffi::{CString, OsStr};
 use std::fs::Metadata;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -301,6 +301,18 @@ impl CowFs {
         self.apply_cow_setattr(path, size, mode, atime, mtime)
     }
 
+    #[cfg(test)]
+    fn apply_passthrough_setattr_for_test(
+        &mut self,
+        path: &Path,
+        size: Option<u64>,
+        mode: Option<u32>,
+        atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
+    ) -> Result<FileAttr, i32> {
+        self.apply_passthrough_setattr(path, size, mode, atime, mtime)
+    }
+
     fn append_record(&self, op: &Operation) -> Result<(), i32> {
         self.record
             .append_cbor(record::TAG_WRITE_OP, op)
@@ -509,6 +521,46 @@ impl CowFs {
             Some(OverlayNode::Deleted) | None => Err(ENOENT),
             Some(node) => Ok(self.attr_for_overlay(path, &node)),
         }
+    }
+
+    fn apply_passthrough_setattr(
+        &mut self,
+        path: &Path,
+        size: Option<u64>,
+        mode: Option<u32>,
+        atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
+    ) -> Result<FileAttr, i32> {
+        if size.is_none() && mode.is_none() && atime.is_none() && mtime.is_none() {
+            return Err(ENOSYS);
+        }
+
+        if let Some(size) = size {
+            let file = fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .map_err(|err| io_errno(&err))?;
+            file.set_len(size).map_err(|err| io_errno(&err))?;
+        }
+
+        if let Some(mode) = mode {
+            let perm = std::fs::Permissions::from_mode(mode);
+            fs::set_permissions(path, perm).map_err(|err| io_errno(&err))?;
+        }
+
+        if atime.is_some() || mtime.is_some() {
+            let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|_| EINVAL)?;
+            let times = [to_timespec_or_omit(atime), to_timespec_or_omit(mtime)];
+            let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0) };
+            if rc != 0 {
+                return Err(std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(EIO));
+            }
+        }
+
+        let meta = fs::symlink_metadata(path).map_err(|err| io_errno(&err))?;
+        Ok(self.attr_for_path(path, &meta))
     }
 
     fn move_atime_overrides_subtree(&mut self, from: &Path, to: &Path) {
@@ -1313,34 +1365,10 @@ impl Filesystem for CowFs {
                 Err(code) => reply.error(code),
             },
             WriteMode::Passthrough => {
-                if atime.is_some() || mtime.is_some() || mode.is_some() {
-                    reply.error(EOPNOTSUPP);
-                    return;
+                match self.apply_passthrough_setattr(&path, size, mode, atime, mtime) {
+                    Ok(attr) => reply.attr(&TTL, &attr),
+                    Err(code) => reply.error(code),
                 }
-                let Some(size) = size else {
-                    reply.error(ENOSYS);
-                    return;
-                };
-                let file = match fs::OpenOptions::new().write(true).open(&path) {
-                    Ok(file) => file,
-                    Err(err) => {
-                        reply.error(io_errno(&err));
-                        return;
-                    }
-                };
-                if let Err(err) = file.set_len(size) {
-                    reply.error(io_errno(&err));
-                    return;
-                }
-                let meta = match fs::symlink_metadata(&path) {
-                    Ok(meta) => meta,
-                    Err(err) => {
-                        reply.error(io_errno(&err));
-                        return;
-                    }
-                };
-                let attr = self.attr_for_path(&path, &meta);
-                reply.attr(&TTL, &attr);
             }
         }
     }
@@ -1351,6 +1379,29 @@ fn to_system_time(value: Option<TimeOrNow>) -> Option<SystemTime> {
         Some(TimeOrNow::SpecificTime(ts)) => Some(ts),
         Some(TimeOrNow::Now) => Some(SystemTime::now()),
         None => None,
+    }
+}
+
+fn to_timespec_or_omit(value: Option<TimeOrNow>) -> libc::timespec {
+    match value {
+        Some(TimeOrNow::SpecificTime(ts)) => match ts.duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(dur) => libc::timespec {
+                tv_sec: dur.as_secs() as libc::time_t,
+                tv_nsec: dur.subsec_nanos() as libc::c_long,
+            },
+            Err(_) => libc::timespec {
+                tv_sec: 0,
+                tv_nsec: libc::UTIME_OMIT,
+            },
+        },
+        Some(TimeOrNow::Now) => libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_NOW,
+        },
+        None => libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        },
     }
 }
 
@@ -1787,6 +1838,51 @@ mod tests {
             .apply_cow_setattr_for_test(&path, None, Some(0o755), None, None)
             .expect_err("mode on directory should fail");
         assert_eq!(err, EOPNOTSUPP);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn passthrough_setattr_mode_updates_host_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, _record_path, mut fs) = test_fs("/tmp/** rw");
+        let path = dir.path().join("rw-mode-target");
+        fs::write(&path, b"abc").expect("seed file");
+        fs.apply_passthrough_setattr_for_test(
+            &path,
+            None,
+            Some(0o700),
+            None,
+            None,
+        )
+        .expect("set mode on rw path");
+
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn passthrough_setattr_time_updates_host_timestamps() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (dir, _record_path, mut fs) = test_fs("/tmp/** rw");
+        let path = dir.path().join("rw-time-target");
+        fs::write(&path, b"abc").expect("seed file");
+        let ts = SystemTime::UNIX_EPOCH + Duration::from_secs(56_789);
+
+        fs.apply_passthrough_setattr_for_test(
+            &path,
+            None,
+            None,
+            Some(TimeOrNow::SpecificTime(ts)),
+            Some(TimeOrNow::SpecificTime(ts)),
+        )
+        .expect("set times on rw path");
+
+        let meta = fs::metadata(&path).expect("metadata");
+        assert_eq!(meta.atime(), 56_789);
+        assert_eq!(meta.mtime(), 56_789);
     }
 
     #[test]
