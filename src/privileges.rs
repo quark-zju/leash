@@ -15,6 +15,7 @@ pub(crate) fn require_root_euid(cmd: &str) -> Result<()> {
 pub(crate) fn drop_to_real_user() -> Result<()> {
     let uid = unsafe { libc::getuid() };
     let gid = unsafe { libc::getgid() };
+    crate::vlog!("privileges: drop to real user uid={} gid={}", uid, gid);
     drop_to_ids(uid, gid)
 }
 
@@ -44,6 +45,15 @@ where
         );
     }
 
+    crate::vlog!(
+        "privileges: temporary escalate real ids to root (ruid/euid/suid={}/{}/{}, rgid/egid/sgid={}/{}/{})",
+        ruid,
+        euid,
+        suid,
+        rgid,
+        egid,
+        sgid
+    );
     let set_gid_root_rc = unsafe { libc::setresgid(0, 0, 0) };
     if set_gid_root_rc != 0 {
         bail!(
@@ -62,6 +72,15 @@ where
 
     let run_result = f();
 
+    crate::vlog!(
+        "privileges: restore uid/gid triplets to ruid/euid/suid={}/{}/{}, rgid/egid/sgid={}/{}/{}",
+        ruid,
+        euid,
+        suid,
+        rgid,
+        egid,
+        sgid
+    );
     let restore_uid_rc = unsafe { libc::setresuid(ruid, euid, suid) };
     let restore_uid_err = std::io::Error::last_os_error();
     let restore_gid_rc = unsafe { libc::setresgid(rgid, egid, sgid) };
@@ -78,18 +97,22 @@ where
 }
 
 fn drop_to_ids(uid: u32, gid: u32) -> Result<()> {
+    crate::vlog!("privileges: setgroups([])");
     if unsafe { libc::setgroups(0, std::ptr::null()) } != 0 {
         let err = std::io::Error::last_os_error();
         return Err(anyhow::anyhow!("setgroups([]) failed: {err}"));
     }
+    crate::vlog!("privileges: setgid({gid})");
     if unsafe { libc::setgid(gid) } != 0 {
         let err = std::io::Error::last_os_error();
         return Err(anyhow::anyhow!("setgid({gid}) failed: {err}"));
     }
+    crate::vlog!("privileges: setuid({uid})");
     if unsafe { libc::setuid(uid) } != 0 {
         let err = std::io::Error::last_os_error();
         return Err(anyhow::anyhow!("setuid({uid}) failed: {err}"));
     }
+    crate::vlog!("privileges: prctl(PR_SET_NO_NEW_PRIVS,1)");
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
         let err = std::io::Error::last_os_error();
         return Err(anyhow::anyhow!("prctl(PR_SET_NO_NEW_PRIVS) failed: {err}"));
