@@ -18,8 +18,6 @@ const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
 /dev/null rw
 /dev/urandom ro
 /dev/random ro
-/proc ro
-/sys ro
 /home/*/.ssh deny
 . cow
 ";
