@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use fs_err as fs;
+use std::fs::TryLockError;
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -115,8 +116,8 @@ pub(crate) fn try_open_lock(jail: &JailPaths) -> Result<Option<RuntimeLock>> {
             #[cfg(test)]
             path: paths.lock_path,
         })),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(err)) => Err(err).with_context(|| {
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(err)) => Err(err).with_context(|| {
             format!(
                 "failed to try-lock runtime lock {}",
                 paths.lock_path.display()

@@ -1305,18 +1305,18 @@ mod tests {
     fn overlay_deleted_hides_host_file() {
         let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
         let path = PathBuf::from("/tmp/cowjail-overlay-deleted");
-        std::fs::write(&path, b"host").expect("seed host");
+        fs::write(&path, b"host").expect("seed host");
         fs.overlay_set(path.clone(), OverlayNode::Deleted);
         let got = fs.effective_node(&path).expect("effective node");
         assert!(got.is_none());
-        let _ = std::fs::remove_file(&path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn overlay_regular_overrides_host_file() {
         let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
         let path = PathBuf::from("/tmp/cowjail-overlay-regular");
-        std::fs::write(&path, b"host").expect("seed host");
+        fs::write(&path, b"host").expect("seed host");
         fs.overlay_set(
             path.clone(),
             OverlayNode::Regular {
@@ -1331,14 +1331,14 @@ mod tests {
             }
             _ => panic!("expected overlay regular node"),
         }
-        let _ = std::fs::remove_file(&path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn overlay_readdir_includes_new_children() {
         let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
         let dir = PathBuf::from("/tmp/cowjail-overlay-dir");
-        let _ = std::fs::create_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
         let new_file = dir.join("from-overlay");
         let new_dir = dir.join("overlay-subdir");
         let new_link = dir.join("overlay-link");
@@ -1372,7 +1372,7 @@ mod tests {
                 .iter()
                 .any(|(_, _, name)| name == &std::ffi::OsString::from("overlay-link"))
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

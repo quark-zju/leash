@@ -1,4 +1,5 @@
 use std::ffi::CString;
+use std::fs::Metadata;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::process::Command as ProcessCommand;
@@ -103,6 +104,6 @@ fn apply_setuid_root(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn is_suid_root(meta: &std::fs::Metadata) -> bool {
+fn is_suid_root(meta: &Metadata) -> bool {
     meta.uid() == 0 && (meta.mode() & libc::S_ISUID) != 0
 }
