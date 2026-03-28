@@ -26,6 +26,10 @@ Profile is line-based and evaluated with first-match-wins.
 - `%include <name>`: inline include another profile by short name (no `/`); missing file is ignored
 - `%set max_size = <size|none>`: set record max size override
 - Comment: lines starting with `#`
+- Glob pattern is supported in paths
+  - `*` does not match `/`
+  - for arbitrary depth (including 0 levels), use `**`
+  - example: use `foo/**/.git` instead of `foo/*/.git`
 - Match order: top to bottom, first matched rule is used
 - Relative rules:
   - `.` resolves to the current working directory at profile load time

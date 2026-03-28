@@ -52,6 +52,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "  - Lines starting with # are comments\n",
             "  - Directive: %set max_size = <size|none> (default: 2gb)\n",
             "  - Directive: %include <name> (short profile name only; missing file ignored)\n",
+            "  - Globs are supported; `*` does not cross `/`, use `**` for any depth (including 0)\n",
             "  - Rules are first-match wins\n",
             "  - `.` expands to launch cwd\n\n",
             "EXAMPLE:\n",

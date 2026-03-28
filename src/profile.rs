@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleAction {
@@ -61,9 +61,10 @@ impl Profile {
             rules.push(Rule { action });
 
             for glob_pattern in glob_patterns_for_rule(&pattern) {
-                let glob = Glob::new(&glob_pattern).with_context(|| {
-                    format!("line {} has invalid glob: {glob_pattern}", idx + 1)
-                })?;
+                let glob = GlobBuilder::new(&glob_pattern)
+                    .literal_separator(true)
+                    .build()
+                    .with_context(|| format!("line {} has invalid glob: {glob_pattern}", idx + 1))?;
                 globset_builder.add(glob);
                 glob_to_rule.push(rule_idx);
             }
@@ -393,6 +394,28 @@ mod tests {
         assert_eq!(
             profile.first_match_action(Path::new("/home/alice/.ssh/id_rsa")),
             Some(RuleAction::Deny)
+        );
+    }
+
+    #[test]
+    fn double_star_matches_multi_level_and_single_star_does_not() {
+        let profile = parse(
+            r#"
+            /foo/*/.git deny
+            /foo/**/.git hide
+            "#,
+        );
+        assert_eq!(
+            profile.first_match_action(Path::new("/foo/a/.git/config")),
+            Some(RuleAction::Deny)
+        );
+        assert_eq!(
+            profile.first_match_action(Path::new("/foo/a/b/.git/config")),
+            Some(RuleAction::Hide)
+        );
+        assert_eq!(
+            profile.first_match_action(Path::new("/foo/.git/config")),
+            Some(RuleAction::Hide)
         );
     }
 
