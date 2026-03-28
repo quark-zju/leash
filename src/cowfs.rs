@@ -159,7 +159,7 @@ impl CowFs {
     }
 
     fn attr_for_path(&mut self, path: &Path, metadata: &Metadata) -> FileAttr {
-        let kind = filetype_from_metadata(path, metadata);
+        let kind = filetype_from_metadata(metadata);
         let ino = self.ensure_ino(path);
         let atime = system_time_from_unix(metadata.atime(), metadata.atime_nsec());
         let mtime = system_time_from_unix(metadata.mtime(), metadata.mtime_nsec());
@@ -266,7 +266,7 @@ impl CowFs {
                     overlay_filetype(node)
                 } else {
                     match child.metadata() {
-                        Ok(meta) => filetype_from_metadata(&child_path, &meta),
+                        Ok(meta) => filetype_from_metadata(&meta),
                         Err(_) => continue,
                     }
                 };
@@ -1487,15 +1487,7 @@ fn is_proc_exe_path(path: &Path) -> bool {
     )
 }
 
-fn filetype_from_metadata(path: &Path, metadata: &Metadata) -> FileType {
-    let kind = raw_filetype_from_metadata(metadata);
-    if kind == FileType::CharDevice && should_mask_char_device_as_regular(path) {
-        return FileType::RegularFile;
-    }
-    kind
-}
-
-fn raw_filetype_from_metadata(metadata: &Metadata) -> FileType {
+fn filetype_from_metadata(metadata: &Metadata) -> FileType {
     let ft = metadata.file_type();
     if ft.is_dir() {
         FileType::Directory
@@ -1514,15 +1506,6 @@ fn raw_filetype_from_metadata(metadata: &Metadata) -> FileType {
     } else {
         FileType::RegularFile
     }
-}
-
-fn should_mask_char_device_as_regular(path: &Path) -> bool {
-    matches!(
-        path,
-        p if p == Path::new("/dev/null")
-            || p == Path::new("/dev/urandom")
-            || p == Path::new("/dev/random")
-    )
 }
 
 fn overlay_filetype(node: &OverlayNode) -> FileType {
@@ -1935,15 +1918,6 @@ mod tests {
         let rewritten =
             rewrite_proc_exe_readlink_target(Path::new("/proc/123/exe"), target, Some(Path::new("/run/user/1000/cowjail/demo/mount")));
         assert_eq!(rewritten, target);
-    }
-
-    #[test]
-    fn known_dev_char_nodes_are_marked_for_regular_file_exposure() {
-        assert!(should_mask_char_device_as_regular(Path::new("/dev/null")));
-        assert!(should_mask_char_device_as_regular(Path::new("/dev/urandom")));
-        assert!(should_mask_char_device_as_regular(Path::new("/dev/random")));
-        assert!(!should_mask_char_device_as_regular(Path::new("/dev/tty")));
-        assert!(!should_mask_char_device_as_regular(Path::new("/tmp/dev/random")));
     }
 
     #[cfg(unix)]
