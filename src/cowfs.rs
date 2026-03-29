@@ -1,4 +1,5 @@
 use fs_err::os::unix::fs::OpenOptionsExt as FsOpenOptionsExt;
+use log::debug;
 use std::ffi::{CString, OsStr};
 use std::fs::Metadata;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -433,42 +434,105 @@ pub(crate) fn allow_other_enabled_in_fuse_conf() -> bool {
 impl Filesystem for CowFs {
     fn lookup(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
+            debug!("lookup: pid={} parent_ino={} name={:?} -> ENOENT (unknown parent inode)", req.pid(), parent, name);
             reply.error(ENOENT);
             return;
         };
         let path = parent_path.join(name);
         if let Some(errno) = self.access_errno_for_pid(&path, Some(req.pid())) {
+            debug!(
+                "lookup: pid={} path={} -> errno {} (policy)",
+                req.pid(),
+                path.display(),
+                errno
+            );
             reply.error(errno);
             return;
         }
         match fs::symlink_metadata(&path) {
             Ok(metadata) => {
                 let attr = self.attr_for_path(&path, &metadata);
+                debug!(
+                    "lookup: pid={} path={} -> ino={} kind={:?}",
+                    req.pid(),
+                    path.display(),
+                    attr.ino,
+                    attr.kind
+                );
                 reply.entry(&TTL, &attr, 0);
             }
-            Err(err) => reply.error(io_errno(&err)),
+            Err(err) => {
+                let errno = io_errno(&err);
+                debug!(
+                    "lookup: pid={} path={} -> errno {} ({err})",
+                    req.pid(),
+                    path.display(),
+                    errno
+                );
+                reply.error(errno);
+            }
         }
     }
 
     fn getattr(&mut self, req: &Request<'_>, ino: u64, fh: Option<u64>, reply: ReplyAttr) {
         let resolved_ino = fh.and_then(|fh| self.handle_ino(fh)).unwrap_or(ino);
         let Some(path) = self.path_for_ino(resolved_ino).map(ToOwned::to_owned) else {
+            debug!(
+                "getattr: pid={} ino={} fh={:?} -> ENOENT (unknown inode)",
+                req.pid(),
+                ino,
+                fh
+            );
             reply.error(ENOENT);
             return;
         };
         if let Some(errno) = self.access_errno_for_pid(&path, Some(req.pid())) {
+            debug!(
+                "getattr: pid={} path={} ino={} fh={:?} -> errno {} (policy)",
+                req.pid(),
+                path.display(),
+                ino,
+                fh,
+                errno
+            );
             reply.error(errno);
             return;
         }
         if let Some(fh) = fh
             && let Ok(attr) = self.host_attr_for_handle(&path, fh)
         {
+            debug!(
+                "getattr: pid={} path={} ino={} fh={} -> handle attr",
+                req.pid(),
+                path.display(),
+                ino,
+                fh
+            );
             reply.attr(&TTL, &attr);
             return;
         }
         match self.host_attr(&path) {
-            Ok(attr) => reply.attr(&TTL, &attr),
-            Err(code) => reply.error(code),
+            Ok(attr) => {
+                debug!(
+                    "getattr: pid={} path={} ino={} fh={:?} -> host attr",
+                    req.pid(),
+                    path.display(),
+                    ino,
+                    fh
+                );
+                reply.attr(&TTL, &attr)
+            }
+            Err(code) => {
+                debug!(
+                    "getattr: pid={} path={} ino={} fh={:?} -> errno {}",
+                    req.pid(),
+                    path.display(),
+                    ino,
+                    fh,
+                    code
+                );
+                reply.error(code)
+            }
         }
     }
 

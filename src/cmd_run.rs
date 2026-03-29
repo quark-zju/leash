@@ -166,7 +166,6 @@ fn enter_pid_namespace_worker_or_reap() -> Result<()> {
         // Keep stdio open in the pidns reaper. Closing fd 0/1/2 here makes any
         // later Rust diagnostic path abort immediately if it tries to write to
         // stderr, which obscures the real failure signal during `run`.
-        close_fds_best_effort_from(3);
         if let Err(_err) = privileges::drop_to_real_user() {
             unsafe { libc::_exit(1) };
         }
@@ -220,18 +219,6 @@ fn exit_from_wait_status(status: libc::c_int) -> ! {
     unsafe { libc::_exit(1) }
 }
 
-fn close_fds_best_effort_from(first: libc::c_uint) {
-    if try_close_range(first).is_ok() {
-        return;
-    }
-    let max_fd: i32 = 65536;
-    for fd in first as i32..max_fd {
-        unsafe {
-            libc::close(fd);
-        }
-    }
-}
-
 fn set_process_name(name: &CStr) -> Result<()> {
     let rc = unsafe { libc::prctl(libc::PR_SET_NAME, name.as_ptr() as libc::c_ulong, 0, 0, 0) };
     if rc != 0 {
@@ -262,35 +249,6 @@ fn pivot_into_mount_root(mount_root: &Path) -> Result<()> {
         return Err(std::io::Error::last_os_error()).context("chdir('/') failed after pivot_root");
     }
     Ok(())
-}
-
-fn try_close_range(first: libc::c_uint) -> Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        let rc = unsafe {
-            libc::syscall(
-                libc::SYS_close_range,
-                first,
-                libc::c_uint::MAX,
-                0 as libc::c_uint,
-            )
-        };
-        if rc == 0 {
-            return Ok(());
-        }
-        let err = std::io::Error::last_os_error();
-        if matches!(
-            err.raw_os_error(),
-            Some(libc::ENOSYS | libc::EINVAL | libc::EPERM)
-        ) {
-            return Err(anyhow::anyhow!("close_range unavailable: {err}"));
-        }
-        return Err(err).context("close_range failed");
-    }
-    #[allow(unreachable_code)]
-    Err(anyhow::anyhow!(
-        "close_range is unsupported on this platform"
-    ))
 }
 
 fn ensure_fuse_server(
