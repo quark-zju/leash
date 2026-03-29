@@ -95,6 +95,25 @@ def jail(
     return run([str(cowjail_bin), *args], env=env, check=check)
 
 
+def jail_run(
+    cowjail_bin: Path,
+    env: dict[str, str],
+    profile_path: Path,
+    *cmd: str,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    return jail(
+        cowjail_bin,
+        env,
+        "run",
+        "--profile",
+        str(profile_path),
+        "--",
+        *cmd,
+        check=check,
+    )
+
+
 def main() -> None:
     args = parse_args()
     cowjail_bin = args.bin.resolve()
@@ -196,210 +215,160 @@ def main() -> None:
             )
         )
 
-        jail(
+        print("[1/5] verifying ro and rw")
+        completed = jail_run(
             cowjail_bin,
             base_env,
-            "add",
-            "--name",
-            "semantics",
-            "--profile",
-            str(profile_path),
+            profile_path,
+            "/bin/sh",
+            "-lc",
+            'cat "$1"',
+            "sh",
+            str(ro_file),
+        )
+        assert_eq(completed.stdout, "ro-ok\n", what="ro read output")
+
+        completed = jail_run(
+            cowjail_bin,
+            base_env,
+            profile_path,
+            "/bin/sh",
+            "-lc",
+            'printf changed >"$1"',
+            "sh",
+            str(ro_file),
+            check=False,
+        )
+        if completed.returncode == 0:
+            fail("ro write unexpectedly succeeded")
+        assert_eq(ro_file.read_text(), "ro-ok\n", what="host ro file content")
+
+        jail_run(
+            cowjail_bin,
+            base_env,
+            profile_path,
+            "/bin/sh",
+            "-lc",
+            'printf rw-after >"$1"',
+            "sh",
+            str(rw_file),
+        )
+        assert_eq(rw_file.read_text(), "rw-after", what="host rw file content")
+
+        print("[2/5] verifying hide")
+        completed = jail_run(
+            cowjail_bin,
+            base_env,
+            profile_path,
+            "/bin/sh",
+            "-lc",
+            '[ ! -e "$1" ]',
+            "sh",
+            str(hidden_file),
+        )
+        if completed.returncode != 0:
+            fail("hidden path was still visible inside the jail")
+
+        print("[3/5] verifying deny")
+        completed = jail_run(
+            cowjail_bin,
+            base_env,
+            profile_path,
+            "/bin/sh",
+            "-lc",
+            'cat "$1"',
+            "sh",
+            str(deny_file),
+            check=False,
+        )
+        if completed.returncode == 0:
+            fail("deny path unexpectedly became readable")
+        assert_contains(
+            completed.stderr,
+            "Permission denied",
+            what="deny stderr",
         )
 
-        try:
-            print("[1/5] verifying ro and rw")
-            completed = jail(
-                cowjail_bin,
-                base_env,
-                "run",
-                "--name",
-                "semantics",
-                "--",
-                "/bin/sh",
-                "-lc",
-                'cat "$1"',
-                "sh",
-                str(ro_file),
-            )
-            assert_eq(completed.stdout, "ro-ok\n", what="ro read output")
+        print("[4/5] verifying git-rw worktree and non-repo behavior")
+        jail_run(
+            cowjail_bin,
+            base_env,
+            profile_path,
+            "/bin/sh",
+            "-lc",
+            'printf repo-after >"$1"',
+            "sh",
+            str(repo_file),
+        )
+        assert_eq(repo_file.read_text(), "repo-after", what="host repo file content")
 
-            completed = jail(
-                cowjail_bin,
-                base_env,
-                "run",
-                "--name",
-                "semantics",
-                "--",
-                "/bin/sh",
-                "-lc",
-                'printf changed >"$1"',
-                "sh",
-                str(ro_file),
-                check=False,
-            )
-            if completed.returncode == 0:
-                fail("ro write unexpectedly succeeded")
-            assert_eq(ro_file.read_text(), "ro-ok\n", what="host ro file content")
+        completed = jail_run(
+            cowjail_bin,
+            base_env,
+            profile_path,
+            "/bin/sh",
+            "-lc",
+            'printf blocked >"$1"',
+            "sh",
+            str(nonrepo_file),
+            check=False,
+        )
+        if completed.returncode == 0:
+            fail("non-repo write under git-rw unexpectedly succeeded")
+        assert_eq(
+            nonrepo_file.read_text(),
+            "nonrepo-before\n",
+            what="host non-repo file content",
+        )
 
-            jail(
-                cowjail_bin,
-                base_env,
-                "run",
-                "--name",
-                "semantics",
-                "--",
-                "/bin/sh",
-                "-lc",
-                'printf rw-after >"$1"',
-                "sh",
-                str(rw_file),
-            )
-            assert_eq(rw_file.read_text(), "rw-after", what="host rw file content")
+        print("[5/5] verifying .git protection and trusted git access")
+        completed = jail_run(
+            cowjail_bin,
+            base_env,
+            profile_path,
+            "/bin/sh",
+            "-lc",
+            'cat "$1"',
+            "sh",
+            str(repo / ".git" / "HEAD"),
+            check=False,
+        )
+        if completed.returncode == 0:
+            fail("direct .git access unexpectedly succeeded")
+        assert_contains(
+            completed.stderr,
+            "Permission denied",
+            what=".git access stderr",
+        )
 
-            print("[2/5] verifying hide")
-            completed = jail(
-                cowjail_bin,
-                base_env,
-                "run",
-                "--name",
-                "semantics",
-                "--",
-                "/bin/sh",
-                "-lc",
-                '[ ! -e "$1" ]',
-                "sh",
-                str(hidden_file),
-            )
-            if completed.returncode != 0:
-                fail("hidden path was still visible inside the jail")
+        completed = jail_run(
+            cowjail_bin,
+            base_env,
+            profile_path,
+            system_git,
+            "-C",
+            str(repo),
+            "status",
+            "--short",
+        )
+        assert_contains(
+            completed.stdout,
+            "M tracked.txt",
+            what="git status output",
+        )
 
-            print("[3/5] verifying deny")
-            completed = jail(
-                cowjail_bin,
-                base_env,
-                "run",
-                "--name",
-                "semantics",
-                "--",
-                "/bin/sh",
-                "-lc",
-                'cat "$1"',
-                "sh",
-                str(deny_file),
-                check=False,
-            )
-            if completed.returncode == 0:
-                fail("deny path unexpectedly became readable")
-            assert_contains(
-                completed.stderr,
-                "Permission denied",
-                what="deny stderr",
-            )
-
-            print("[4/5] verifying git-rw worktree and non-repo behavior")
-            jail(
-                cowjail_bin,
-                base_env,
-                "run",
-                "--name",
-                "semantics",
-                "--",
-                "/bin/sh",
-                "-lc",
-                'printf repo-after >"$1"',
-                "sh",
-                str(repo_file),
-            )
-            assert_eq(repo_file.read_text(), "repo-after", what="host repo file content")
-
-            completed = jail(
-                cowjail_bin,
-                base_env,
-                "run",
-                "--name",
-                "semantics",
-                "--",
-                "/bin/sh",
-                "-lc",
-                'printf blocked >"$1"',
-                "sh",
-                str(nonrepo_file),
-                check=False,
-            )
-            if completed.returncode == 0:
-                fail("non-repo write under git-rw unexpectedly succeeded")
-            assert_eq(
-                nonrepo_file.read_text(),
-                "nonrepo-before\n",
-                what="host non-repo file content",
-            )
-
-            print("[5/5] verifying .git protection and trusted git access")
-            completed = jail(
-                cowjail_bin,
-                base_env,
-                "run",
-                "--name",
-                "semantics",
-                "--",
-                "/bin/sh",
-                "-lc",
-                'cat "$1"',
-                "sh",
-                str(repo / ".git" / "HEAD"),
-                check=False,
-            )
-            if completed.returncode == 0:
-                fail("direct .git access unexpectedly succeeded")
-            assert_contains(
-                completed.stderr,
-                "Permission denied",
-                what=".git access stderr",
-            )
-
-            completed = jail(
-                cowjail_bin,
-                base_env,
-                "run",
-                "--name",
-                "semantics",
-                "--",
-                system_git,
-                "-C",
-                str(repo),
-                "status",
-                "--short",
-            )
-            assert_contains(
-                completed.stdout,
-                "M tracked.txt",
-                what="git status output",
-            )
-
-            completed = jail(
-                cowjail_bin,
-                base_env,
-                "run",
-                "--name",
-                "semantics",
-                "--",
-                system_git,
-                "-C",
-                str(repo),
-                "log",
-                "-1",
-                "--format=%s",
-            )
-            assert_eq(completed.stdout.strip(), "initial", what="git log output")
-        finally:
-            jail(
-                cowjail_bin,
-                base_env,
-                "rm",
-                "--name",
-                "semantics",
-                check=False,
-            )
+        completed = jail_run(
+            cowjail_bin,
+            base_env,
+            profile_path,
+            system_git,
+            "-C",
+            str(repo),
+            "log",
+            "-1",
+            "--format=%s",
+        )
+        assert_eq(completed.stdout.strip(), "initial", what="git log output")
 
         print("PASS: semantic e2e checks succeeded")
 
