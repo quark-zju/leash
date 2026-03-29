@@ -8,16 +8,33 @@ use crate::{cli, jail, profile, record};
 pub(crate) const DEFAULT_RECORD_MAX_SIZE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
+# Deny access to cowjail state
 ~/.config/cowjail deny
 ~/.local/state/cowjail deny
+
+# User overrides
 %include default.local
+
+# Deny access to browser states
+~/.cache/mozilla deny
+~/.config/google-chrome* deny
+~/.config/chromium* deny
+
+# Deny access to ssh configs
+~/.ssh deny
+
+# Temp files
 /tmp rw
+
+# Basic system
 /bin ro
 /sbin ro
 /usr ro
 /lib ro
 /lib64 ro
 /etc ro
+
+# /dev, /proc
 /dev/full rw
 /dev/null rw
 /dev/ptmx rw
@@ -29,21 +46,24 @@ const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
 /dev/tty rw
 /dev/urandom ro
 /dev/zero rw
-~/.ssh deny
+/proc rw
+
+# Coding agents
 ~/.agents rw
-~/bin ro
-~/.cache/claude-cli-nodejs rw
-~/.cache/opencode rw
+~/.cache rw
 ~/.cargo rw
 ~/.claude rw
 ~/.codex rw
-~/.config/opencode rw
+
+# User home (some used by coding agents too)
+~/bin ro
+~/.config rw
 ~/.gitconfig* ro
 ~/.gitignore* ro
-~/.local/share/opencode rw
-~/.local/state/opencode rw
+~/.local rw
 ~/.npm rw
-/proc rw
+
+# Current workspace
 . cow
 ";
 
