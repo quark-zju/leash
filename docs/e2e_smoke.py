@@ -21,7 +21,7 @@ def init_work_dir() -> Path:
     if configured:
         base = Path(configured)
     else:
-        base = ROOT_DIR / ".e2e-work"
+        base = Path("/tmp")
     try:
         base.mkdir(parents=True, exist_ok=True)
         return Path(tempfile.mkdtemp(prefix="cowjail-e2e-", dir=str(base)))
@@ -126,7 +126,6 @@ def prepare_inputs() -> None:
     PROFILE_PATH.write_text(
         (
             f"{WORK_DIR} cow\n"
-            f"{WORK_DIR}/** cow\n"
             "/tmp ro\n"
             "/bin ro\n"
             "/usr ro\n"
