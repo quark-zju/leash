@@ -133,6 +133,9 @@ impl CowFs {
     }
 
     fn is_visible(&self, path: &Path) -> bool {
+        if self.is_hard_blocked_runtime_path(path) {
+            return true;
+        }
         match self.profile.visibility(path) {
             Visibility::Hidden | Visibility::Action(RuleAction::Hide) => false,
             Visibility::ImplicitAncestor => self.path_is_directory(path),
@@ -143,6 +146,9 @@ impl CowFs {
     fn access_errno(&self, path: &Path) -> Option<i32> {
         if is_blocked_proc_thread_self(path) {
             return Some(ENOENT);
+        }
+        if self.is_hard_blocked_runtime_path(path) {
+            return Some(EACCES);
         }
         match self.profile.visibility(path) {
             Visibility::Hidden | Visibility::Action(RuleAction::Hide) => Some(ENOENT),
@@ -155,6 +161,9 @@ impl CowFs {
     fn mutation_errno(&self, path: &Path) -> Option<i32> {
         if is_blocked_proc_thread_self(path) {
             return Some(ENOENT);
+        }
+        if self.is_hard_blocked_runtime_path(path) {
+            return Some(EACCES);
         }
         match self.profile.visibility(path) {
             Visibility::Hidden | Visibility::Action(RuleAction::Hide) => Some(EPERM),
@@ -172,6 +181,20 @@ impl CowFs {
             Ok(meta) => meta.file_type().is_dir(),
             Err(_) => false,
         }
+    }
+
+    fn runtime_guard_root(&self) -> Option<&Path> {
+        self.mount_root
+            .as_deref()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+    }
+
+    fn is_hard_blocked_runtime_path(&self, path: &Path) -> bool {
+        let Some(root) = self.runtime_guard_root() else {
+            return false;
+        };
+        path == root || path.starts_with(root)
     }
 
     fn write_mode(&self, path: &Path) -> WriteMode {
@@ -1982,6 +2005,20 @@ mod tests {
 
         fs.remove_handle(fh);
         let _ = fs::remove_file(&to);
+    }
+
+    #[test]
+    fn runtime_root_is_hard_denied_even_if_profile_allows_it() {
+        let (_dir, _record_path, fs) = test_fs("/run/** rw\n");
+        let guarded = fs
+            .with_mount_root(PathBuf::from("/run/user/1000/cowjail/demo/mount"));
+        let runtime_root = Path::new("/run/user/1000/cowjail");
+        let runtime_child = Path::new("/run/user/1000/cowjail/demo/fuse.pid");
+
+        assert_eq!(guarded.access_errno(runtime_root), Some(EACCES));
+        assert_eq!(guarded.access_errno(runtime_child), Some(EACCES));
+        assert_eq!(guarded.mutation_errno(runtime_root), Some(EACCES));
+        assert_eq!(guarded.mutation_errno(runtime_child), Some(EACCES));
     }
 
     #[test]
