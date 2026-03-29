@@ -207,6 +207,7 @@ impl CowFs {
         }
     }
 
+    #[cfg(test)]
     fn access_errno(&self, path: &Path) -> Option<i32> {
         self.access_errno_for_pid(path, None)
     }
@@ -235,6 +236,7 @@ impl CowFs {
         }
     }
 
+    #[cfg(test)]
     fn mutation_errno(&self, path: &Path) -> Option<i32> {
         self.mutation_errno_for_pid(path, None)
     }
@@ -302,6 +304,7 @@ impl CowFs {
         }
     }
 
+    #[cfg(test)]
     fn write_mode(&self, path: &Path) -> WriteMode {
         self.write_mode_for_pid(path, None)
     }

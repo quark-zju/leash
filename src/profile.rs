@@ -144,7 +144,7 @@ impl Profile {
     }
 }
 
-#[cfg_attr(test, allow(dead_code))]
+#[allow(dead_code)]
 pub fn normalize_source(profile_src: &str, launch_cwd: &Path) -> Result<String> {
     let home = home_dir_from_env()?;
     normalize_source_with_home(profile_src, launch_cwd, &home)
