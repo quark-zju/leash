@@ -4,6 +4,7 @@ use std::ffi::CString;
 #[cfg(test)]
 use std::fs::TryLockError;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -89,6 +90,7 @@ pub(crate) fn ensure_runtime_dir(jail: &JailPaths) -> Result<NsRuntimePaths> {
             paths.runtime_dir.display()
         )
     })?;
+    ensure_runtime_dirs_private(&root, &paths.runtime_dir, !crate::jail::has_configured_xdg_runtime_dir())?;
     ensure_owned_by_real_user(&root)?;
     ensure_owned_by_real_user(&paths.runtime_dir)?;
     Ok(paths)
@@ -98,6 +100,29 @@ fn open_root_lock(root: &Path) -> Result<RuntimeLock> {
     fs::create_dir_all(root)
         .with_context(|| format!("failed to create runtime root directory {}", root.display()))?;
     open_lock_file(root.join(ROOT_LOCK_FILE_NAME))
+}
+
+fn ensure_runtime_dirs_private(root: &Path, runtime_dir: &Path, enforce_private: bool) -> Result<()> {
+    if !enforce_private {
+        return Ok(());
+    }
+    ensure_dir_mode(root, 0o700)?;
+    ensure_dir_mode(runtime_dir, 0o700)?;
+    Ok(())
+}
+
+fn ensure_dir_mode(path: &Path, mode: u32) -> Result<()> {
+    let meta = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect runtime directory {}", path.display()))?;
+    if !meta.file_type().is_dir() {
+        bail!("runtime path is not a directory: {}", path.display());
+    }
+    let current_mode = meta.permissions().mode() & 0o777;
+    if current_mode == mode {
+        return Ok(());
+    }
+    fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .with_context(|| format!("failed to chmod runtime directory {}", path.display()))
 }
 
 pub(crate) fn open_lock(jail: &JailPaths) -> Result<RuntimeLock> {
@@ -650,6 +675,56 @@ impl RuntimeLock {
     #[cfg(test)]
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn private_runtime_dir_helper_enforces_0700_when_requested() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let runtime = root.join("demo");
+        fs::create_dir_all(&runtime).expect("mkdir runtime");
+        fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).expect("chmod root");
+        fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod runtime");
+
+        ensure_runtime_dirs_private(&root, &runtime, true).expect("enforce private runtime dirs");
+
+        let root_mode = fs::metadata(&root).expect("root metadata").permissions().mode() & 0o777;
+        let runtime_mode = fs::metadata(&runtime)
+            .expect("runtime metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(root_mode, 0o700);
+        assert_eq!(runtime_mode, 0o700);
+    }
+
+    #[test]
+    fn private_runtime_dir_helper_skips_chmod_when_not_requested() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let runtime = root.join("demo");
+        fs::create_dir_all(&runtime).expect("mkdir runtime");
+        fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).expect("chmod root");
+        fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod runtime");
+
+        ensure_runtime_dirs_private(&root, &runtime, false).expect("skip private runtime dirs");
+
+        let root_mode = fs::metadata(&root).expect("root metadata").permissions().mode() & 0o777;
+        let runtime_mode = fs::metadata(&runtime)
+            .expect("runtime metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(root_mode, 0o755);
+        assert_eq!(runtime_mode, 0o755);
     }
 }
 

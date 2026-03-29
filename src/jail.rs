@@ -82,13 +82,24 @@ pub(crate) fn profile_definition_path(name: &str) -> Result<PathBuf> {
 }
 
 pub(crate) fn runtime_root() -> PathBuf {
-    if let Some(raw) = std::env::var_os("XDG_RUNTIME_DIR")
-        && !raw.is_empty()
-    {
-        return PathBuf::from(raw).join("leash");
+    if let Some(root) = configured_xdg_runtime_root() {
+        return root;
     }
     let uid = unsafe { libc::getuid() };
     PathBuf::from(format!("/run/user/{uid}/leash"))
+}
+
+pub(crate) fn has_configured_xdg_runtime_dir() -> bool {
+    configured_xdg_runtime_root().is_some()
+}
+
+fn configured_xdg_runtime_root() -> Option<PathBuf> {
+    if let Some(raw) = std::env::var_os("XDG_RUNTIME_DIR")
+        && !raw.is_empty()
+    {
+        return Some(PathBuf::from(raw).join("leash"));
+    }
+    None
 }
 
 pub(crate) fn jail_paths_in(layout: &JailLayout, name: &str) -> JailPaths {
