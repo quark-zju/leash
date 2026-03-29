@@ -176,7 +176,7 @@ impl CowFs {
         if self.is_hard_blocked_runtime_path(path) {
             return true;
         }
-        match self.profile.visibility(path) {
+        match self.dynamic_visibility(path) {
             Visibility::Hidden | Visibility::Action(RuleAction::Hide) => false,
             Visibility::ImplicitAncestor => self.path_is_directory(path),
             Visibility::Action(_) => true,
@@ -199,7 +199,7 @@ impl CowFs {
         {
             return Some(EACCES);
         }
-        match self.profile.visibility(path) {
+        match self.dynamic_visibility(path) {
             Visibility::Hidden | Visibility::Action(RuleAction::Hide) => Some(ENOENT),
             Visibility::Action(RuleAction::Deny) => Some(EACCES),
             Visibility::ImplicitAncestor if !self.path_is_directory(path) => Some(ENOENT),
@@ -227,7 +227,7 @@ impl CowFs {
         {
             return Some(EACCES);
         }
-        match self.profile.visibility(path) {
+        match self.dynamic_visibility(path) {
             Visibility::Hidden | Visibility::Action(RuleAction::Hide) => Some(EPERM),
             Visibility::Action(RuleAction::Deny) => Some(EACCES),
             Visibility::ImplicitAncestor if !self.path_is_directory(path) => Some(ENOENT),
@@ -269,6 +269,19 @@ impl CowFs {
         path == root || path.starts_with(root)
     }
 
+    fn dynamic_visibility(&self, path: &Path) -> Visibility {
+        match self.profile.visibility(path) {
+            Visibility::Action(RuleAction::GitRw) => {
+                if self.git_rw_filter.path_is_git_repo_member(path) {
+                    Visibility::Action(RuleAction::Passthrough)
+                } else {
+                    Visibility::Action(RuleAction::Hide)
+                }
+            }
+            other => other,
+        }
+    }
+
     fn write_mode_for_pid(&self, path: &Path, requester_pid: Option<u32>) -> WriteMode {
         if self.git_rw_filter.is_git_metadata_path(path) {
             return if requester_pid
@@ -282,16 +295,9 @@ impl CowFs {
                 WriteMode::Forbidden
             };
         }
-        match self.profile.first_match_action(path) {
-            Some(RuleAction::GitRw) => {
-                if self.git_rw_filter.path_is_git_repo_member(path) {
-                    WriteMode::Passthrough
-                } else {
-                    WriteMode::Forbidden
-                }
-            }
-            Some(RuleAction::Cow) => WriteMode::Cow,
-            Some(RuleAction::Passthrough) => WriteMode::Passthrough,
+        match self.dynamic_visibility(path) {
+            Visibility::Action(RuleAction::Passthrough) => WriteMode::Passthrough,
+            Visibility::Action(RuleAction::Cow) => WriteMode::Cow,
             _ => WriteMode::Forbidden,
         }
     }
@@ -2584,6 +2590,22 @@ mod tests {
             WriteMode::Passthrough
         );
         assert_eq!(fs.write_mode(&dir.path().join("notes.txt")), WriteMode::Forbidden);
+    }
+
+    #[test]
+    fn git_rw_hides_non_repo_paths() {
+        let dir = tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        let outside = dir.path().join("notes.txt");
+        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+        fs::write(repo.join(".git/config"), b"[core]\n").expect("write config");
+        fs::write(&outside, b"note").expect("write outside file");
+
+        let profile_src = format!("{} git-rw\n", dir.path().display());
+        let (_holder, _record_path, fs) = test_fs(&profile_src);
+        assert_eq!(fs.access_errno(&outside), Some(ENOENT));
+        assert_eq!(fs.mutation_errno(&outside), Some(EPERM));
+        assert!(!fs.is_visible(&outside));
     }
 
     #[test]
