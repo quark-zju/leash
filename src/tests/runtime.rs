@@ -6,19 +6,19 @@ use tempfile::tempdir;
 #[test]
 fn explicit_jail_name_validation_rejects_reserved_and_invalid_names() {
     jail::validate_explicit_name("good-name_1.2").expect("valid name");
+    jail::validate_explicit_name("0123456789abcdef").expect("hex name remains valid");
     assert!(jail::validate_explicit_name("").is_err());
     assert!(jail::validate_explicit_name(".").is_err());
     assert!(jail::validate_explicit_name("..").is_err());
     assert!(jail::validate_explicit_name("bad/name").is_err());
-    assert!(jail::validate_explicit_name("unnamed-1234").is_err());
     assert!(jail::validate_explicit_name("white space").is_err());
 }
 
 #[test]
-fn auto_jail_name_uses_reserved_prefix() {
+fn auto_jail_name_is_stable_hex() {
     let name = jail::derive_auto_name("/tmp rw\n");
-    assert!(name.starts_with(jail::AUTO_NAME_PREFIX));
-    assert!(jail::is_generated_name(&name));
+    assert_eq!(name.len(), 16);
+    assert!(name.bytes().all(|b| b.is_ascii_hexdigit()));
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn resolve_in_can_materialize_generated_jail_without_global_home() {
     .expect("resolve generated jail");
 
     assert!(resolved.generated);
-    assert!(resolved.name.starts_with(jail::AUTO_NAME_PREFIX));
+    assert_eq!(resolved.name.len(), 16);
     assert_eq!(
         fs::read_to_string(&resolved.paths.profile_path).expect("read stored profile"),
         resolved.normalized_profile

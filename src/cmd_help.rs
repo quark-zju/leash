@@ -77,27 +77,19 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
         HelpTopic::LowLevelShow => concat!(
             "cowjail _show\n\n",
             "USAGE:\n",
-            "  cowjail _show [--name <name> | <name> | --profile <profile>] [-v|--verbose]\n\n",
-            "NOTES:\n",
-            "  () means required choice, [] means optional\n\n",
+            "  cowjail _show [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n\n",
             "DESCRIPTION:\n",
-            "  Print low-level jail profile state.\n\n",
+            "  Print low-level jail profile state for one or more runtime names.\n\n",
             "OPTIONS:\n",
-            "  --name <name>         Show a jail by name (same as positional NAME)\n",
-            "  --profile <profile>   Show the jail selected by profile-derived identity\n",
             "  -v, --verbose         Reserved for extra debug output"
         )
         .to_string(),
         HelpTopic::LowLevelRm => concat!(
             "cowjail _rm\n\n",
             "USAGE:\n",
-            "  cowjail _rm (<name> | --name <name> | --profile <profile>) [-v|--verbose]\n\n",
-            "NOTES:\n",
-            "  () means required choice, [] means optional\n\n",
+            "  cowjail _rm [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n\n",
             "OPTIONS:\n",
-            "  --name <name>         Remove by jail name or glob (same as positional NAME)\n",
-            "  --profile <profile>   Remove the jail selected by profile-derived identity\n",
-            "  -v, --verbose         Print cleanup syscall progress",
+            "  -v, --verbose         Print cleanup syscall progress"
         )
         .to_string(),
         HelpTopic::Run => concat!(
@@ -165,8 +157,8 @@ fn root_help_text(verbose: bool) -> String {
             "\n",
             "LOW-LEVEL (DEBUG):\n",
             "  cowjail _list\n",
-            "  cowjail _show [--name <name> | <name> | --profile <profile>] [-v|--verbose]\n",
-            "  cowjail _rm (<name> | --name <name> | --profile <profile>) [-v|--verbose]\n",
+            "  cowjail _show [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n",
+            "  cowjail _rm [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n",
             "  cowjail _mount --profile <profile> [-v|--verbose] <path>\n",
             "  cowjail _suid [-v|--verbose]\n\n",
             "  cowjail _fuse --profile <profile> \\\n",

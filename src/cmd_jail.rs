@@ -16,39 +16,30 @@ pub(crate) fn list_command(_list: ListCommand) -> Result<()> {
 
 pub(crate) fn rm_command(rm: RmCommand) -> Result<()> {
     privileges::require_root_euid("cowjail _rm")?;
-    if let Some(profile) = rm.profile.as_deref() {
-        return remove_one_jail(None, Some(profile));
-    }
+    for selector in rm.selectors {
+        if !contains_glob_syntax(&selector) {
+            remove_one_jail(&selector)?;
+            continue;
+        }
 
-    let Some(name_selector) = rm.name.as_deref() else {
-        unreachable!("cli parser ensures rm has at least one selector");
-    };
-
-    if !contains_glob_syntax(name_selector) {
-        return remove_one_jail(Some(name_selector), None);
-    }
-
-    let matched_names = run_with_log(
-        || expand_name_glob_selector(name_selector),
-        || format!("expand jail name glob '{name_selector}'"),
-    )?;
-    if matched_names.is_empty() {
-        anyhow::bail!("rm name glob matched no jails: {name_selector}");
-    }
-    for name in matched_names {
-        remove_one_jail(Some(&name), None)?;
+        let matched_names = run_with_log(
+            || expand_name_glob_selector(&selector),
+            || format!("expand jail name glob '{selector}'"),
+        )?;
+        if matched_names.is_empty() {
+            anyhow::bail!("rm name glob matched no jails: {selector}");
+        }
+        for name in matched_names {
+            remove_one_jail(&name)?;
+        }
     }
     Ok(())
 }
 
-fn remove_one_jail(name: Option<&str>, profile: Option<&str>) -> Result<()> {
+fn remove_one_jail(name: &str) -> Result<()> {
     let resolved = run_with_log(
-        || jail::resolve(name, profile, jail::ResolveMode::MustExist),
-        || match (name, profile) {
-            (Some(name), None) => format!("resolve jail '{name}'"),
-            (None, Some(profile)) => format!("resolve jail by profile '{profile}'"),
-            _ => "resolve jail".to_string(),
-        },
+        || jail::resolve(Some(name), None, jail::ResolveMode::MustExist),
+        || format!("resolve jail '{name}'"),
     )?;
     run_with_log(
         || jail::remove_jail(&resolved.paths),
@@ -83,7 +74,7 @@ mod tests {
 
     #[test]
     fn glob_syntax_detection() {
-        assert!(contains_glob_syntax("unnamed-*"));
+        assert!(contains_glob_syntax("abc*"));
         assert!(contains_glob_syntax("foo?"));
         assert!(contains_glob_syntax("name[0-9]"));
         assert!(!contains_glob_syntax("agent-prod"));

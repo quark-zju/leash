@@ -53,15 +53,13 @@ pub struct ListCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShowCommand {
-    pub name: Option<String>,
-    pub profile: Option<String>,
+    pub selectors: Vec<String>,
     pub verbose: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RmCommand {
-    pub name: Option<String>,
-    pub profile: Option<String>,
+    pub selectors: Vec<String>,
     pub verbose: bool,
 }
 
@@ -295,10 +293,9 @@ fn parse_show(mut args: Arguments) -> Result<Command> {
         return Ok(help_command(HelpTopic::LowLevelShow, true));
     }
     let verbose = args.contains(["-v", "--verbose"]);
-    let selector = parse_optional_jail_selector(args, "_show")?;
+    let selectors = parse_low_level_name_selectors(args, "_show")?;
     Ok(Command::LowLevelShow(ShowCommand {
-        name: selector.name,
-        profile: selector.profile,
+        selectors,
         verbose,
     }))
 }
@@ -308,15 +305,9 @@ fn parse_rm(mut args: Arguments) -> Result<Command> {
         return Ok(help_command(HelpTopic::LowLevelRm, true));
     }
     let verbose = args.contains(["-v", "--verbose"]);
-    let selector = parse_optional_jail_selector(args, "_rm")?;
-    let name = selector.name;
-    let profile = selector.profile;
-    if name.is_none() && profile.is_none() {
-        bail!("_rm requires NAME, --name <name>, or --profile <profile>");
-    }
+    let selectors = parse_low_level_name_selectors(args, "_rm")?;
     Ok(Command::LowLevelRm(RmCommand {
-        name,
-        profile,
+        selectors,
         verbose,
     }))
 }
@@ -345,33 +336,24 @@ fn parse_mount(mut args: Arguments) -> Result<Command> {
     }))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct JailSelector {
-    name: Option<String>,
-    profile: Option<String>,
-}
-
-fn parse_optional_jail_selector(mut args: Arguments, command: &str) -> Result<JailSelector> {
-    let name_flag = args.opt_value_from_str("--name")?;
-    let profile = args.opt_value_from_str("--profile")?;
-    let extra = args.finish();
-    if extra.len() > 1 {
-        bail!("{command} got unexpected trailing arguments");
+fn parse_low_level_name_selectors(mut args: Arguments, command: &str) -> Result<Vec<String>> {
+    if args.opt_value_from_str::<_, String>("--name")?.is_some() {
+        bail!("{command} no longer accepts --name; pass NAME or GLOB positionally");
     }
-    let positional_name = extra.first().map(|raw| {
+    if args.opt_value_from_str::<_, String>("--profile")?.is_some() {
+        bail!("{command} no longer accepts --profile; pass NAME or GLOB positionally");
+    }
+    let extra = args.finish();
+    if extra.is_empty() {
+        bail!("{command} requires one or more NAME or GLOB selectors");
+    }
+    extra.into_iter()
+        .map(|raw| {
         raw.to_str()
             .ok_or_else(|| anyhow::anyhow!("{command} NAME must be valid UTF-8"))
             .map(ToOwned::to_owned)
-    });
-    let positional_name = positional_name.transpose()?;
-    if name_flag.is_some() && positional_name.is_some() {
-        bail!("{command} accepts only one NAME source: positional NAME or --name <name>");
-    }
-    let name = name_flag.or(positional_name);
-    if name.is_some() && profile.is_some() {
-        bail!("{command} accepts only one of --name <name> or --profile <profile>");
-    }
-    Ok(JailSelector { name, profile })
+        })
+        .collect()
 }
 
 fn parse_low_level_fuse(mut args: Arguments) -> Result<Command> {
@@ -642,15 +624,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_show_accepts_implicit_selector() {
-        let cmd = parse_from(os(&["_show"])).expect("_show without selector should parse");
-        let show = match cmd {
-            Command::LowLevelShow(show) => show,
-            other => panic!("expected _show, got {other:?}"),
-        };
-        assert!(show.name.is_none());
-        assert!(show.profile.is_none());
-        assert!(!show.verbose);
+    fn parse_show_requires_one_or_more_selectors() {
+        let err = parse_from(os(&["_show"])).expect_err("_show without selector should fail");
+        assert!(err.to_string().contains("requires one or more"));
     }
 
     #[test]
@@ -660,8 +636,7 @@ mod tests {
             Command::LowLevelShow(show) => show,
             other => panic!("expected _show, got {other:?}"),
         };
-        assert_eq!(show.name.as_deref(), Some("agent"));
-        assert!(show.profile.is_none());
+        assert_eq!(show.selectors, vec!["agent"]);
         assert!(!show.verbose);
     }
 
@@ -672,42 +647,35 @@ mod tests {
             Command::LowLevelShow(show) => show,
             other => panic!("expected _show, got {other:?}"),
         };
-        assert_eq!(show.name.as_deref(), Some("agent"));
-        assert!(show.profile.is_none());
+        assert_eq!(show.selectors, vec!["agent"]);
         assert!(show.verbose);
     }
 
     #[test]
-    fn parse_show_accepts_profile_selector() {
-        let cmd =
-            parse_from(os(&["_show", "--profile", "dev"])).expect("_show profile should parse");
+    fn parse_show_accepts_multiple_selectors() {
+        let cmd = parse_from(os(&["_show", "a*", "b"])).expect("_show selectors should parse");
         let show = match cmd {
             Command::LowLevelShow(show) => show,
             other => panic!("expected _show, got {other:?}"),
         };
-        assert!(show.name.is_none());
-        assert_eq!(show.profile.as_deref(), Some("dev"));
+        assert_eq!(show.selectors, vec!["a*", "b"]);
     }
 
     #[test]
-    fn parse_show_requires_exactly_one_selector_source() {
-        let err = parse_from(os(&["_show", "--name", "a", "b"]))
-            .expect_err("_show with positional and --name should fail");
-        assert!(err.to_string().contains("only one NAME source"));
+    fn parse_show_rejects_legacy_flags() {
+        let err =
+            parse_from(os(&["_show", "--name", "a"])).expect_err("_show should reject --name");
+        assert!(err.to_string().contains("no longer accepts --name"));
 
-        let err = parse_from(os(&["_show", "--name", "a", "--profile", "b"]))
-            .expect_err("_show with name and profile should fail");
-        assert!(err.to_string().contains("only one of"));
+        let err = parse_from(os(&["_show", "--profile", "b"]))
+            .expect_err("_show should reject --profile");
+        assert!(err.to_string().contains("no longer accepts --profile"));
     }
 
     #[test]
-    fn parse_rm_requires_exactly_one_selector() {
+    fn parse_rm_requires_one_or_more_selectors() {
         let err = parse_from(os(&["_rm"])).expect_err("_rm without selector should fail");
-        assert!(err.to_string().contains("_rm requires"));
-
-        let err = parse_from(os(&["_rm", "--name", "a", "--profile", "b"]))
-            .expect_err("_rm with two selectors should fail");
-        assert!(err.to_string().contains("only one of"));
+        assert!(err.to_string().contains("requires one or more"));
     }
 
     #[test]
@@ -717,8 +685,7 @@ mod tests {
             Command::LowLevelRm(rm) => rm,
             other => panic!("expected _rm, got {other:?}"),
         };
-        assert_eq!(rm.name.as_deref(), Some("agent"));
-        assert!(rm.profile.is_none());
+        assert_eq!(rm.selectors, vec!["agent"]);
         assert!(!rm.verbose);
     }
 
@@ -729,8 +696,18 @@ mod tests {
             Command::LowLevelRm(rm) => rm,
             other => panic!("expected _rm, got {other:?}"),
         };
-        assert_eq!(rm.name.as_deref(), Some("agent"));
+        assert_eq!(rm.selectors, vec!["agent"]);
         assert!(rm.verbose);
+    }
+
+    #[test]
+    fn parse_rm_accepts_multiple_selectors() {
+        let cmd = parse_from(os(&["_rm", "a*", "b"])).expect("_rm selectors should parse");
+        let rm = match cmd {
+            Command::LowLevelRm(rm) => rm,
+            other => panic!("expected _rm, got {other:?}"),
+        };
+        assert_eq!(rm.selectors, vec!["a*", "b"]);
     }
 
     #[test]

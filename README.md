@@ -87,9 +87,9 @@ See [`docs/PROFILE.md`](docs/PROFILE.md) for profile syntax and more examples.
 Most workflows should only need `run` plus `profile` editing. For debugging or cleanup, hidden low-level commands remain available:
 
 ```bash
-cowjail _show --profile default
+cowjail _show 4a5f3c2d1e0b9a87
 cowjail _list
-cowjail _rm --profile default
+cowjail _rm '4a5f*'
 ```
 
 ## More Docs

@@ -10,8 +10,6 @@ use twox_hash::XxHash64;
 use crate::cli;
 use crate::profile_loader::{self, RuleSource};
 
-pub(crate) const AUTO_NAME_PREFIX: &str = "unnamed-";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct JailLayout {
     pub(crate) config_root: PathBuf,
@@ -61,9 +59,6 @@ pub(crate) fn validate_explicit_name(name: &str) -> Result<()> {
     if name == "." || name == ".." {
         bail!("jail name must not be '.' or '..'");
     }
-    if name.starts_with(AUTO_NAME_PREFIX) {
-        bail!("jail name must not start with reserved prefix '{AUTO_NAME_PREFIX}'");
-    }
     if name.contains('/') {
         bail!("jail name must not contain '/'");
     }
@@ -79,11 +74,7 @@ pub(crate) fn validate_explicit_name(name: &str) -> Result<()> {
 pub(crate) fn derive_auto_name(normalized_profile: &str) -> String {
     let mut hasher = XxHash64::default();
     hasher.write(normalized_profile.as_bytes());
-    format!("{AUTO_NAME_PREFIX}{:016x}", hasher.finish())
-}
-
-pub(crate) fn is_generated_name(name: &str) -> bool {
-    name.starts_with(AUTO_NAME_PREFIX)
+    format!("{:016x}", hasher.finish())
 }
 
 pub(crate) fn profile_definition_path(name: &str) -> Result<PathBuf> {
@@ -189,7 +180,7 @@ fn resolve_named(
         let normalized_rule_sources = read_rule_sources(&paths.profile_sources_path)?;
         return Ok(ResolvedJail {
             name: name.to_string(),
-            generated: is_generated_name(name),
+            generated: false,
             paths,
             normalized_profile,
             normalized_rule_sources,

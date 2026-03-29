@@ -77,12 +77,6 @@ const BASH_COMPLETION: &str = r#"_cowjail_complete() {
     fi
   fi
 
-  if [[ "$prev" == "--name" ]]; then
-    local names
-    names="$(cowjail _list 2>/dev/null)"
-    COMPREPLY=( $(compgen -W "$names" -- "$cur") )
-    return
-  fi
   if [[ "$prev" == "--profile" ]]; then
     local profiles
     profiles="$(cowjail profile list 2>/dev/null)"
@@ -91,7 +85,7 @@ const BASH_COMPLETION: &str = r#"_cowjail_complete() {
   fi
 
   if [[ "$cmd1" == "_show" || "$cmd1" == "_rm" ]]; then
-    if [[ $COMP_CWORD -eq 2 && "${cur#-}" == "$cur" ]]; then
+    if [[ "${cur#-}" == "$cur" ]]; then
       local names
       names="$(cowjail _list 2>/dev/null)"
       COMPREPLY=( $(compgen -W "$names" -- "$cur") )
@@ -101,8 +95,8 @@ const BASH_COMPLETION: &str = r#"_cowjail_complete() {
 
   case "$cmd1" in
     run) COMPREPLY=( $(compgen -W "--profile -v --verbose" -- "$cur") ) ;;
-    _rm) COMPREPLY=( $(compgen -W "--name --profile -v --verbose" -- "$cur") ) ;;
-    _show) COMPREPLY=( $(compgen -W "--name --profile -v --verbose" -- "$cur") ) ;;
+    _rm) COMPREPLY=( $(compgen -W "-v --verbose" -- "$cur") ) ;;
+    _show) COMPREPLY=( $(compgen -W "-v --verbose" -- "$cur") ) ;;
     _mount) COMPREPLY=( $(compgen -W "--profile -v --verbose" -- "$cur") ) ;;
     _fuse) COMPREPLY=( $(compgen -W "--profile --mountpoint --pid-path -v --verbose" -- "$cur") ) ;;
     _suid) COMPREPLY=( $(compgen -W "-v --verbose" -- "$cur") ) ;;

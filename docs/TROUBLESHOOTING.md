@@ -109,7 +109,7 @@ Use `--bin <path>` to point at another binary, `--no-build` to skip the rebuild,
 A FUSE mount may still be active. Retry with verbose logs to see unmount/cleanup steps:
 
 ```bash
-cowjail _rm -v --profile <profile>
+cowjail _rm -v <name-or-glob>
 ```
 
 ### `Transport endpoint is not connected (os error 107)`
