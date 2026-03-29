@@ -15,6 +15,7 @@ mod mount_plan;
 mod ns_runtime;
 mod privileges;
 mod profile;
+mod profile_builtin;
 mod profile_loader;
 
 use anyhow::{Context, Result};
