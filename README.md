@@ -67,7 +67,7 @@ The built-in `default` profile is tuned for coding-agent workflows:
 - writes under agent-specific directories like `~/.codex`, `~/.claude`, `~/.agents` go directly to the host
 - writes under `/tmp` go directly to the host
 
-So the default behavior is: keep most of the home directory read-only, allow direct writes where the profile explicitly permits them, and make repository worktrees writable without exposing `.git` metadata to arbitrary processes.
+So the default behavior is: keep most of the home directory read-only, allow direct writes where the profile explicitly permits them, and make repository worktrees writable while keeping `.git` metadata read-only unless the caller is trusted `git`.
 
 ### Custom profile
 

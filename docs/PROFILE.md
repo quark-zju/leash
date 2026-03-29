@@ -73,7 +73,7 @@ Example:
 - `deny`: path remains visible, access returns `EACCES`
 - `hide`: path behaves as non-existent (`ENOENT`)
 
-`git-rw` also applies special `.git` protection. Normal processes cannot access `.git` metadata. Access is only granted to trusted `git` commands recognized by the FUSE-side filter.
+`git-rw` also applies special `.git` protection. Normal processes can read `.git` metadata but cannot modify it. Writes are only granted to trusted `git` commands recognized by the FUSE-side filter.
 
 ## Automatic Mount Handling
 

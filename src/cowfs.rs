@@ -120,19 +120,11 @@ impl CowFs {
         }
     }
 
-    fn access_errno_for_pid(&self, path: &Path, requester_pid: Option<u32>) -> Option<i32> {
+    fn access_errno_for_pid(&self, path: &Path, _requester_pid: Option<u32>) -> Option<i32> {
         if is_blocked_proc_thread_self(path) {
             return Some(ENOENT);
         }
         if self.is_hard_blocked_runtime_path(path) {
-            return Some(EACCES);
-        }
-        if self.git_rw_filter.is_git_metadata_path(path)
-            && !requester_pid.is_some_and(|pid| {
-                self.git_rw_filter
-                    .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
-            })
-        {
             return Some(EACCES);
         }
         match self.dynamic_visibility(path) {
@@ -1269,7 +1261,7 @@ mod tests {
     }
 
     #[test]
-    fn git_metadata_is_denied_without_trusted_git_process() {
+    fn git_metadata_is_read_only_without_trusted_git_process() {
         let dir = tempdir().expect("tempdir");
         let repo = dir.path().join("repo");
         fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
@@ -1277,8 +1269,9 @@ mod tests {
 
         let profile_src = format!("{} git-rw\n", dir.path().display());
         let fs = test_fs(&profile_src);
-        assert_eq!(fs.access_errno(&repo.join(".git/config")), Some(EACCES));
+        assert_eq!(fs.access_errno(&repo.join(".git/config")), None);
         assert_eq!(fs.mutation_errno(&repo.join(".git/config")), Some(EACCES));
+        assert_eq!(fs.write_mode(&repo.join(".git/config")), WriteMode::Forbidden);
     }
 
     #[test]
