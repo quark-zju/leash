@@ -215,7 +215,8 @@ mod tests {
 
     #[test]
     fn proc_subrule_conflicts_with_proc_mount_root() {
-        let err = build_mount_plan_with_sources("/proc ro\n/proc/sys ro\n", None).expect_err("must fail");
+        let err =
+            build_mount_plan_with_sources("/proc ro\n/proc/sys ro\n", None).expect_err("must fail");
         assert!(err.to_string().contains("exact path /proc"));
     }
 
@@ -283,8 +284,8 @@ mod tests {
 
     #[test]
     fn tmp_bind_root_rejects_descendant_rules() {
-        let err = build_mount_plan_with_sources("/tmp rw\n/tmp/cache ro\n", None)
-            .expect_err("must fail");
+        let err =
+            build_mount_plan_with_sources("/tmp rw\n/tmp/cache ro\n", None).expect_err("must fail");
         assert!(err.to_string().contains("mentioned only once"));
     }
 
@@ -302,7 +303,8 @@ mod tests {
 
     #[test]
     fn sys_root_rejects_descendant_rules() {
-        let err = build_mount_plan_with_sources("/sys ro\n/sys/fs ro\n", None).expect_err("must fail");
+        let err =
+            build_mount_plan_with_sources("/sys ro\n/sys/fs ro\n", None).expect_err("must fail");
         assert!(err.to_string().contains("exact path /sys"));
     }
 

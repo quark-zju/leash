@@ -63,10 +63,9 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         runtime.ensured.paths.mount_dir.display(),
         cwd.display()
     );
-    run_with_log(
-        setup_run_namespaces,
-        || "unshare run namespaces".to_string(),
-    )?;
+    run_with_log(setup_run_namespaces, || {
+        "unshare run namespaces".to_string()
+    })?;
     let status = run_with_log(
         || {
             run_child_in_jail(
@@ -148,9 +147,10 @@ fn run_child_in_jail(
     let mut child = cmd
         .spawn()
         .context("failed to spawn child command in jail")?;
-    run_with_log(privileges::drop_root_euid_if_needed_without_no_new_privs, || {
-        "drop outer run euid after child spawn".to_string()
-    })?;
+    run_with_log(
+        privileges::drop_root_euid_if_needed_without_no_new_privs,
+        || "drop outer run euid after child spawn".to_string(),
+    )?;
     child.wait().context("failed waiting for child command")
 }
 
@@ -284,7 +284,9 @@ fn try_close_range(first: libc::c_uint) -> Result<()> {
         return Err(err).context("close_range failed");
     }
     #[allow(unreachable_code)]
-    Err(anyhow::anyhow!("close_range is unsupported on this platform"))
+    Err(anyhow::anyhow!(
+        "close_range is unsupported on this platform"
+    ))
 }
 
 fn ensure_fuse_server(

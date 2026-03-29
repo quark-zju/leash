@@ -1,7 +1,7 @@
+use fs_err::os::unix::fs::OpenOptionsExt as FsOpenOptionsExt;
 use std::ffi::{CString, OsStr};
 use std::fs::Metadata;
 use std::io::{Read, Seek, SeekFrom, Write};
-use fs_err::os::unix::fs::OpenOptionsExt as FsOpenOptionsExt;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
@@ -13,7 +13,9 @@ use fuser::{
     self, FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
-use libc::{EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, EOPNOTSUPP, EPERM};
+use libc::{
+    EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, EOPNOTSUPP, EPERM,
+};
 
 use crate::op::{FileState, Operation};
 use crate::profile::{Profile, RuleAction, Visibility};
@@ -207,7 +209,9 @@ impl CowFs {
         let (kind, perm, size) = match node {
             OverlayNode::Deleted => (FileType::RegularFile, 0o000, 0),
             OverlayNode::Dir { mode } => (FileType::Directory, *mode, 0),
-            OverlayNode::Regular { data, mode } => (FileType::RegularFile, *mode, data.len() as u64),
+            OverlayNode::Regular { data, mode } => {
+                (FileType::RegularFile, *mode, data.len() as u64)
+            }
             OverlayNode::Symlink { target } => {
                 (FileType::Symlink, 0o777, target.as_os_str().len() as u64)
             }
@@ -414,8 +418,7 @@ impl CowFs {
             }
             Operation::Rename { from, to } => self.apply_rename_paths(from, to).map_err(|_| ()),
             Operation::Truncate { path, size } => {
-                let (mut data, mode) =
-                    self.current_regular(path).map_err(|_| ())?.ok_or(())?;
+                let (mut data, mode) = self.current_regular(path).map_err(|_| ())?.ok_or(())?;
                 data.resize(*size as usize, 0);
                 self.overlay
                     .insert(path.clone(), OverlayNode::Regular { data, mode });
@@ -1720,7 +1723,10 @@ mod tests {
         fs.apply_rename_paths(&from, &to)
             .expect("rename should succeed");
         assert!(matches!(fs.overlay.get(&from), Some(OverlayNode::Deleted)));
-        assert!(matches!(fs.overlay.get(&to), Some(OverlayNode::Dir { mode: 0o755 })));
+        assert!(matches!(
+            fs.overlay.get(&to),
+            Some(OverlayNode::Dir { mode: 0o755 })
+        ));
         assert!(matches!(
             fs.overlay.get(&to.join("child.txt")),
             Some(OverlayNode::Regular { .. })
@@ -1764,7 +1770,10 @@ mod tests {
                 record::TAG_WRITE_OP,
                 &Operation::WriteFile {
                     path: PathBuf::from("/tmp/replay-a"),
-                    state: FileState::Regular { data: b"one".to_vec(), mode: 0o644 },
+                    state: FileState::Regular {
+                        data: b"one".to_vec(),
+                        mode: 0o644,
+                    },
                 },
             )
             .expect("append write a");
@@ -1782,7 +1791,10 @@ mod tests {
                 record::TAG_WRITE_OP,
                 &Operation::WriteFile {
                     path: PathBuf::from("/tmp/replay-b"),
-                    state: FileState::Regular { data: b"two".to_vec(), mode: 0o755 },
+                    state: FileState::Regular {
+                        data: b"two".to_vec(),
+                        mode: 0o755,
+                    },
                 },
             )
             .expect("append write b");
@@ -1817,7 +1829,10 @@ mod tests {
                 record::TAG_WRITE_OP,
                 &Operation::WriteFile {
                     path: PathBuf::from("/tmp/replay-flushed"),
-                    state: FileState::Regular { data: b"old".to_vec(), mode: 0o644 },
+                    state: FileState::Regular {
+                        data: b"old".to_vec(),
+                        mode: 0o644,
+                    },
                 },
             )
             .expect("append flushed op");
@@ -1826,7 +1841,10 @@ mod tests {
                 record::TAG_WRITE_OP,
                 &Operation::WriteFile {
                     path: PathBuf::from("/tmp/replay-flushed"),
-                    state: FileState::Regular { data: b"new".to_vec(), mode: 0o644 },
+                    state: FileState::Regular {
+                        data: b"new".to_vec(),
+                        mode: 0o644,
+                    },
                 },
             )
             .expect("append pending op");
@@ -1859,7 +1877,10 @@ mod tests {
                 record::TAG_WRITE_OP,
                 &Operation::WriteFile {
                     path: PathBuf::from("/tmp/reboot-visible-a"),
-                    state: FileState::Regular { data: b"first".to_vec(), mode: 0o644 },
+                    state: FileState::Regular {
+                        data: b"first".to_vec(),
+                        mode: 0o644,
+                    },
                 },
             )
             .expect("append first write");

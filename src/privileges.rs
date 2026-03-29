@@ -154,7 +154,9 @@ fn drop_to_ids(uid: u32, gid: u32, mode: NoNewPrivsMode) -> Result<()> {
         crate::vlog!("privileges: prctl(PR_SET_NO_NEW_PRIVS, 1)");
         if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
             let err = std::io::Error::last_os_error();
-            return Err(anyhow::anyhow!("prctl(PR_SET_NO_NEW_PRIVS, 1) failed: {err}"));
+            return Err(anyhow::anyhow!(
+                "prctl(PR_SET_NO_NEW_PRIVS, 1) failed: {err}"
+            ));
         }
     }
     Ok(())
