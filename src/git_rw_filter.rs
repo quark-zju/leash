@@ -29,6 +29,7 @@ struct SystemGit {
 pub(crate) struct GitRwFilter {
     system_git: Option<SystemGit>,
     proc_cache: Mutex<HashMap<u32, CachedDecision>>,
+    repo_root_cache: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
 }
 
 impl GitRwFilter {
@@ -36,6 +37,7 @@ impl GitRwFilter {
         Self {
             system_git: resolve_system_git(),
             proc_cache: Mutex::new(HashMap::new()),
+            repo_root_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -52,12 +54,22 @@ impl GitRwFilter {
         } else {
             path.parent()?.to_path_buf()
         };
+        let mut visited = Vec::new();
 
         loop {
+            if let Ok(cache) = self.repo_root_cache.lock()
+                && let Some(cached) = cache.get(&current)
+            {
+                return cached.clone();
+            }
+
+            visited.push(current.clone());
             if current.join(".git/config").is_file() {
+                self.fill_repo_root_cache(&visited, Some(current.clone()));
                 return Some(current);
             }
             let Some(parent) = current.parent() else {
+                self.fill_repo_root_cache(&visited, None);
                 return None;
             };
             current = parent.to_path_buf();
@@ -120,6 +132,23 @@ impl GitRwFilter {
             subcommand,
             "commit" | "status" | "add" | "rm" | "revert" | "log"
         )
+    }
+
+    fn fill_repo_root_cache(&self, visited: &[PathBuf], repo_root: Option<PathBuf>) {
+        let Ok(mut cache) = self.repo_root_cache.lock() else {
+            return;
+        };
+        for path in visited {
+            cache.insert(path.clone(), repo_root.clone());
+        }
+    }
+
+    #[cfg(test)]
+    fn repo_root_cache_len(&self) -> usize {
+        self.repo_root_cache
+            .lock()
+            .expect("repo root cache lock")
+            .len()
     }
 }
 
@@ -209,6 +238,24 @@ mod tests {
         assert_eq!(filter.repo_root_for(&nested), Some(repo));
         assert!(filter.path_is_git_repo_member(&nested));
         assert!(!filter.path_is_git_repo_member(dir.path()));
+    }
+
+    #[test]
+    fn repo_root_lookup_populates_cache_for_visited_directories() {
+        let dir = tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        let nested_dir = repo.join("a/b");
+        let nested = nested_dir.join("lib.rs");
+        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+        fs::create_dir_all(&nested_dir).expect("mkdir nested");
+        fs::write(repo.join(".git/config"), b"[core]\n").expect("write config");
+        fs::write(&nested, b"fn main() {}\n").expect("write nested file");
+
+        let filter = GitRwFilter::new();
+        assert_eq!(filter.repo_root_cache_len(), 0);
+        assert_eq!(filter.repo_root_for(&nested), Some(repo.clone()));
+        assert!(filter.repo_root_cache_len() >= 3);
+        assert_eq!(filter.repo_root_for(&nested_dir), Some(repo));
     }
 
     #[test]
