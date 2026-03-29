@@ -71,7 +71,7 @@ cowjail run -- codex      # or opencode, bash, ...
 Changes by the command won't affect the real filesystem directly. Use `cowjail flush` to view and apply changes:
 
 ```
-cowjail flush --dry-run                # review pending changes
+cowjail flush -n                       # review pending changes
 cowjail flush                          # apply pending changes to host
 ```
 
@@ -83,7 +83,7 @@ Create a custom profile file using the rules in [`docs/profile.md`](docs/profile
 
 ```bash
 cowjail run --profile ~/my-profile -- your-command   # select jail by profile
-cowjail flush --profile ~/my-profile --dry-run       # review pending changes
+cowjail flush --profile ~/my-profile -n              # review pending changes
 cowjail flush --profile ~/my-profile                 # apply pending changes
 ```
 
@@ -95,7 +95,7 @@ Similar to `ip netns`, `cowjail` supports naming the jails:
 cowjail add --name agent --profile default           # assign a name to a jail
 cowjail run --name agent -- your-command arg1 arg2   # run in the jail
 cowjail run --name agent -- another-command args     # run in the same jail
-cowjail flush --name agent --dry-run                 # review pending changes
+cowjail flush --name agent -n                        # review pending changes
 cowjail flush --name agent                           # apply pending changes
 cowjail show agent                                   # show profile + pending write count
 cowjail list                                         # list known jails
