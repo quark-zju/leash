@@ -170,7 +170,11 @@ fn render_profile_source_for_show_with(
             jail::validate_explicit_name(name).context("invalid include profile name")?;
         }
         if stack.iter().any(|in_stack| in_stack == name) {
-            anyhow::bail!("cyclic profile include detected for '{name}'");
+            out.push_str(&indent);
+            out.push_str("# skipped cyclic include ");
+            out.push_str(name);
+            out.push('\n');
+            continue;
         }
         let Some(included) = read_named_profile_source_with_home(name, home)? else {
             continue;
@@ -257,7 +261,7 @@ where
             jail::validate_explicit_name(name).context("invalid include profile name")?;
         }
         if stack.iter().any(|in_stack| in_stack == name) {
-            anyhow::bail!("cyclic profile include detected for '{name}'");
+            continue;
         }
         let Some(included_source) = resolver(name)? else {
             continue;
@@ -463,6 +467,40 @@ mod tests {
         assert!(rendered.contains("  # begin include builtin:basic\n"));
         assert!(rendered.contains("  # /bin ro\n"));
         assert!(rendered.contains("~ git-rw\n"));
+    }
+
+    #[test]
+    fn include_cycle_is_ignored() {
+        let mut includes = BTreeMap::new();
+        includes.insert("base".to_string(), "%include loop\n/etc ro\n".to_string());
+        includes.insert("loop".to_string(), "%include base\n/tmp rw\n".to_string());
+        let mut resolver = |name: &str| {
+            Ok(includes.get(name).cloned().map(|content| IncludedSource {
+                source_name: name.to_string(),
+                content,
+            }))
+        };
+        let mut stack = Vec::new();
+        let expanded =
+            expand_includes_with("%include base\n", "root", &mut stack, &mut resolver)
+                .expect("cyclic include should be ignored");
+        let joined = super::expanded_to_string(&expanded);
+        assert_eq!(joined, "/tmp rw\n/etc ro\n");
+    }
+
+    #[test]
+    fn show_marks_skipped_cyclic_include() {
+        let home = Path::new("/home/tester");
+        let cyclic = "%include builtin:default\n";
+        let rendered = render_profile_source_for_show_with(
+            cyclic,
+            "builtin:default",
+            home,
+            &mut vec!["builtin:default".to_string()],
+            0,
+        )
+        .expect("cyclic show rendering should succeed");
+        assert!(rendered.contains("# skipped cyclic include builtin:default\n"));
     }
 
 }
