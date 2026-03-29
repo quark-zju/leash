@@ -2,6 +2,8 @@
 
 `cowjail` is a Linux filesystem safety layer for untrusted programs and coding agents.
 
+I personally use it to add restrictions to [codex](https://github.com/quark-zju/codex) and [opencode](https://github.com/quark-zju/opencode) — making their file operations visible, isolated, and selectively replayable.
+
 It combines:
 
 - profile-based filesystem visibility and write policy (`ro` / `rw` / `cow` / `deny` / `hide`)
