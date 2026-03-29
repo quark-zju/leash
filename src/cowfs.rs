@@ -1619,6 +1619,7 @@ impl Filesystem for CowFs {
                     reply.error(code);
                     return;
                 }
+                self.remap_known_inos_subtree(&from, &to);
                 if self.append_record(&Operation::Rename { from, to }).is_err() {
                     reply.error(EIO);
                     return;
@@ -2112,6 +2113,28 @@ mod tests {
         }
 
         fs.remove_handle(fh);
+    }
+
+    #[test]
+    fn cow_rename_remaps_known_inode_for_open() {
+        let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
+        let from = PathBuf::from("/tmp/cowjail-cow-rename-open-from");
+        let to = PathBuf::from("/tmp/cowjail-cow-rename-open-to");
+        let ino = fs.ensure_ino(&from);
+        fs.overlay_set(
+            from.clone(),
+            OverlayNode::Regular {
+                data: b"hello".to_vec(),
+                mode: 0o644,
+            },
+        );
+
+        fs.apply_rename_paths(&from, &to)
+            .expect("rename overlay path");
+        fs.remap_known_inos_subtree(&from, &to);
+
+        assert_eq!(fs.path_for_ino(ino), Some(to.as_path()));
+        assert_eq!(fs.ensure_openable_node_for_test(to.as_path()), Ok(()));
     }
 
     #[test]
