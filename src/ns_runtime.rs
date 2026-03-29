@@ -5,7 +5,6 @@ use std::ffi::CString;
 use std::fs::TryLockError;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -91,8 +90,8 @@ pub(crate) fn ensure_runtime_dir(jail: &JailPaths) -> Result<NsRuntimePaths> {
         )
     })?;
     ensure_runtime_dirs_private(&root, &paths.runtime_dir, !crate::jail::has_configured_xdg_runtime_dir())?;
-    ensure_owned_by_real_user(&root)?;
-    ensure_owned_by_real_user(&paths.runtime_dir)?;
+    crate::privileges::ensure_owned_by_real_user(&root)?;
+    crate::privileges::ensure_owned_by_real_user(&paths.runtime_dir)?;
     Ok(paths)
 }
 
@@ -237,7 +236,7 @@ pub(crate) fn ensure_runtime_for_exec(jail: &JailPaths) -> Result<ExecRuntime> {
 pub(crate) fn cleanup_before_fuse_start(paths: &NsRuntimePaths) -> Result<()> {
     terminate_recorded_fuse_server(paths)?;
     unmount_runtime_mount_dir(paths)?;
-    remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.fuse_pid_path)?;
+    crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.fuse_pid_path)?;
     fs::create_dir_all(&paths.mount_dir).with_context(|| {
         format!(
             "failed to ensure runtime mount directory {}",
@@ -354,11 +353,11 @@ fn remove_known_runtime_artifacts(paths: &NsRuntimePaths) -> Result<()> {
         );
     }
 
-    remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.fuse_pid_path)?;
-    remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.fuse_log_path)?;
-    remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.lock_path)?;
-    remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.mntns_path)?;
-    remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.ipcns_path)?;
+    crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.fuse_pid_path)?;
+    crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.fuse_log_path)?;
+    crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.lock_path)?;
+    crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.mntns_path)?;
+    crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.ipcns_path)?;
 
     remove_mount_dir_with_retry(paths)?;
 
@@ -402,40 +401,6 @@ fn list_unknown_runtime_entries(paths: &NsRuntimePaths) -> Result<Vec<String>> {
     }
     unknown.sort();
     Ok(unknown)
-}
-
-fn remove_file_if_exists(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err).with_context(|| format!("failed to remove file {}", path.display())),
-    }
-}
-
-fn remove_file_if_exists_with_owner_fix(runtime_dir: &Path, path: &Path) -> Result<()> {
-    crate::vlog!("rm: syscall unlink {}", path.display());
-    match remove_file_if_exists(path) {
-        Ok(()) => {
-            crate::vlog!("rm: unlink ok {}", path.display());
-            Ok(())
-        }
-        Err(err)
-            if err
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|ioe| ioe.kind() == std::io::ErrorKind::PermissionDenied) =>
-        {
-            ensure_owned_by_real_user(runtime_dir)?;
-            let retried = remove_file_if_exists(path);
-            if retried.is_ok() {
-                crate::vlog!("rm: unlink ok after owner-fix {}", path.display());
-            }
-            retried
-        }
-        Err(err) => {
-            crate::vlog!("rm: unlink failed {}: {err:#}", path.display());
-            Err(err)
-        }
-    }
 }
 
 fn remove_mount_dir_with_retry(paths: &NsRuntimePaths) -> Result<()> {
@@ -499,39 +464,6 @@ fn terminate_recorded_fuse_server(paths: &NsRuntimePaths) -> Result<()> {
         crate::vlog!("rm: kill ok pid={pid}");
     }
     std::thread::sleep(Duration::from_millis(120));
-    Ok(())
-}
-
-fn ensure_owned_by_real_user(path: &Path) -> Result<()> {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(err).with_context(|| format!("failed to stat {}", path.display()));
-        }
-    };
-
-    let target_uid = unsafe { libc::getuid() };
-    let target_gid = unsafe { libc::getgid() };
-    if meta.uid() == target_uid && meta.gid() == target_gid {
-        return Ok(());
-    }
-
-    if unsafe { libc::geteuid() } != 0 {
-        return Ok(());
-    }
-
-    let c_path = CString::new(path.as_os_str().as_bytes())
-        .context("path contains interior NUL byte while fixing ownership")?;
-    let rc = unsafe { libc::chown(c_path.as_ptr(), target_uid, target_gid) };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| {
-            format!(
-                "failed to chown {} to {target_uid}:{target_gid}",
-                path.display()
-            )
-        });
-    }
     Ok(())
 }
 

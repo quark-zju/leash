@@ -1,9 +1,7 @@
 use anyhow::{Result, bail};
 use fs_err as fs;
-use std::ffi::{CString, OsString};
+use std::ffi::OsString;
 use std::hash::Hasher;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use twox_hash::XxHash64;
 
@@ -258,14 +256,14 @@ pub(crate) fn materialize_jail(
             paths.state_dir.display()
         )
     })?;
-    ensure_owned_by_real_user(&paths.state_dir)?;
+    crate::privileges::ensure_owned_by_real_user(&paths.state_dir)?;
     fs::write(&paths.profile_path, normalized_profile).map_err(|err| {
         anyhow::anyhow!(
             "failed to write jail profile file {}: {err}",
             paths.profile_path.display()
         )
     })?;
-    ensure_owned_by_real_user(&paths.profile_path)?;
+    crate::privileges::ensure_owned_by_real_user(&paths.profile_path)?;
     if let Some(rule_sources) = normalized_rule_sources {
         let cbor = serde_cbor::to_vec(&rule_sources.to_vec())
             .map_err(|err| anyhow::anyhow!("failed to encode profile sources CBOR: {err}"))?;
@@ -275,7 +273,7 @@ pub(crate) fn materialize_jail(
                 paths.profile_sources_path.display()
             )
         })?;
-        ensure_owned_by_real_user(&paths.profile_sources_path)?;
+        crate::privileges::ensure_owned_by_real_user(&paths.profile_sources_path)?;
     }
     Ok(())
 }
@@ -328,8 +326,8 @@ fn remove_known_state_artifacts(paths: &JailPaths) -> Result<()> {
         );
     }
 
-    remove_file_if_exists_with_owner_fix(&paths.state_dir, &paths.profile_path)?;
-    remove_file_if_exists_with_owner_fix(&paths.state_dir, &paths.profile_sources_path)?;
+    crate::privileges::remove_file_if_exists_with_owner_fix(&paths.state_dir, &paths.profile_path)?;
+    crate::privileges::remove_file_if_exists_with_owner_fix(&paths.state_dir, &paths.profile_sources_path)?;
     match fs::remove_dir(&paths.state_dir) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -387,54 +385,4 @@ fn read_rule_sources(path: &Path) -> Result<Option<Vec<RuleSource>>> {
     Ok(Some(parsed))
 }
 
-fn remove_file_if_exists_with_owner_fix(state_dir: &Path, path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-            ensure_owned_by_real_user(state_dir)?;
-            match fs::remove_file(path) {
-                Ok(()) => Ok(()),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(err) => Err(anyhow::anyhow!(
-                    "failed to remove file {}: {err}",
-                    path.display()
-                )),
-            }
-        }
-        Err(err) => Err(anyhow::anyhow!(
-            "failed to remove file {}: {err}",
-            path.display()
-        )),
-    }
-}
 
-fn ensure_owned_by_real_user(path: &Path) -> Result<()> {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(anyhow::anyhow!("failed to stat {}: {err}", path.display()));
-        }
-    };
-    let target_uid = unsafe { libc::getuid() };
-    let target_gid = unsafe { libc::getgid() };
-    if meta.uid() == target_uid && meta.gid() == target_gid {
-        return Ok(());
-    }
-    if unsafe { libc::geteuid() } != 0 {
-        return Ok(());
-    }
-
-    let c_path = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| anyhow::anyhow!("path contains interior NUL: {}", path.display()))?;
-    let rc = unsafe { libc::chown(c_path.as_ptr(), target_uid, target_gid) };
-    if rc != 0 {
-        let err = std::io::Error::last_os_error();
-        return Err(anyhow::anyhow!(
-            "failed to chown {} to {target_uid}:{target_gid}: {err}",
-            path.display()
-        ));
-    }
-    Ok(())
-}

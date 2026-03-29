@@ -1,4 +1,9 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use fs_err as fs;
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 
 pub(crate) fn require_root_euid(cmd: &str) -> Result<()> {
     let euid = unsafe { libc::geteuid() };
@@ -151,6 +156,66 @@ fn validate_drop_to_real_user_uids(uid: u32, euid: u32) -> Result<()> {
         bail!("drop_to_real_user requires non-root real uid target (current uid=0, euid={euid})");
     }
     Ok(())
+}
+
+/// Fix ownership of `path` to the real (non-setuid) user/group.
+/// A no-op when the path is already correctly owned or the effective uid is not root.
+pub(crate) fn ensure_owned_by_real_user(path: &Path) -> Result<()> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to stat {}", path.display()));
+        }
+    };
+
+    let target_uid = unsafe { libc::getuid() };
+    let target_gid = unsafe { libc::getgid() };
+    if meta.uid() == target_uid && meta.gid() == target_gid {
+        return Ok(());
+    }
+
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .with_context(|| format!("path contains interior NUL byte: {}", path.display()))?;
+    let rc = unsafe { libc::chown(c_path.as_ptr(), target_uid, target_gid) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "failed to chown {} to {target_uid}:{target_gid}",
+                path.display()
+            )
+        });
+    }
+    Ok(())
+}
+
+/// Remove `path` if it exists, retrying after a `chown` fix on `parent_dir` if the
+/// first attempt fails with `PermissionDenied`.
+pub(crate) fn remove_file_if_exists_with_owner_fix(parent_dir: &Path, path: &Path) -> Result<()> {
+    match remove_file_if_exists(path) {
+        Ok(()) => Ok(()),
+        Err(err)
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|ioe| ioe.kind() == std::io::ErrorKind::PermissionDenied) =>
+        {
+            ensure_owned_by_real_user(parent_dir)?;
+            remove_file_if_exists(path)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("failed to remove file {}", path.display())),
+    }
 }
 
 #[cfg(test)]
