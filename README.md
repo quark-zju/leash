@@ -108,6 +108,7 @@ cowjail rm 'unnamed-*'                               # remove jails by name glob
 
 ## More Docs
 
+- Agent compatibility notes: [`docs/AGENT_COMPAT.md`](docs/AGENT_COMPAT.md)
 - Technical overview: [`docs/TECHNICAL_OVERVIEW.md`](docs/TECHNICAL_OVERVIEW.md)
 - Profile guide (syntax, size config, default profile): [`docs/profile.md`](docs/profile.md)
 - Runtime layout: [`docs/RUNTIME_LAYOUT.md`](docs/RUNTIME_LAYOUT.md)
