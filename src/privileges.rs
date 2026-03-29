@@ -1,11 +1,5 @@
 use anyhow::{Result, bail};
 
-#[derive(Clone, Copy)]
-enum NoNewPrivsMode {
-    Enable,
-    Skip,
-}
-
 pub(crate) fn require_root_euid(cmd: &str) -> Result<()> {
     let euid = unsafe { libc::geteuid() };
     if euid != 0 {
@@ -19,35 +13,19 @@ pub(crate) fn require_root_euid(cmd: &str) -> Result<()> {
 }
 
 pub(crate) fn drop_to_real_user() -> Result<()> {
-    drop_to_real_user_with_mode(NoNewPrivsMode::Enable)
-}
-
-pub(crate) fn drop_to_real_user_without_no_new_privs() -> Result<()> {
-    drop_to_real_user_with_mode(NoNewPrivsMode::Skip)
-}
-
-fn drop_to_real_user_with_mode(mode: NoNewPrivsMode) -> Result<()> {
     let uid = unsafe { libc::getuid() };
     let euid = unsafe { libc::geteuid() };
     let gid = unsafe { libc::getgid() };
     validate_drop_to_real_user_uids(uid, euid)?;
     crate::vlog!("privileges: drop to real user uid={} gid={}", uid, gid);
-    drop_to_ids(uid, gid, mode)
+    drop_to_ids(uid, gid)
 }
 
 pub(crate) fn drop_root_euid_if_needed() -> Result<bool> {
-    drop_root_euid_if_needed_with_mode(NoNewPrivsMode::Enable)
-}
-
-pub(crate) fn drop_root_euid_if_needed_without_no_new_privs() -> Result<bool> {
-    drop_root_euid_if_needed_with_mode(NoNewPrivsMode::Skip)
-}
-
-fn drop_root_euid_if_needed_with_mode(mode: NoNewPrivsMode) -> Result<bool> {
     let uid = unsafe { libc::getuid() };
     let euid = unsafe { libc::geteuid() };
     if euid == 0 && uid != 0 {
-        drop_to_real_user_with_mode(mode)?;
+        drop_to_real_user()?;
         return Ok(true);
     }
     Ok(false)
@@ -130,7 +108,7 @@ where
     run_result
 }
 
-fn drop_to_ids(uid: u32, gid: u32, mode: NoNewPrivsMode) -> Result<()> {
+fn drop_to_ids(uid: u32, gid: u32) -> Result<()> {
     crate::vlog!("privileges: setgroups([])");
     if unsafe { libc::setgroups(0, std::ptr::null()) } != 0 {
         let err = std::io::Error::last_os_error();
@@ -150,14 +128,12 @@ fn drop_to_ids(uid: u32, gid: u32, mode: NoNewPrivsMode) -> Result<()> {
             "setresuid({uid},{uid},{uid}) failed: {err}"
         ));
     }
-    if matches!(mode, NoNewPrivsMode::Enable) {
-        crate::vlog!("privileges: prctl(PR_SET_NO_NEW_PRIVS, 1)");
-        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
-            let err = std::io::Error::last_os_error();
-            return Err(anyhow::anyhow!(
-                "prctl(PR_SET_NO_NEW_PRIVS, 1) failed: {err}"
-            ));
-        }
+    crate::vlog!("privileges: prctl(PR_SET_NO_NEW_PRIVS, 1)");
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(anyhow::anyhow!(
+            "prctl(PR_SET_NO_NEW_PRIVS, 1) failed: {err}"
+        ));
     }
     Ok(())
 }

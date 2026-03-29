@@ -137,7 +137,7 @@ fn run_child_in_jail(
             if let Err(err) = enter_pid_namespace_worker_or_reap() {
                 return Err(std::io::Error::other(err.to_string()));
             }
-            if let Err(err) = privileges::drop_to_real_user_without_no_new_privs() {
+            if let Err(err) = privileges::drop_to_real_user() {
                 return Err(std::io::Error::other(err.to_string()));
             }
             close_fds_best_effort_from(3);
@@ -148,7 +148,7 @@ fn run_child_in_jail(
         .spawn()
         .context("failed to spawn child command in jail")?;
     run_with_log(
-        privileges::drop_root_euid_if_needed_without_no_new_privs,
+        privileges::drop_root_euid_if_needed,
         || "drop outer run euid after child spawn".to_string(),
     )?;
     child.wait().context("failed waiting for child command")
@@ -163,7 +163,7 @@ fn enter_pid_namespace_worker_or_reap() -> Result<()> {
     }
     if worker_pid > 0 {
         close_fds_best_effort_from(0);
-        if let Err(_err) = privileges::drop_to_real_user_without_no_new_privs() {
+        if let Err(_err) = privileges::drop_to_real_user() {
             unsafe { libc::_exit(1) };
         }
         let _ = set_process_name(c"cowjail-init");
