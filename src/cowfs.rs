@@ -29,10 +29,12 @@ pub struct CowFs {
     record: record::Writer,
     mount_root: Option<PathBuf>,
     next_ino: u64,
+    next_fh: u64,
     ino_to_path: std::collections::HashMap<u64, PathBuf>,
     path_to_ino: std::collections::HashMap<PathBuf, u64>,
     overlay: std::collections::HashMap<PathBuf, OverlayNode>,
     atime_overrides: std::collections::HashMap<PathBuf, SystemTime>,
+    passthrough_handles: std::collections::HashMap<u64, fs::File>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -71,10 +73,12 @@ impl CowFs {
             record,
             mount_root: None,
             next_ino: ROOT_INO + 1,
+            next_fh: 1,
             ino_to_path,
             path_to_ino,
             overlay: std::collections::HashMap::new(),
             atime_overrides: std::collections::HashMap::new(),
+            passthrough_handles: std::collections::HashMap::new(),
         }
     }
 
@@ -349,6 +353,17 @@ impl CowFs {
         self.apply_passthrough_setattr(path, size, mode, atime, mtime)
     }
 
+    #[cfg(test)]
+    fn open_passthrough_handle_for_test(&mut self, path: &Path, flags: i32) -> Result<u64, i32> {
+        let file = Self::open_passthrough_file(path, flags, false)?;
+        Ok(self.allocate_passthrough_handle(file))
+    }
+
+    #[cfg(test)]
+    fn host_attr_for_handle_for_test(&mut self, path: &Path, fh: u64) -> Result<FileAttr, i32> {
+        self.host_attr_for_handle(path, fh)
+    }
+
     fn append_record(&self, op: &Operation) -> Result<(), i32> {
         self.record
             .append_cbor(record::TAG_WRITE_OP, op)
@@ -488,6 +503,62 @@ impl CowFs {
     fn host_attr(&mut self, path: &Path) -> Result<FileAttr, i32> {
         let meta = fs::symlink_metadata(path).map_err(|err| io_errno(&err))?;
         Ok(self.attr_for_path(path, &meta))
+    }
+
+    fn host_attr_for_handle(&mut self, path: &Path, fh: u64) -> Result<FileAttr, i32> {
+        let meta = self
+            .passthrough_handles
+            .get(&fh)
+            .ok_or(ENOENT)?
+            .metadata()
+            .map_err(|err| io_errno(&err))?;
+        Ok(self.attr_for_path(path, &meta))
+    }
+
+    fn allocate_passthrough_handle(&mut self, file: fs::File) -> u64 {
+        let fh = self.next_fh;
+        self.next_fh += 1;
+        self.passthrough_handles.insert(fh, file);
+        fh
+    }
+
+    fn passthrough_file_mut(&mut self, fh: u64) -> Option<&mut fs::File> {
+        self.passthrough_handles.get_mut(&fh)
+    }
+
+    fn remove_passthrough_handle(&mut self, fh: u64) {
+        self.passthrough_handles.remove(&fh);
+    }
+
+    fn open_passthrough_file(path: &Path, flags: i32, create_new: bool) -> Result<fs::File, i32> {
+        let mut opts = fs::OpenOptions::new();
+        match flags & libc::O_ACCMODE {
+            libc::O_RDONLY => {
+                opts.read(true);
+            }
+            libc::O_WRONLY => {
+                opts.write(true);
+            }
+            libc::O_RDWR => {
+                opts.read(true).write(true);
+            }
+            _ => return Err(EINVAL),
+        }
+        if flags & libc::O_APPEND != 0 {
+            opts.append(true);
+        }
+        if create_new {
+            opts.create_new(true);
+        }
+        let custom_flags = flags
+            & !(libc::O_ACCMODE
+                | libc::O_APPEND
+                | libc::O_CREAT
+                | libc::O_EXCL
+                | libc::O_NOCTTY
+                | libc::O_TRUNC);
+        opts.custom_flags(custom_flags);
+        opts.open(path).map_err(|err| io_errno(&err))
     }
 
     fn record_write_file(&self, path: PathBuf, state: FileState) -> Result<(), i32> {
@@ -799,13 +870,19 @@ impl Filesystem for CowFs {
         }
     }
 
-    fn getattr(&mut self, _req: &Request<'_>, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+    fn getattr(&mut self, _req: &Request<'_>, ino: u64, fh: Option<u64>, reply: ReplyAttr) {
         let Some(path) = self.path_for_ino(ino).map(ToOwned::to_owned) else {
             reply.error(ENOENT);
             return;
         };
         if let Some(errno) = self.access_errno(&path) {
             reply.error(errno);
+            return;
+        }
+        if let Some(fh) = fh
+            && let Ok(attr) = self.host_attr_for_handle(&path, fh)
+        {
+            reply.attr(&TTL, &attr);
             return;
         }
         match self.effective_node(&path) {
@@ -895,22 +972,34 @@ impl Filesystem for CowFs {
     }
 
     fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
-        let Some(path) = self.path_for_ino(ino) else {
+        let Some(path) = self.path_for_ino(ino).map(ToOwned::to_owned) else {
             reply.error(ENOENT);
             return;
         };
         // allow write open only for writable rules.
         if flags & libc::O_ACCMODE != libc::O_RDONLY {
-            if let Some(errno) = self.mutation_errno(path) {
+            if let Some(errno) = self.mutation_errno(&path) {
                 reply.error(errno);
                 return;
             }
-            if self.write_mode(path) == WriteMode::Forbidden {
+            if self.write_mode(&path) == WriteMode::Forbidden {
                 reply.error(EACCES);
                 return;
             }
-        } else if let Some(errno) = self.access_errno(path) {
+        } else if let Some(errno) = self.access_errno(&path) {
             reply.error(errno);
+            return;
+        }
+        if self.write_mode(&path) == WriteMode::Passthrough {
+            let file = match Self::open_passthrough_file(&path, flags, false) {
+                Ok(file) => file,
+                Err(code) => {
+                    reply.error(code);
+                    return;
+                }
+            };
+            let fh = self.allocate_passthrough_handle(file);
+            reply.opened(fh, 0);
             return;
         }
         reply.opened(0, 0);
@@ -920,7 +1009,7 @@ impl Filesystem for CowFs {
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        _fh: u64,
+        fh: u64,
         offset: i64,
         size: u32,
         _flags: i32,
@@ -963,32 +1052,45 @@ impl Filesystem for CowFs {
             }
         }
 
-        let mut file = match fs::File::open(&path) {
-            Ok(file) => file,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                reply.error(ENOENT);
-                return;
-            }
-            Err(_) => {
-                reply.error(EIO);
-                return;
-            }
-        };
         if offset < 0 {
             reply.error(EIO);
             return;
         }
-        if file.seek(SeekFrom::Start(offset as u64)).is_err() {
-            reply.error(EIO);
-            return;
-        }
-
         let mut buf = vec![0u8; size as usize];
-        let n = match file.read(&mut buf) {
-            Ok(n) => n,
-            Err(_) => {
+        let n = if let Some(file) = self.passthrough_file_mut(fh) {
+            if file.seek(SeekFrom::Start(offset as u64)).is_err() {
                 reply.error(EIO);
                 return;
+            }
+            match file.read(&mut buf) {
+                Ok(n) => n,
+                Err(_) => {
+                    reply.error(EIO);
+                    return;
+                }
+            }
+        } else {
+            let mut file = match fs::File::open(&path) {
+                Ok(file) => file,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    reply.error(ENOENT);
+                    return;
+                }
+                Err(_) => {
+                    reply.error(EIO);
+                    return;
+                }
+            };
+            if file.seek(SeekFrom::Start(offset as u64)).is_err() {
+                reply.error(EIO);
+                return;
+            }
+            match file.read(&mut buf) {
+                Ok(n) => n,
+                Err(_) => {
+                    reply.error(EIO);
+                    return;
+                }
             }
         };
         reply.data(&buf[..n]);
@@ -1037,7 +1139,7 @@ impl Filesystem for CowFs {
         name: &OsStr,
         mode: u32,
         umask: u32,
-        _flags: i32,
+        flags: i32,
         reply: ReplyCreate,
     ) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
@@ -1081,18 +1183,21 @@ impl Filesystem for CowFs {
                 reply.created(&TTL, &attr, 0, 0, 0);
             }
             WriteMode::Passthrough => {
-                match fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .mode((normalize_create_mode(mode, umask) as u32) & 0o7777)
-                    .open(&path)
-                {
-                    Ok(_) => {}
-                    Err(err) => {
-                        reply.error(io_errno(&err));
+                let file = match Self::open_passthrough_file(&path, flags, true) {
+                    Ok(file) => file,
+                    Err(code) => {
+                        reply.error(code);
                         return;
                     }
+                };
+                let created_mode = (normalize_create_mode(mode, umask) as u32) & 0o7777;
+                if let Err(err) =
+                    file.set_permissions(std::fs::Permissions::from_mode(created_mode))
+                {
+                    reply.error(io_errno(&err));
+                    return;
                 }
+                let fh = self.allocate_passthrough_handle(file);
                 let attr = match self.host_attr(&path) {
                     Ok(attr) => attr,
                     Err(code) => {
@@ -1100,7 +1205,7 @@ impl Filesystem for CowFs {
                         return;
                     }
                 };
-                reply.created(&TTL, &attr, 0, 0, 0);
+                reply.created(&TTL, &attr, 0, fh, 0);
             }
         }
     }
@@ -1109,7 +1214,7 @@ impl Filesystem for CowFs {
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        _fh: u64,
+        fh: u64,
         offset: i64,
         data: &[u8],
         _write_flags: u32,
@@ -1164,12 +1269,9 @@ impl Filesystem for CowFs {
                     reply.error(EIO);
                     return;
                 }
-                let mut file = match fs::OpenOptions::new().write(true).open(&path) {
-                    Ok(file) => file,
-                    Err(err) => {
-                        reply.error(io_errno(&err));
-                        return;
-                    }
+                let Some(file) = self.passthrough_file_mut(fh) else {
+                    reply.error(ENOENT);
+                    return;
                 };
                 if let Err(err) = file.seek(SeekFrom::Start(offset as u64)) {
                     reply.error(io_errno(&err));
@@ -1182,6 +1284,37 @@ impl Filesystem for CowFs {
                 reply.written(data.len() as u32);
             }
         }
+    }
+
+    fn flush(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        fh: u64,
+        _lock_owner: u64,
+        reply: ReplyEmpty,
+    ) {
+        if let Some(file) = self.passthrough_file_mut(fh)
+            && let Err(err) = file.sync_data()
+        {
+            reply.error(io_errno(&err));
+            return;
+        }
+        reply.ok();
+    }
+
+    fn release(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        fh: u64,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        _flush: bool,
+        reply: ReplyEmpty,
+    ) {
+        self.remove_passthrough_handle(fh);
+        reply.ok();
     }
 
     fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
@@ -1793,6 +1926,30 @@ mod tests {
         assert_eq!(fs.path_to_ino.get(&moved_child).copied(), Some(child_ino));
         assert!(!fs.path_to_ino.contains_key(&from));
         assert!(!fs.path_to_ino.contains_key(&child));
+    }
+
+    #[test]
+    fn passthrough_handle_getattr_survives_rename() {
+        let (_dir, _record_path, mut fs) = test_fs("/tmp/** rw");
+        let from = PathBuf::from("/tmp/cowjail-handle-rename-from");
+        let to = PathBuf::from("/tmp/cowjail-handle-rename-to");
+        fs::write(&from, b"hello").expect("seed source");
+
+        let ino = fs.ensure_ino(&from);
+        let fh = fs
+            .open_passthrough_handle_for_test(&from, libc::O_RDONLY)
+            .expect("open passthrough handle");
+        fs::rename(&from, &to).expect("rename source");
+        fs.remap_known_inos_subtree(&from, &to);
+
+        let remapped = fs.path_for_ino(ino).expect("remapped path").to_path_buf();
+        let attr = fs
+            .host_attr_for_handle_for_test(&remapped, fh)
+            .expect("attr via handle after rename");
+        assert_eq!(attr.size, 5);
+
+        fs.remove_passthrough_handle(fh);
+        let _ = fs::remove_file(&to);
     }
 
     #[test]
