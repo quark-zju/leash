@@ -70,6 +70,15 @@ cowjail flush     # apply pending changes to host
 
 Changes are designed to survive reboots. But it's still recommended to flush early to keep changes.
 
+The built-in `default` profile is tuned for coding-agent workflows:
+
+- current workspace (`.`): `cow`
+- broad user state trees like `~/.config`, `~/.cache`, `~/.local`: `cow`
+- agent-specific directories like `~/.codex`, `~/.claude`, `~/.agents`: `rw`
+- `/tmp`: `rw`
+
+So the default behavior is: keep normal project edits and broad home-directory writes isolated first, but still allow direct writes for common agent state and temp-file workflows.
+
 ### Custom profile
 
 If a tool needs access to another path, edit `default.local` and add a rule there. For example, to allow writes under `~/Downloads`:
