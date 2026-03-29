@@ -12,17 +12,15 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::thread;
 
+use crate::access_policy::{AccessPolicy, Permission, RequestedAccess};
 use crate::cli::LowLevelDaemonCommand;
 use crate::jail;
 use crate::privileges;
 use crate::run_env;
 
 const FAN_MARK_MNTNS: libc::c_uint = 0x0000_0110;
-const OBSERVE_MASK: u64 = libc::FAN_OPEN
-    | libc::FAN_OPEN_EXEC
-    | libc::FAN_ACCESS
-    | libc::FAN_CLOSE_WRITE
-    | libc::FAN_EVENT_ON_CHILD;
+const PERMISSION_MASK: u64 =
+    libc::FAN_OPEN_PERM | libc::FAN_OPEN_EXEC_PERM | libc::FAN_EVENT_ON_CHILD;
 
 pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
     privileges::require_root_euid("leash _daemon")?;
@@ -37,9 +35,7 @@ pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
     fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("failed to chmod daemon socket {}", socket_path.display()))?;
     crate::vlog!("daemon: listening on {}", socket_path.display());
-    let observer = FanotifyObserver::new()?;
-    observer.spawn_logging_thread()?;
-    let mut state = DaemonState::with_observer(observer);
+    let mut state = DaemonState::default();
 
     loop {
         let (mut stream, _addr) = listener
@@ -110,13 +106,14 @@ struct RegisteredSession {
     owner_uid: libc::uid_t,
     owner_gid: libc::gid_t,
     source_pid: libc::pid_t,
+    profile_path: PathBuf,
     namespace_file: File,
+    observer: SessionObserver,
 }
 
 #[derive(Default)]
 struct DaemonState {
     sessions: HashMap<NamespaceKey, RegisteredSession>,
-    observer: Option<FanotifyObserver>,
 }
 
 struct ReceivedRequest {
@@ -124,53 +121,57 @@ struct ReceivedRequest {
     received_fd: Option<File>,
 }
 
-struct FanotifyObserver {
+struct SessionObserver {
     fd: File,
 }
 
-impl DaemonState {
-    fn with_observer(observer: FanotifyObserver) -> Self {
-        Self {
-            sessions: HashMap::new(),
-            observer: Some(observer),
-        }
-    }
-}
-
-impl FanotifyObserver {
-    fn new() -> Result<Self> {
+impl SessionObserver {
+    #[cfg(not(test))]
+    fn new(namespace_file: &File, policy: AccessPolicy) -> Result<Self> {
         let fd = unsafe {
             libc::fanotify_init(
-                (libc::FAN_CLOEXEC | libc::FAN_CLASS_NOTIF) as libc::c_uint,
+                (libc::FAN_CLOEXEC | libc::FAN_CLASS_CONTENT) as libc::c_uint,
                 (libc::O_RDONLY | libc::O_LARGEFILE) as libc::c_uint,
             )
         };
         if fd < 0 {
             return Err(std::io::Error::last_os_error()).context("fanotify_init failed");
         }
-        Ok(Self {
+        let observer = Self {
             fd: unsafe { File::from_raw_fd(fd) },
+        };
+        observer.mark_namespace(namespace_file)?;
+        observer.spawn_thread(policy)?;
+        Ok(observer)
+    }
+
+    #[cfg(test)]
+    fn new(_namespace_file: &File, _policy: AccessPolicy) -> Result<Self> {
+        Ok(Self {
+            fd: File::open("/dev/null").context("failed to open /dev/null for test observer")?,
         })
     }
 
-    fn spawn_logging_thread(&self) -> Result<()> {
+    #[cfg(not(test))]
+    fn spawn_thread(&self, policy: AccessPolicy) -> Result<()> {
         let file = self
             .fd
             .try_clone()
-            .context("failed to clone fanotify fd for logging thread")?;
+            .context("failed to clone fanotify fd for session thread")?;
         thread::Builder::new()
             .name("leash-fanotify".to_string())
-            .spawn(move || observe_events(file))
-            .context("failed to spawn fanotify logging thread")?;
+            .spawn(move || enforce_events(file, policy))
+            .context("failed to spawn fanotify session thread")?;
         Ok(())
     }
 
+    #[cfg(not(test))]
     fn mark_namespace(&self, namespace_file: &File) -> Result<()> {
         let rc = unsafe {
             libc::fanotify_mark(
                 self.fd.as_raw_fd(),
                 libc::FAN_MARK_ADD | FAN_MARK_MNTNS,
-                OBSERVE_MASK,
+                PERMISSION_MASK,
                 namespace_file.as_raw_fd(),
                 std::ptr::null(),
             )
@@ -237,41 +238,41 @@ fn handle_client(
         peer.pid,
         peer.uid
     );
-    let response = handle_request_line(state, request, peer, received.received_fd);
+    let response = handle_request(state, request, peer, received.received_fd);
     stream
         .write_all(response.as_bytes())
         .context("failed to write daemon response")
 }
 
-fn handle_request_line(
+fn handle_request(
     state: &mut DaemonState,
     request: &str,
     peer: PeerCredentials,
     received_fd: Option<File>,
 ) -> String {
-    let trimmed = request.trim();
-    if trimmed.is_empty() {
+    let mut lines = request.lines();
+    let Some(command) = lines.next().map(str::trim) else {
         return "error empty-request\n".to_string();
-    }
-
-    let mut parts = trimmed.split_whitespace();
-    let command = parts.next().unwrap_or_default();
+    };
     match command {
         "ping" => "pong\n".to_string(),
         "register-session" => {
-            if parts.next().is_some() {
-                return "error unexpected-arguments\n".to_string();
-            }
+            let Some(profile_path) = lines.next().map(PathBuf::from) else {
+                return "error missing-profile-path\n".to_string();
+            };
             let Some(namespace_file) = received_fd else {
                 return "error missing-mntns-fd\n".to_string();
             };
-            match register_session(state, &peer, namespace_file) {
+            if lines.next().is_some() {
+                return "error unexpected-arguments\n".to_string();
+            }
+            match register_session(state, &peer, profile_path, namespace_file) {
                 Ok(key) => format!("ok registered {}:{}\n", key.dev, key.ino),
                 Err(err) => format!("error {}\n", sanitize_error_text(&err.to_string())),
             }
         }
         "query-session" => {
-            if parts.next().is_some() {
+            if lines.next().is_some() {
                 return "error unexpected-arguments\n".to_string();
             }
             match namespace_key_for_pid(peer.pid) {
@@ -289,6 +290,7 @@ fn handle_request_line(
 fn register_session(
     state: &mut DaemonState,
     peer: &PeerCredentials,
+    profile_path: PathBuf,
     namespace_file: File,
 ) -> Result<NamespaceKey> {
     let meta = namespace_file
@@ -298,9 +300,8 @@ fn register_session(
         dev: meta.dev(),
         ino: meta.ino(),
     };
-    if let Some(observer) = &state.observer {
-        observer.mark_namespace(&namespace_file)?;
-    }
+    let policy = AccessPolicy::from_normalized_profile_path(&profile_path, None)?;
+    let observer = SessionObserver::new(&namespace_file, policy)?;
     state.sessions.insert(
         key,
         RegisteredSession {
@@ -308,7 +309,9 @@ fn register_session(
             owner_uid: peer.uid,
             owner_gid: peer.gid,
             source_pid: peer.pid,
+            profile_path,
             namespace_file,
+            observer,
         },
     );
     Ok(key)
@@ -380,7 +383,7 @@ fn mount_namespace_path_for_pid(pid: libc::pid_t) -> PathBuf {
     PathBuf::from(format!("/proc/{pid}/ns/mnt"))
 }
 
-fn observe_events(file: File) {
+fn enforce_events(file: File, policy: AccessPolicy) {
     let fd = file.as_raw_fd();
     let mut buffer = [0u8; 8192];
     loop {
@@ -421,13 +424,25 @@ fn observe_events(file: File) {
             } else {
                 "<no-fd>".to_string()
             };
+            let access = requested_access_for_event(meta);
+            let decision = if meta.fd >= 0 {
+                evaluate_permission_event(&policy, meta, Path::new(&path), access)
+            } else {
+                Permission::Deny
+            };
             crate::vlog!(
-                "fanotify: mask={} pid={} fd={} path={}",
+                "fanotify: mask={} pid={} fd={} path={} decision={:?}",
                 describe_mask(meta.mask),
                 meta.pid,
                 meta.fd,
-                path
+                path,
+                decision
             );
+            if meta.mask & (libc::FAN_OPEN_PERM | libc::FAN_OPEN_EXEC_PERM) != 0
+                && let Err(err) = respond_to_permission_event(fd, meta.fd, decision, access)
+            {
+                crate::vlog!("fanotify: failed to respond to permission event: {}", err);
+            }
             if meta.fd >= 0 {
                 unsafe {
                     libc::close(meta.fd);
@@ -436,6 +451,67 @@ fn observe_events(file: File) {
             offset += meta.event_len as usize;
         }
     }
+}
+
+fn evaluate_permission_event(
+    policy: &AccessPolicy,
+    meta: &libc::fanotify_event_metadata,
+    path: &Path,
+    access: RequestedAccess,
+) -> Permission {
+    let exe_path = current_exe_for_pid(meta.pid);
+    policy.check_permission(path, exe_path.as_deref(), access)
+}
+
+fn requested_access_for_event(meta: &libc::fanotify_event_metadata) -> RequestedAccess {
+    if meta.mask & libc::FAN_OPEN_EXEC_PERM != 0 {
+        return RequestedAccess::Execute;
+    }
+    let flags = unsafe { libc::fcntl(meta.fd, libc::F_GETFL) };
+    if flags >= 0 {
+        let accmode = flags & libc::O_ACCMODE;
+        if accmode == libc::O_WRONLY || accmode == libc::O_RDWR {
+            return RequestedAccess::Write;
+        }
+    }
+    RequestedAccess::Read
+}
+
+fn current_exe_for_pid(pid: libc::pid_t) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+fn respond_to_permission_event(
+    fanotify_fd: libc::c_int,
+    event_fd: libc::c_int,
+    decision: Permission,
+    access: RequestedAccess,
+) -> Result<()> {
+    let response = libc::fanotify_response {
+        fd: event_fd,
+        response: if decision.allows(access) {
+            libc::FAN_ALLOW
+        } else {
+            libc::FAN_DENY
+        },
+    };
+    let rc = unsafe {
+        libc::write(
+            fanotify_fd,
+            &response as *const libc::fanotify_response as *const libc::c_void,
+            std::mem::size_of::<libc::fanotify_response>(),
+        )
+    };
+    if rc < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("write fanotify permission response failed");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn test_register_request(profile_path: &Path) -> String {
+    format!("register-session\n{}", profile_path.display())
 }
 
 fn describe_event_fd(fd: libc::c_int) -> String {
@@ -481,6 +557,7 @@ fn sanitize_error_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn default_socket_lives_under_runtime_root() {
@@ -505,12 +582,19 @@ mod tests {
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
         };
+        let temp = tempdir().expect("tempdir");
+        let profile_path = temp.path().join("profile");
+        fs::write(&profile_path, "/workspace rw\n").expect("write profile");
         let namespace_file = File::open("/proc/self/ns/mnt").expect("open current mntns");
-        let register =
-            handle_request_line(&mut state, "register-session", peer, Some(namespace_file));
+        let register = handle_request(
+            &mut state,
+            &test_register_request(&profile_path),
+            peer,
+            Some(namespace_file),
+        );
         assert!(register.starts_with("ok registered "));
 
-        let query = handle_request_line(&mut state, "query-session", peer, None);
+        let query = handle_request(&mut state, "query-session", peer, None);
         assert!(query.starts_with("ok session "));
     }
 
@@ -523,7 +607,7 @@ mod tests {
             gid: unsafe { libc::getgid() },
         };
         assert_eq!(
-            handle_request_line(&mut state, "query-session", peer, None),
+            handle_request(&mut state, "query-session", peer, None),
             "ok missing\n"
         );
     }
@@ -536,8 +620,16 @@ mod tests {
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
         };
+        let temp = tempdir().expect("tempdir");
+        let profile_path = temp.path().join("profile");
+        fs::write(&profile_path, "/workspace rw\n").expect("write profile");
         assert_eq!(
-            handle_request_line(&mut state, "register-session", peer, None),
+            handle_request(
+                &mut state,
+                &test_register_request(&profile_path),
+                peer,
+                None,
+            ),
             "error missing-mntns-fd\n"
         );
     }

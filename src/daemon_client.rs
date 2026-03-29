@@ -20,12 +20,13 @@ pub(crate) fn ensure_daemon_running(verbose: bool) -> Result<()> {
     wait_for_daemon(&socket_path, Duration::from_secs(2))
 }
 
-pub(crate) fn register_session() -> Result<()> {
+pub(crate) fn register_session(profile_path: &Path) -> Result<()> {
     let namespace_file =
         File::open("/proc/self/ns/mnt").context("failed to open current mount namespace handle")?;
+    let request = format!("register-session\n{}", profile_path.display());
     let response = send_request_with_fd(
         &cmd_daemon::default_socket_path(),
-        "register-session",
+        &request,
         namespace_file.as_raw_fd(),
     )?;
     if response.starts_with("ok registered ") {

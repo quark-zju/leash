@@ -1,5 +1,8 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
+use fs_err as fs;
+
 use crate::git_rw_filter::GitRwFilter;
 use crate::profile::{Profile, RuleAction, Visibility};
 
@@ -81,6 +84,22 @@ impl AccessPolicy<FsRepoPolicy> {
             profile,
             repo: FsRepoPolicy::new(system_git),
         }
+    }
+
+    pub(crate) fn from_normalized_profile_path(
+        profile_path: &Path,
+        system_git: Option<PathBuf>,
+    ) -> Result<Self> {
+        let normalized = fs::read_to_string(profile_path)
+            .with_context(|| format!("failed to read profile file {}", profile_path.display()))?;
+        let profile = Profile::parse_with_home(&normalized, Path::new("/"), Path::new("/"))
+            .with_context(|| {
+                format!(
+                    "failed to parse normalized profile {}",
+                    profile_path.display()
+                )
+            })?;
+        Ok(Self::new(profile, system_git))
     }
 }
 

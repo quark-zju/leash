@@ -49,9 +49,15 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
     run_with_log(run_env::setup_run_namespaces, || {
         "unshare run namespaces".to_string()
     })?;
-    run_with_log(daemon_client::register_session, || {
-        "register current mount namespace session".to_string()
-    })?;
+    run_with_log(
+        || daemon_client::register_session(&resolved.paths.profile_path),
+        || {
+            format!(
+                "register current mount namespace session {}",
+                resolved.paths.profile_path.display()
+            )
+        },
+    )?;
     let status = run_with_log(
         || run_env::run_child_in_jail(&run, &cwd),
         || format!("execute jailed command {:?}", run.program),
