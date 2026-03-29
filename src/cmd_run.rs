@@ -147,10 +147,9 @@ fn run_child_in_jail(
     let mut child = cmd
         .spawn()
         .context("failed to spawn child command in jail")?;
-    run_with_log(
-        privileges::drop_root_euid_if_needed,
-        || "drop outer run euid after child spawn".to_string(),
-    )?;
+    run_with_log(privileges::drop_root_euid_if_needed, || {
+        "drop outer run euid after child spawn".to_string()
+    })?;
     child.wait().context("failed waiting for child command")
 }
 

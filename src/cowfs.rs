@@ -56,13 +56,19 @@ struct OverlayTimes {
 #[derive(Debug, Clone)]
 enum OverlayNode {
     Deleted,
-    Dir { mode: u16, times: OverlayTimes },
+    Dir {
+        mode: u16,
+        times: OverlayTimes,
+    },
     Regular {
         data: Vec<u8>,
         mode: u16,
         times: OverlayTimes,
     },
-    Symlink { target: PathBuf, times: OverlayTimes },
+    Symlink {
+        target: PathBuf,
+        times: OverlayTimes,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,9 +286,12 @@ impl CowFs {
             OverlayNode::Regular { data, mode, times } => {
                 (FileType::RegularFile, *mode, data.len() as u64, times)
             }
-            OverlayNode::Symlink { target, times } => {
-                (FileType::Symlink, 0o777, target.as_os_str().len() as u64, times)
-            }
+            OverlayNode::Symlink { target, times } => (
+                FileType::Symlink,
+                0o777,
+                target.as_os_str().len() as u64,
+                times,
+            ),
         };
 
         let mut attr = FileAttr {
@@ -547,10 +556,8 @@ impl CowFs {
                     .map_err(|_| ())?
                     .and_then(|node| node.times().cloned())
                     .unwrap_or_else(Self::overlay_times_now);
-                self.overlay.insert(
-                    path.clone(),
-                    OverlayNode::Regular { data, mode, times },
-                );
+                self.overlay
+                    .insert(path.clone(), OverlayNode::Regular { data, mode, times });
                 Ok(())
             }
         }
@@ -2035,10 +2042,7 @@ mod tests {
         let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
         let path = PathBuf::from("/tmp/cowjail-overlay-regular");
         fs::write(&path, b"host").expect("seed host");
-        fs.overlay_set(
-            path.clone(),
-            overlay_regular(b"overlay", 0o644),
-        );
+        fs.overlay_set(path.clone(), overlay_regular(b"overlay", 0o644));
         let got = fs.effective_node(&path).expect("effective node");
         match got {
             Some(NodeRef::Overlay(OverlayNode::Regular { data, .. })) => {
@@ -2057,10 +2061,7 @@ mod tests {
         let new_file = dir.join("from-overlay");
         let new_dir = dir.join("overlay-subdir");
         let new_link = dir.join("overlay-link");
-        fs.overlay_set(
-            new_file.clone(),
-            overlay_regular(b"x", 0o644),
-        );
+        fs.overlay_set(new_file.clone(), overlay_regular(b"x", 0o644));
         fs.overlay_set(new_dir, overlay_dir(0o755));
         fs.overlay_set(new_link, overlay_symlink("/tmp/target"));
         let entries = fs.list_children(&dir).expect("list children");
@@ -2169,8 +2170,7 @@ mod tests {
     #[test]
     fn runtime_root_is_hard_denied_even_if_profile_allows_it() {
         let (_dir, _record_path, fs) = test_fs("/run/** rw\n");
-        let guarded = fs
-            .with_mount_root(PathBuf::from("/run/user/1000/cowjail/demo/mount"));
+        let guarded = fs.with_mount_root(PathBuf::from("/run/user/1000/cowjail/demo/mount"));
         let runtime_root = Path::new("/run/user/1000/cowjail");
         let runtime_child = Path::new("/run/user/1000/cowjail/demo/fuse.pid");
 
