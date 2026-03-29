@@ -8,7 +8,7 @@ The direction is viable if we narrow the goal:
 
 - use fanotify for open-time allow/deny decisions on real host inodes
 - keep mount namespace shaping so the jailed process only sees the filesystem layout we intentionally expose
-- treat path hiding and readonly structure as a mount-layout problem first, not a fanotify problem
+- drop `hide` support and treat path denial plus readonly structure as kernel-enforced policy where possible
 
 Under those constraints, fanotify directly fixes the main SQLite lock concern: once the jailed process opens the real underlying file, all `fcntl`/`flock` locking and `mmap` behavior stays on the real inode instead of a FUSE inode.
 
@@ -36,9 +36,9 @@ Fanotify can block opens, but it does not make paths disappear from `readdir`, a
 
 Implication:
 
-- `hide` cannot be implemented purely by fanotify
-- `deny` on open is easy; `hide` still needs mount shaping or a different mechanism
-- if `leash` wants a reduced filesystem view, the new mount namespace still needs a curated tree built from bind mounts, tmpfs, procfs, sysfs, and selected device mounts
+- `deny` on open is easy
+- if `hide` is removed from the product, we no longer need fake `ENOENT` behavior
+- the mount namespace still needs a curated tree built from bind mounts, tmpfs, procfs, sysfs, and selected device mounts
 
 ### 2. Open-time checks are not revocation
 
@@ -84,17 +84,16 @@ Reason:
 
 ### 1. Split responsibilities cleanly
 
-Use the mount namespace to define what exists. Use fanotify to decide who may open writable handles.
+Use the mount namespace to define the broad filesystem layout. Use fanotify to decide who may open writable handles.
 
 Recommended mapping:
 
-- `hide`: omit from namespace entirely
-- `deny`: either omit entirely when practical, or expose path but deny opens via fanotify
+- `deny`: expose path when needed, but deny opens via fanotify or readonly mounts depending on the rule
 - `ro`: expose through readonly bind mount
 - `rw`: expose through writable bind mount and allow through fanotify
 - `git-rw`: expose through writable bind mount, but gate write opens and sensitive `.git` metadata opens in fanotify
 
-This means the new system is not "fanotify instead of namespaces"; it is "fanotify instead of FUSE mediation".
+This means the new system is not "fanotify instead of namespaces"; it is "fanotify instead of FUSE mediation", with `deny` as the only negative access rule.
 
 ### 2. Create a curated root in a fresh mount namespace
 
@@ -167,9 +166,13 @@ Design notes:
 
 ## Where Serious Problems Still Exist
 
-### `hide` semantics
+### loss of `hide`
 
-This is the main conceptual gap. If `hide` is a hard requirement, the namespace must be built so the path simply is not there. fanotify alone will not provide convincing `ENOENT` behavior.
+Dropping `hide` removes a major implementation headache, but it is still a product decision with user-visible consequences:
+
+- denied paths may remain discoverable through `readdir`, error differences, or metadata observations
+- profiles that relied on "looks absent" semantics will need to migrate to explicit `deny`
+- documentation and defaults need to be updated so this becomes an intentional simplification, not a regression surprise
 
 ### rename/create/delete control
 
@@ -196,7 +199,7 @@ Every open may now pay an IPC/policy decision cost in the daemon.
 
 Mitigations:
 
-- push `ro` and `hide` into mount layout as much as possible
+- push `ro` into mount layout as much as possible
 - reserve daemon decisions mainly for ambiguous writable paths and `git-rw`
 - benchmark realistic agent workloads before deleting the old FUSE path
 
@@ -208,7 +211,7 @@ Before coding, freeze which current guarantees must survive:
 
 - real inode semantics for SQLite, git, and `mmap`
 - mount namespace isolation remains mandatory
-- `hide` remains a namespace-layout feature
+- `hide` is removed; negative policy is `deny`
 - `git-rw` remains supported
 
 ### Phase 1: build non-FUSE curated root
@@ -262,7 +265,7 @@ Do not delete the current implementation until these cases are stable:
 ## Proposed Work Items
 
 1. Define the new policy split between mount layout and fanotify.
-2. Implement a mount-tree builder that can realize `hide`, `ro`, and coarse `rw` without FUSE.
+2. Implement a mount-tree builder that can realize `ro` and coarse `rw` without FUSE.
 3. Add a privileged daemon with `${XDG_RUNTIME_DIR}/leashd.sock` control plane.
 4. Register sessions by mount namespace and authenticate callers with peer credentials.
 5. Add permission-event logging first, then enforcement.
