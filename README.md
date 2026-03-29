@@ -56,14 +56,6 @@ source <(cowjail completion)
 Use `cowjail run` to run a command. It uses the built-in `default` profile.
 Profile syntax, actions, size config, and default profile source are documented in [`docs/profile.md`](docs/profile.md).
 
-The built-in `default` profile includes `%include default.local`, so the recommended way to add rules beyond the shipped defaults is:
-
-```bash
-cowjail profile edit default.local
-```
-
-This lets you extend the default policy without copying the whole `default` profile.
-
 ```bash
 cowjail run -- codex      # or opencode, bash, ...
 ```
@@ -80,6 +72,14 @@ Changes are designed to survive reboots. But it's still recommended to flush ear
 ### Custom profile
 
 Create a custom profile file using the rules in [`docs/profile.md`](docs/profile.md).
+
+The built-in `default` profile includes `%include default.local`, so the recommended way to add rules beyond the shipped defaults is:
+
+```bash
+cowjail profile edit default.local
+```
+
+This lets you extend the default policy without copying the whole `default` profile.
 
 ```bash
 cowjail run --profile ~/my-profile -- your-command   # select jail by profile
