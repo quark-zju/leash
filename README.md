@@ -2,21 +2,17 @@
 
 `cowjail` is a Linux filesystem safety layer for untrusted programs and coding agents.
 
-I personally use it to add restrictions to [codex](https://github.com/quark-zju/codex) and [opencode](https://github.com/quark-zju/opencode) — making their file operations visible, isolated, and selectively replayable.
-
 It combines:
 
 - profile-based filesystem visibility and write policy (`ro` / `rw` / `cow` / `deny` / `hide`)
 - copy-on-write behavior (`cow`: writes stay in overlay + record first)
 - selective replay (`flush`) to apply only pending writes you accept
-- IPC namespace isolation to reduce escapes via host IPC services (for example `systemd-run`)
+- IPC/PID/MNT namespace isolation to reduce escapes via host IPC services (for example `systemd-run`)
 
 Out of scope:
 
 - network/container isolation
 - non-Linux support
-
----
 
 `cowjail` 是一个 Linux 文件系统防护层，面向不可信程序和 AI 编码工具。
 
@@ -24,12 +20,16 @@ Out of scope:
 
 - 配置文件控制读写策略（`ro` / `rw` / `cow` / `deny` / `hide`）
 - 写隔离（`cow` 写操作先记录，仅在隔离区可见，后可选是否写回真实系统）
-- IPC 隔离，防止如 `systemd-run` 逃过文件系统隔离
+- IPC/PID/MNT 隔离，防止如 `systemd-run` 逃过文件系统隔离
 
 不包含：
 
 - 网络/容器隔离
 - 非 Linux 系统支持
+
+## Project status
+
+I personally use this project with `codex` and `opencode`.
 
 ## Install
 
@@ -58,14 +58,14 @@ source <(cowjail completion)
 Use `cowjail run` to run a command. It uses the built-in `default` profile.
 
 ```bash
-cowjail run -- codex      # or opencode, bash, ...
+cowjail run codex # or opencode, bash, ...
 ```
 
 Changes by the command won't affect the real filesystem directly. Use `cowjail flush` to view and apply changes:
 
 ```bash
-cowjail flush -n                       # review pending changes
-cowjail flush                          # apply pending changes to host
+cowjail flush -n  # review pending changes
+cowjail flush     # apply pending changes to host
 ```
 
 Changes are designed to survive reboots. But it's still recommended to flush early to keep changes.
