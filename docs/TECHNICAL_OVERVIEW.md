@@ -73,6 +73,13 @@ Trusted `git` checks currently inspect `/proc/<pid>/exe` and allow `.git` metada
 - Userspace policy enforcement instead of kernel-only mounts:
   - `deny`, `hide`, and `git-rw` all stay in one userspace path
   - this simplifies policy behavior at the cost of some fidelity and performance
+- Simple long-lived caches over tighter reclamation:
+  - the FUSE inode/path maps and git repo-root cache are kept intentionally simple
+  - entries may accumulate or become stale during a long-lived mount, especially across heavy temp-file churn or `git init` after an earlier negative repo lookup
+  - the current operational assumption is that these mounts are session-scoped; if they stop behaving well, tear them down and rebuild with `leash _rm '*'`
+- `readdir` favors simple whole-directory collection:
+  - directory entries are collected into memory before they are streamed back through FUSE
+  - this keeps the implementation straightforward, and the current assumption is that extremely large directories are uncommon in the intended agent workloads
 - Known filesystem compatibility gaps:
   - hardlinks are not supported by the current FUSE layer
   - mmap-heavy workloads may degrade or fail depending on access pattern
