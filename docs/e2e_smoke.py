@@ -60,8 +60,11 @@ def default_work_root() -> Path:
             candidate.mkdir(parents=True, exist_ok=True)
         except OSError:
             continue
+        options = mount_options_for_path(candidate)
+        if "ro" in options:
+            continue
         viable.append(candidate)
-        if "nosuid" not in mount_options_for_path(candidate):
+        if "nosuid" not in options:
             return candidate
     if viable:
         return viable[0]
