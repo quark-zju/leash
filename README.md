@@ -82,16 +82,6 @@ The shipped builtin fragments are also inspectable through `cowjail profile show
 
 See [`docs/PROFILE.md`](docs/PROFILE.md) for profile syntax and more examples.
 
-### Low-level debug commands
-
-Most workflows should only need `run` plus `profile` editing. For debugging or cleanup, hidden low-level commands remain available:
-
-```bash
-cowjail _show 4a5f3c2d1e0b9a87
-cowjail _list
-cowjail _rm '4a5f*'
-```
-
 ## More Docs
 
 - Agent compatibility notes: [`docs/AGENT_COMPAT.md`](docs/AGENT_COMPAT.md)
