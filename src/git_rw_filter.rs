@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::os::unix::fs::MetadataExt;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -8,22 +7,9 @@ use std::sync::Mutex;
 use fs_err as fs;
 use log::{debug, trace};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ProcIdentity {
-    ctime: i64,
-    ctime_nsec: i64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CachedDecision {
-    identity: ProcIdentity,
-    allowed: bool,
-}
-
 #[derive(Debug)]
 pub(crate) struct GitRwFilter {
     system_git: Option<PathBuf>,
-    proc_cache: Mutex<HashMap<u32, CachedDecision>>,
     repo_root_cache: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
 }
 
@@ -33,7 +19,6 @@ impl GitRwFilter {
         debug!("git-rw: resolved system git path to {:?}", system_git);
         Self {
             system_git,
-            proc_cache: Mutex::new(HashMap::new()),
             repo_root_cache: Mutex::new(HashMap::new()),
         }
     }
@@ -106,36 +91,8 @@ impl GitRwFilter {
     }
 
     pub(crate) fn allow_git_metadata_for_pid(&self, pid: u32, mount_root: Option<&Path>) -> bool {
-        let proc_dir = PathBuf::from(format!("/proc/{pid}"));
-        let meta = match fs::metadata(&proc_dir) {
-            Ok(meta) => meta,
-            Err(err) => {
-                debug!("git-rw: deny pid={pid} metadata access: stat {} failed: {err}", proc_dir.display());
-                return false;
-            }
-        };
-        let identity = ProcIdentity {
-            ctime: meta.ctime(),
-            ctime_nsec: meta.ctime_nsec(),
-        };
-
-        if let Ok(cache) = self.proc_cache.lock()
-            && let Some(entry) = cache.get(&pid)
-            && entry.identity == identity
-        {
-            trace!(
-                "git-rw: proc cache hit pid={} allowed={}",
-                pid,
-                entry.allowed
-            );
-            return entry.allowed;
-        }
-
         let allowed = self.inspect_process(pid, mount_root);
         debug!("git-rw: evaluated pid={} allowed={}", pid, allowed);
-        if let Ok(mut cache) = self.proc_cache.lock() {
-            cache.insert(pid, CachedDecision { identity, allowed });
-        }
         allowed
     }
 

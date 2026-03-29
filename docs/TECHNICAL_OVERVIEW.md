@@ -53,7 +53,7 @@ There is no copy-on-write overlay and no deferred replay stage.
 - non-repo paths remain read-only
 - `.git` metadata paths are blocked unless the requesting process is a trusted `git` invocation
 
-Trusted `git` checks currently inspect `/proc/<pid>/exe` and `/proc/<pid>/cmdline`, with a `/proc/<pid>` stat-based cache invalidated by `ctime` changes to avoid stale PID reuse.
+Trusted `git` checks currently inspect `/proc/<pid>/exe` and allow `.git` metadata access only when that executable resolves to the trusted system `git`.
 
 ## Runtime Execution Notes
 
