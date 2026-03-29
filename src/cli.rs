@@ -723,6 +723,7 @@ mod tests {
         let text = crate::cmd_help::help_text(HelpTopic::Profile, false);
         assert!(text.contains("ACTIONS:"));
         assert!(text.contains("cow"));
+        assert!(text.contains("git-rw"));
     }
 
     #[test]

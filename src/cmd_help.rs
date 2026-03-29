@@ -44,6 +44,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "ACTIONS:\n",
             "  ro      Read-only visibility\n",
             "  rw      Writable passthrough (applies to host immediately)\n",
+            "  git-rw  Writable only inside detected git working trees\n",
             "  cow     Writable copy-on-write (captured and applied by flush)\n",
             "  deny    Visible but access is denied (EACCES)\n",
             "  hide    Hidden/inaccessible (ENOENT)\n\n",
@@ -59,7 +60,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "  /bin ro\n",
             "  /usr ro\n",
             "  /tmp rw\n",
-            "  . cow\n",
+            "  . git-rw\n",
             "  /home/*/.ssh deny",
         )
         .to_string(),

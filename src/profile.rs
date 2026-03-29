@@ -8,6 +8,7 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 pub enum RuleAction {
     ReadOnly,
     Passthrough,
+    GitRw,
     Cow,
     Deny,
     Hide,
@@ -200,10 +201,11 @@ fn parse_action(token: &str) -> Result<RuleAction> {
     match token {
         "ro" => Ok(RuleAction::ReadOnly),
         "rw" => Ok(RuleAction::Passthrough),
+        "git-rw" => Ok(RuleAction::GitRw),
         "cow" => Ok(RuleAction::Cow),
         "deny" => Ok(RuleAction::Deny),
         "hide" => Ok(RuleAction::Hide),
-        _ => bail!("action must be one of ro/rw/cow/deny/hide"),
+        _ => bail!("action must be one of ro/rw/git-rw/cow/deny/hide"),
     }
 }
 
@@ -211,6 +213,7 @@ fn action_to_str(action: RuleAction) -> &'static str {
     match action {
         RuleAction::ReadOnly => "ro",
         RuleAction::Passthrough => "rw",
+        RuleAction::GitRw => "git-rw",
         RuleAction::Cow => "cow",
         RuleAction::Deny => "deny",
         RuleAction::Hide => "hide",
@@ -596,6 +599,19 @@ mod tests {
         assert_eq!(
             profile.first_match_action(Path::new("/work/file.txt")),
             Some(RuleAction::Cow)
+        );
+    }
+
+    #[test]
+    fn parse_git_rw_action() {
+        let profile = parse(
+            r#"
+            /work git-rw
+            "#,
+        );
+        assert_eq!(
+            profile.first_match_action(Path::new("/work/repo/file.txt")),
+            Some(RuleAction::GitRw)
         );
     }
 

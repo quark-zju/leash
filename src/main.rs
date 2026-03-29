@@ -10,6 +10,7 @@ mod cmd_run;
 mod cmd_show;
 mod cmd_suid;
 mod cowfs;
+mod git_rw_filter;
 mod jail;
 mod mount_plan;
 mod ns_runtime;

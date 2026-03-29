@@ -17,6 +17,7 @@ use libc::{
     EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, EOPNOTSUPP, EPERM,
 };
 
+use crate::git_rw_filter::GitRwFilter;
 use crate::op::{FileState, Operation};
 use crate::profile::{Profile, RuleAction, Visibility};
 use crate::record;
@@ -27,6 +28,7 @@ const ROOT_INO: u64 = 1;
 pub struct CowFs {
     profile: Profile,
     record: record::Writer,
+    git_rw_filter: GitRwFilter,
     mount_root: Option<PathBuf>,
     next_ino: u64,
     next_fh: u64,
@@ -113,6 +115,7 @@ impl CowFs {
         Self {
             profile,
             record,
+            git_rw_filter: GitRwFilter::new(),
             mount_root: None,
             next_ino: ROOT_INO + 1,
             next_fh: 1,
@@ -180,11 +183,17 @@ impl CowFs {
         }
     }
 
-    fn access_errno(&self, path: &Path) -> Option<i32> {
+    fn access_errno_for_pid(&self, path: &Path, requester_pid: Option<u32>) -> Option<i32> {
         if is_blocked_proc_thread_self(path) {
             return Some(ENOENT);
         }
         if self.is_hard_blocked_runtime_path(path) {
+            return Some(EACCES);
+        }
+        if self.git_rw_filter.is_git_metadata_path(path)
+            && !requester_pid
+                .is_some_and(|pid| self.git_rw_filter.allow_git_metadata_for_pid(pid))
+        {
             return Some(EACCES);
         }
         match self.profile.visibility(path) {
@@ -195,11 +204,21 @@ impl CowFs {
         }
     }
 
-    fn mutation_errno(&self, path: &Path) -> Option<i32> {
+    fn access_errno(&self, path: &Path) -> Option<i32> {
+        self.access_errno_for_pid(path, None)
+    }
+
+    fn mutation_errno_for_pid(&self, path: &Path, requester_pid: Option<u32>) -> Option<i32> {
         if is_blocked_proc_thread_self(path) {
             return Some(ENOENT);
         }
         if self.is_hard_blocked_runtime_path(path) {
+            return Some(EACCES);
+        }
+        if self.git_rw_filter.is_git_metadata_path(path)
+            && !requester_pid
+                .is_some_and(|pid| self.git_rw_filter.allow_git_metadata_for_pid(pid))
+        {
             return Some(EACCES);
         }
         match self.profile.visibility(path) {
@@ -208,6 +227,10 @@ impl CowFs {
             Visibility::ImplicitAncestor if !self.path_is_directory(path) => Some(ENOENT),
             _ => None,
         }
+    }
+
+    fn mutation_errno(&self, path: &Path) -> Option<i32> {
+        self.mutation_errno_for_pid(path, None)
     }
 
     fn path_is_directory(&self, path: &Path) -> bool {
@@ -240,12 +263,32 @@ impl CowFs {
         path == root || path.starts_with(root)
     }
 
-    fn write_mode(&self, path: &Path) -> WriteMode {
+    fn write_mode_for_pid(&self, path: &Path, requester_pid: Option<u32>) -> WriteMode {
+        if self.git_rw_filter.is_git_metadata_path(path) {
+            return if requester_pid
+                .is_some_and(|pid| self.git_rw_filter.allow_git_metadata_for_pid(pid))
+            {
+                WriteMode::Passthrough
+            } else {
+                WriteMode::Forbidden
+            };
+        }
         match self.profile.first_match_action(path) {
+            Some(RuleAction::GitRw) => {
+                if self.git_rw_filter.path_is_git_repo_member(path) {
+                    WriteMode::Passthrough
+                } else {
+                    WriteMode::Forbidden
+                }
+            }
             Some(RuleAction::Cow) => WriteMode::Cow,
             Some(RuleAction::Passthrough) => WriteMode::Passthrough,
             _ => WriteMode::Forbidden,
         }
+    }
+
+    fn write_mode(&self, path: &Path) -> WriteMode {
+        self.write_mode_for_pid(path, None)
     }
 
     fn attr_for_path(&mut self, path: &Path, metadata: &Metadata) -> FileAttr {
@@ -1037,14 +1080,14 @@ enum NodeRef {
 }
 
 impl Filesystem for CowFs {
-    fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
             reply.error(ENOENT);
             return;
         };
 
         let path = parent_path.join(name);
-        if let Some(errno) = self.access_errno(&path) {
+        if let Some(errno) = self.access_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
@@ -1063,13 +1106,13 @@ impl Filesystem for CowFs {
         }
     }
 
-    fn getattr(&mut self, _req: &Request<'_>, ino: u64, fh: Option<u64>, reply: ReplyAttr) {
+    fn getattr(&mut self, req: &Request<'_>, ino: u64, fh: Option<u64>, reply: ReplyAttr) {
         let resolved_ino = fh.and_then(|fh| self.handle_ino(fh)).unwrap_or(ino);
         let Some(path) = self.path_for_ino(resolved_ino).map(ToOwned::to_owned) else {
             reply.error(ENOENT);
             return;
         };
-        if let Some(errno) = self.access_errno(&path) {
+        if let Some(errno) = self.access_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
@@ -1095,7 +1138,7 @@ impl Filesystem for CowFs {
 
     fn readdir(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         ino: u64,
         _fh: u64,
         offset: i64,
@@ -1105,7 +1148,7 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if let Some(errno) = self.access_errno(&path) {
+        if let Some(errno) = self.access_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
@@ -1165,22 +1208,22 @@ impl Filesystem for CowFs {
         reply.ok();
     }
 
-    fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
+    fn open(&mut self, req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
         let Some(path) = self.path_for_ino(ino).map(ToOwned::to_owned) else {
             reply.error(ENOENT);
             return;
         };
         // allow write open only for writable rules.
         if flags & libc::O_ACCMODE != libc::O_RDONLY {
-            if let Some(errno) = self.mutation_errno(&path) {
+            if let Some(errno) = self.mutation_errno_for_pid(&path, Some(req.pid())) {
                 reply.error(errno);
                 return;
             }
-            if self.write_mode(&path) == WriteMode::Forbidden {
+            if self.write_mode_for_pid(&path, Some(req.pid())) == WriteMode::Forbidden {
                 reply.error(EACCES);
                 return;
             }
-        } else if let Some(errno) = self.access_errno(&path) {
+        } else if let Some(errno) = self.access_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
@@ -1188,7 +1231,7 @@ impl Filesystem for CowFs {
             reply.error(code);
             return;
         }
-        if self.write_mode(&path) == WriteMode::Passthrough {
+        if self.write_mode_for_pid(&path, Some(req.pid())) == WriteMode::Passthrough {
             let file = match Self::open_passthrough_file(&path, flags, false) {
                 Ok(file) => file,
                 Err(code) => {
@@ -1206,7 +1249,7 @@ impl Filesystem for CowFs {
 
     fn read(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         ino: u64,
         fh: u64,
         offset: i64,
@@ -1220,7 +1263,7 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if let Some(errno) = self.mutation_errno(&path) {
+        if let Some(errno) = self.access_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
@@ -1301,7 +1344,7 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if let Some(errno) = self.mutation_errno(&path) {
+        if let Some(errno) = self.access_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
@@ -1334,7 +1377,7 @@ impl Filesystem for CowFs {
 
     fn create(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -1347,11 +1390,11 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if let Some(errno) = self.mutation_errno(&path) {
+        if let Some(errno) = self.mutation_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
-        match self.write_mode(&path) {
+        match self.write_mode_for_pid(&path, Some(req.pid())) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
             }
@@ -1414,7 +1457,7 @@ impl Filesystem for CowFs {
 
     fn write(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         ino: u64,
         fh: u64,
         offset: i64,
@@ -1429,7 +1472,7 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        match self.write_mode(&path) {
+        match self.write_mode_for_pid(&path, Some(req.pid())) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
             }
@@ -1520,17 +1563,17 @@ impl Filesystem for CowFs {
         reply.ok();
     }
 
-    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn unlink(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
             reply.error(ENOENT);
             return;
         };
         let path = parent_path.join(name);
-        if let Some(errno) = self.mutation_errno(&path) {
+        if let Some(errno) = self.mutation_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
-        match self.write_mode(&path) {
+        match self.write_mode_for_pid(&path, Some(req.pid())) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
                 return;
@@ -1555,7 +1598,7 @@ impl Filesystem for CowFs {
 
     fn mkdir(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -1567,11 +1610,11 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if let Some(errno) = self.mutation_errno(&path) {
+        if let Some(errno) = self.mutation_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
-        match self.write_mode(&path) {
+        match self.write_mode_for_pid(&path, Some(req.pid())) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
             }
@@ -1616,17 +1659,17 @@ impl Filesystem for CowFs {
         }
     }
 
-    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn rmdir(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
             reply.error(ENOENT);
             return;
         };
         let path = parent_path.join(name);
-        if let Some(errno) = self.mutation_errno(&path) {
+        if let Some(errno) = self.mutation_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
-        match self.write_mode(&path) {
+        match self.write_mode_for_pid(&path, Some(req.pid())) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
                 return;
@@ -1655,7 +1698,7 @@ impl Filesystem for CowFs {
 
     fn symlink(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         link: &Path,
@@ -1666,11 +1709,11 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if let Some(errno) = self.access_errno(&path) {
+        if let Some(errno) = self.mutation_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
-        match self.write_mode(&path) {
+        match self.write_mode_for_pid(&path, Some(req.pid())) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
             }
@@ -1713,7 +1756,7 @@ impl Filesystem for CowFs {
 
     fn rename(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         newparent: u64,
@@ -1731,15 +1774,18 @@ impl Filesystem for CowFs {
         };
         let from = parent_path.join(name);
         let to = newparent_path.join(newname);
-        if let Some(errno) = self.mutation_errno(&from) {
+        if let Some(errno) = self.mutation_errno_for_pid(&from, Some(req.pid())) {
             reply.error(errno);
             return;
         }
-        if let Some(errno) = self.mutation_errno(&to) {
+        if let Some(errno) = self.mutation_errno_for_pid(&to, Some(req.pid())) {
             reply.error(errno);
             return;
         }
-        match (self.write_mode(&from), self.write_mode(&to)) {
+        match (
+            self.write_mode_for_pid(&from, Some(req.pid())),
+            self.write_mode_for_pid(&to, Some(req.pid())),
+        ) {
             (WriteMode::Cow, WriteMode::Cow) => {
                 if let Err(code) = self.apply_rename_paths(&from, &to) {
                     reply.error(code);
@@ -1768,7 +1814,7 @@ impl Filesystem for CowFs {
 
     fn setattr(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         ino: u64,
         mode: Option<u32>,
         uid: Option<u32>,
@@ -1792,11 +1838,11 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if let Some(errno) = self.mutation_errno(&path) {
+        if let Some(errno) = self.mutation_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
-        match self.write_mode(&path) {
+        match self.write_mode_for_pid(&path, Some(req.pid())) {
             WriteMode::Forbidden => {
                 reply.error(EACCES);
             }
@@ -2512,6 +2558,36 @@ mod tests {
 
         assert_eq!(fs.access_errno(&as_dir), None);
         assert_eq!(fs.access_errno(&as_file), Some(ENOENT));
+    }
+
+    #[test]
+    fn git_rw_allows_writes_inside_detected_repo() {
+        let dir = tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+        fs::create_dir_all(repo.join("src")).expect("mkdir src");
+        fs::write(repo.join(".git/config"), b"[core]\n").expect("write config");
+
+        let profile_src = format!("{} git-rw\n", dir.path().display());
+        let (_holder, _record_path, fs) = test_fs(&profile_src);
+        assert_eq!(
+            fs.write_mode(&repo.join("src/lib.rs")),
+            WriteMode::Passthrough
+        );
+        assert_eq!(fs.write_mode(&dir.path().join("notes.txt")), WriteMode::Forbidden);
+    }
+
+    #[test]
+    fn git_metadata_is_denied_without_trusted_git_process() {
+        let dir = tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+        fs::write(repo.join(".git/config"), b"[core]\n").expect("write config");
+
+        let profile_src = format!("{} git-rw\n", dir.path().display());
+        let (_holder, _record_path, fs) = test_fs(&profile_src);
+        assert_eq!(fs.access_errno(&repo.join(".git/config")), Some(EACCES));
+        assert_eq!(fs.mutation_errno(&repo.join(".git/config")), Some(EACCES));
     }
 
     #[test]
