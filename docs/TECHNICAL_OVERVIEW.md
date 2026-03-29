@@ -51,7 +51,7 @@ There is no copy-on-write overlay and no deferred replay stage.
 - repo detection walks parent directories looking for a plain `.git/config` layout
 - ordinary worktree paths inside a detected repo are writable
 - non-repo paths remain read-only
-- `.git` metadata paths are blocked unless the requesting process is a trusted `git` invocation
+- `.git` metadata paths are read-only by default and writable only for trusted `git` invocations
 
 Trusted `git` checks currently inspect `/proc/<pid>/exe` and allow `.git` metadata access only when that executable resolves to the trusted system `git`.
 

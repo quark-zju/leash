@@ -362,7 +362,7 @@ def main() -> None:
                 what="host non-repo file content",
             )
 
-            print("[5/5] verifying .git protection and trusted git access")
+            print("[5/5] verifying .git read-only protection and trusted git access")
             completed = jail_run(
                 cowjail_bin,
                 base_env,
@@ -372,14 +372,26 @@ def main() -> None:
                 'cat "$1"',
                 "sh",
                 str(repo / ".git" / "HEAD"),
+            )
+            assert_eq(completed.stdout, "ref: refs/heads/master\n", what=".git HEAD content")
+
+            completed = jail_run(
+                cowjail_bin,
+                base_env,
+                profile_path,
+                "/bin/sh",
+                "-lc",
+                'printf blocked >"$1"',
+                "sh",
+                str(repo / ".git" / "HEAD"),
                 check=False,
             )
             if completed.returncode == 0:
-                fail("direct .git access unexpectedly succeeded")
+                fail("direct .git write unexpectedly succeeded")
             assert_contains(
                 completed.stderr,
                 "Permission denied",
-                what=".git access stderr",
+                what=".git write stderr",
             )
 
             completed = jail_run(
