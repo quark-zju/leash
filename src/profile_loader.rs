@@ -179,15 +179,6 @@ fn render_profile_source_for_show_with(
         let Some(included) = read_named_profile_source_with_home(name, home)? else {
             continue;
         };
-        out.push_str(&indent);
-        out.push_str("# begin include ");
-        out.push_str(name);
-        if included.source_name != name {
-            out.push_str(" (");
-            out.push_str(&included.source_name);
-            out.push(')');
-        }
-        out.push('\n');
         stack.push(name.to_string());
         let rendered = render_profile_source_for_show_with(
             &included.content,
@@ -204,10 +195,6 @@ fn render_profile_source_for_show_with(
             out.push_str(rendered_line);
             out.push('\n');
         }
-        out.push_str(&indent);
-        out.push_str("# end include ");
-        out.push_str(name);
-        out.push('\n');
     }
     Ok(out)
 }
@@ -464,7 +451,6 @@ mod tests {
         )
         .expect("show rendering should succeed");
         assert!(rendered.contains("%include builtin:basic\n"));
-        assert!(rendered.contains("  # begin include builtin:basic\n"));
         assert!(rendered.contains("  # /bin ro\n"));
         assert!(rendered.contains("~ git-rw\n"));
     }
