@@ -1047,7 +1047,18 @@ fn system_time_from_unix(sec: i64, nsec: i64) -> SystemTime {
 }
 
 fn io_errno(err: &std::io::Error) -> i32 {
-    err.raw_os_error().unwrap_or(EIO)
+    if let Some(code) = err.raw_os_error() {
+        return code;
+    }
+    match err.kind() {
+        std::io::ErrorKind::NotFound => ENOENT,
+        std::io::ErrorKind::PermissionDenied => EACCES,
+        std::io::ErrorKind::AlreadyExists => libc::EEXIST,
+        std::io::ErrorKind::InvalidInput => EINVAL,
+        std::io::ErrorKind::IsADirectory => EISDIR,
+        std::io::ErrorKind::NotADirectory => ENOTDIR,
+        _ => EIO,
+    }
 }
 
 fn normalize_create_mode(mode: u32, umask: u32) -> u16 {
