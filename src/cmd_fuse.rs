@@ -3,7 +3,7 @@ use fs_err as fs;
 use std::time::Duration;
 
 use crate::cli::LowLevelFuseCommand;
-use crate::cowfs;
+use crate::leashfs;
 use crate::privileges;
 use crate::profile_loader::load_profile;
 use crate::run_with_log;
@@ -29,10 +29,10 @@ pub(crate) fn fuse_command(cmd: LowLevelFuseCommand) -> Result<()> {
         || load_profile(std::path::Path::new(&cmd.profile)),
         || format!("load fuse profile '{}'", cmd.profile),
     )?;
-    let fs = cowfs::CowFs::new(loaded.profile).with_mount_root(cmd.mountpoint.clone());
+    let fs = leashfs::LeashFs::new(loaded.profile).with_mount_root(cmd.mountpoint.clone());
     crate::vlog!("_fuse: mounting fuse at {}", cmd.mountpoint.display());
     let needs_real_root_for_allow_other =
-        !cowfs::allow_other_enabled_in_fuse_conf() && unsafe { libc::getuid() } != 0;
+        !leashfs::allow_other_enabled_in_fuse_conf() && unsafe { libc::getuid() } != 0;
     if needs_real_root_for_allow_other {
         crate::vlog!(
             "{}",

@@ -8,7 +8,7 @@ mod cmd_profile;
 mod cmd_run;
 mod cmd_show;
 mod cmd_suid;
-mod cowfs;
+mod leashfs;
 mod git_rw_filter;
 mod jail;
 mod mount_plan;

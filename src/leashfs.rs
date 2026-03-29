@@ -22,7 +22,7 @@ use crate::profile::{Profile, RuleAction, Visibility};
 const TTL: Duration = Duration::from_secs(1);
 const ROOT_INO: u64 = 1;
 
-pub struct CowFs {
+pub struct LeashFs {
     profile: Profile,
     git_rw_filter: GitRwFilter,
     mount_root: Option<PathBuf>,
@@ -43,7 +43,7 @@ enum OpenHandle {
     Passthrough { ino: u64, file: fs::File },
 }
 
-impl CowFs {
+impl LeashFs {
     pub fn new(profile: Profile) -> Self {
         let mut ino_to_path = std::collections::HashMap::new();
         let mut path_to_ino = std::collections::HashMap::new();
@@ -486,7 +486,7 @@ pub(crate) fn allow_other_enabled_in_fuse_conf() -> bool {
         .any(|line| line == "user_allow_other")
 }
 
-impl Filesystem for CowFs {
+impl Filesystem for LeashFs {
     fn lookup(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
             debug!(
@@ -1261,8 +1261,8 @@ mod tests {
         Profile::parse(src, Path::new("/")).expect("profile parse")
     }
 
-    fn test_fs(profile_src: &str) -> CowFs {
-        CowFs::new(parse_profile(profile_src))
+    fn test_fs(profile_src: &str) -> LeashFs {
+        LeashFs::new(parse_profile(profile_src))
     }
 
     #[test]
