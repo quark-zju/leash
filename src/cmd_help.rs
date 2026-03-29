@@ -35,7 +35,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
     match topic {
         HelpTopic::Root => root_help_text(verbose),
         HelpTopic::Profile => concat!(
-            "cowjail help profile\n\n",
+            "leash help profile\n\n",
             "PROFILE SYNTAX:\n",
             "  <pattern> <action>\n\n",
             "ACTIONS:\n",
@@ -61,23 +61,23 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
         )
         .to_string(),
         HelpTopic::Completion => concat!(
-            "cowjail completion\n\n",
+            "leash completion\n\n",
             "USAGE:\n",
-            "  cowjail completion [bash|zsh|fish]\n\n",
+            "  leash completion [bash|zsh|fish]\n\n",
             "DESCRIPTION:\n",
             "  Print shell completion script to stdout.\n",
             "  If shell is omitted, detect from SHELL.\n\n",
             "EXAMPLE:\n",
-            "  source <(cowjail completion)\n",
+            "  source <(leash completion)\n",
         )
         .to_string(),
         HelpTopic::LowLevelList => {
-            concat!("cowjail _list\n\n", "USAGE:\n", "  cowjail _list").to_string()
+            concat!("leash _list\n\n", "USAGE:\n", "  leash _list").to_string()
         }
         HelpTopic::LowLevelShow => concat!(
-            "cowjail _show\n\n",
+            "leash _show\n\n",
             "USAGE:\n",
-            "  cowjail _show [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n\n",
+            "  leash _show [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n\n",
             "DESCRIPTION:\n",
             "  Print low-level jail profile state for one or more runtime names.\n\n",
             "OPTIONS:\n",
@@ -85,37 +85,37 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
         )
         .to_string(),
         HelpTopic::LowLevelRm => concat!(
-            "cowjail _rm\n\n",
+            "leash _rm\n\n",
             "USAGE:\n",
-            "  cowjail _rm [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n\n",
+            "  leash _rm [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n\n",
             "OPTIONS:\n",
             "  -v, --verbose         Print cleanup syscall progress"
         )
         .to_string(),
         HelpTopic::Run => concat!(
-            "cowjail run\n\n",
+            "leash run\n\n",
             "USAGE:\n",
-            "  cowjail run [--profile <profile>] [-v|--verbose] command ...\n\n",
+            "  leash run [--profile <profile>] [-v|--verbose] command ...\n\n",
             "OPTIONS:\n",
             "  --profile <profile>   Select/create the profile-derived jail identity\n",
             "  -v, --verbose         Print progress logs\n\n",
             "TROUBLESHOOTING:\n",
-            "  Profile behavior and rule matching: cowjail help profile",
+            "  Profile behavior and rule matching: leash help profile",
         )
         .to_string(),
         HelpTopic::LowLevelMount => concat!(
-            "cowjail _mount\n\n",
+            "leash _mount\n\n",
             "USAGE:\n",
-            "  cowjail _mount --profile <profile> [-v|--verbose] <path>\n\n",
+            "  leash _mount --profile <profile> [-v|--verbose] <path>\n\n",
             "OPTIONS:\n",
             "  --profile <profile>   Profile path (required)\n",
             "  -v, --verbose         Print progress logs",
         )
         .to_string(),
         HelpTopic::LowLevelFuse => concat!(
-            "cowjail _fuse\n\n",
+            "leash _fuse\n\n",
             "USAGE:\n",
-            "  cowjail _fuse --profile <profile> --mountpoint <path> \\\n",
+            "  leash _fuse --profile <profile> --mountpoint <path> \\\n",
             "       --pid-path <path> [-v|--verbose]\n\n",
             "OPTIONS:\n",
             "  --profile <profile>   Profile path (required)\n",
@@ -125,11 +125,11 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
         )
         .to_string(),
         HelpTopic::LowLevelSuid => concat!(
-            "cowjail _suid\n\n",
+            "leash _suid\n\n",
             "USAGE:\n",
-            "  cowjail _suid [-v|--verbose]\n\n",
+            "  leash _suid [-v|--verbose]\n\n",
             "DESCRIPTION:\n",
-            "  Ensure current cowjail binary is setuid-root.\n",
+            "  Ensure current leash binary is setuid-root.\n",
             "  If not running as root, this command reinvokes itself via sudo.\n\n",
             "OPTIONS:\n",
             "  -v, --verbose         Print progress logs",
@@ -140,37 +140,37 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
 
 fn root_help_text(verbose: bool) -> String {
     let mut out = String::from(concat!(
-        "cowjail\n\n",
+        "leash\n\n",
         "USAGE:\n",
-        "  cowjail <subcommand> [options]\n\n",
+        "  leash <subcommand> [options]\n\n",
         "COMMON:\n",
-        "  cowjail run [--profile <profile>] [-v|--verbose] command ...\n",
+        "  leash run [--profile <profile>] [-v|--verbose] command ...\n",
         "\n",
         "PROFILE:\n",
-        "  cowjail profile edit [name]\n",
-        "  cowjail profile show [name]\n",
-        "  cowjail profile list\n",
-        "  cowjail profile rm [name]\n",
-        "  cowjail help profile\n",
+        "  leash profile edit [name]\n",
+        "  leash profile show [name]\n",
+        "  leash profile list\n",
+        "  leash profile rm [name]\n",
+        "  leash help profile\n",
     ));
     if verbose {
         out.push_str(concat!(
             "\n",
             "LOW-LEVEL (DEBUG):\n",
-            "  cowjail _list\n",
-            "  cowjail _show [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n",
-            "  cowjail _rm [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n",
-            "  cowjail _mount --profile <profile> [-v|--verbose] <path>\n",
-            "  cowjail _suid [-v|--verbose]\n\n",
-            "  cowjail _fuse --profile <profile> \\\n",
+            "  leash _list\n",
+            "  leash _show [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n",
+            "  leash _rm [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n",
+            "  leash _mount --profile <profile> [-v|--verbose] <path>\n",
+            "  leash _suid [-v|--verbose]\n\n",
+            "  leash _fuse --profile <profile> \\\n",
             "       --mountpoint <path> --pid-path <path> [-v|--verbose]\n",
         ));
     }
     out.push('\n');
     out.push_str(if verbose {
-        "Run `cowjail <subcommand> --help` for details."
+        "Run `leash <subcommand> --help` for details."
     } else {
-        "Run `cowjail --help -v` to list low-level debugging commands.\nRun `cowjail <subcommand> --help` for details."
+        "Run `leash --help -v` to list low-level debugging commands.\nRun `leash <subcommand> --help` for details."
     });
     out
 }
@@ -178,13 +178,13 @@ fn root_help_text(verbose: bool) -> String {
 fn profile_help_text() -> String {
     let mut out = String::from(help_text(HelpTopic::Profile, false));
     out.push_str(
-        "\n\nEFFECTIVE DEFAULT PROFILE SOURCE (`~/.config/cowjail/profiles/default` if present; otherwise built-in):\n",
+        "\n\nEFFECTIVE DEFAULT PROFILE SOURCE (`~/.config/leash/profiles/default` if present; otherwise built-in):\n",
     );
     for line in profile_loader::default_profile_source_for_help().lines() {
         out.push_str("  ");
         out.push_str(line);
         out.push('\n');
     }
-    out.push_str("\nTo reset to built-in default, run: cowjail profile rm default\n");
+    out.push_str("\nTo reset to built-in default, run: leash profile rm default\n");
     out
 }

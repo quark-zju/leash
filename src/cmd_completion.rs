@@ -42,7 +42,7 @@ fn detect_shell_from_env() -> Result<Shell> {
     parse_shell(name)
 }
 
-const BASH_COMPLETION: &str = r#"_cowjail_complete() {
+const BASH_COMPLETION: &str = r#"_leash_complete() {
   local cur prev cmd1 cmd2
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
@@ -71,7 +71,7 @@ const BASH_COMPLETION: &str = r#"_cowjail_complete() {
     fi
     if [[ $COMP_CWORD -eq 3 && ( "$cmd2" == "show" || "$cmd2" == "edit" || "$cmd2" == "rm" ) ]]; then
       local profiles
-      profiles="$(cowjail profile list 2>/dev/null)"
+      profiles="$(leash profile list 2>/dev/null)"
       COMPREPLY=( $(compgen -W "$profiles" -- "$cur") )
       return
     fi
@@ -79,7 +79,7 @@ const BASH_COMPLETION: &str = r#"_cowjail_complete() {
 
   if [[ "$prev" == "--profile" ]]; then
     local profiles
-    profiles="$(cowjail profile list 2>/dev/null)"
+    profiles="$(leash profile list 2>/dev/null)"
     COMPREPLY=( $(compgen -W "default $profiles" -- "$cur") )
     return
   fi
@@ -87,7 +87,7 @@ const BASH_COMPLETION: &str = r#"_cowjail_complete() {
   if [[ "$cmd1" == "_show" || "$cmd1" == "_rm" ]]; then
     if [[ "${cur#-}" == "$cur" ]]; then
       local names
-      names="$(cowjail _list 2>/dev/null)"
+      names="$(leash _list 2>/dev/null)"
       COMPREPLY=( $(compgen -W "$names" -- "$cur") )
       return
     fi
@@ -103,11 +103,11 @@ const BASH_COMPLETION: &str = r#"_cowjail_complete() {
   esac
 }
 
-complete -F _cowjail_complete cowjail
+complete -F _leash_complete leash
 "#;
 
-const ZSH_COMPLETION: &str = r#"#compdef cowjail
-_cowjail() {
+const ZSH_COMPLETION: &str = r#"#compdef leash
+_leash() {
   local -a subcmds help_topics profile_subcmds shells
   subcmds=(completion profile help run _list _show _rm _mount _fuse _suid)
   help_topics=(profile completion run _list _show _rm _mount _fuse _suid)
@@ -139,7 +139,7 @@ _cowjail() {
       fi
       if (( CURRENT == 4 )) && [[ "$words[3]" == "show" || "$words[3]" == "edit" || "$words[3]" == "rm" ]]; then
         local -a profiles
-        profiles=(${(f)"$(cowjail profile list 2>/dev/null)"})
+        profiles=(${(f)"$(leash profile list 2>/dev/null)"})
         _describe 'profile name' profiles
         return
       fi
@@ -147,12 +147,12 @@ _cowjail() {
       ;;
   esac
 }
-compdef _cowjail cowjail
+compdef _leash leash
 "#;
 
-const FISH_COMPLETION: &str = r#"complete -c cowjail -f -n '__fish_use_subcommand' -a 'completion profile help run _list _show _rm _mount _fuse _suid'
-complete -c cowjail -f -n '__fish_seen_subcommand_from completion; and not __fish_seen_subcommand_from bash zsh fish' -a 'bash zsh fish'
-complete -c cowjail -f -n '__fish_seen_subcommand_from help; and not __fish_seen_subcommand_from profile completion run _list _show _rm _mount _fuse _suid' -a 'profile completion run _list _show _rm _mount _fuse _suid'
-complete -c cowjail -f -n '__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from list show edit rm' -a 'list show edit rm'
-complete -c cowjail -f -n '__fish_seen_subcommand_from profile show profile edit profile rm' -a '(cowjail profile list 2>/dev/null)'
+const FISH_COMPLETION: &str = r#"complete -c leash -f -n '__fish_use_subcommand' -a 'completion profile help run _list _show _rm _mount _fuse _suid'
+complete -c leash -f -n '__fish_seen_subcommand_from completion; and not __fish_seen_subcommand_from bash zsh fish' -a 'bash zsh fish'
+complete -c leash -f -n '__fish_seen_subcommand_from help; and not __fish_seen_subcommand_from profile completion run _list _show _rm _mount _fuse _suid' -a 'profile completion run _list _show _rm _mount _fuse _suid'
+complete -c leash -f -n '__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from list show edit rm' -a 'list show edit rm'
+complete -c leash -f -n '__fish_seen_subcommand_from profile show profile edit profile rm' -a '(leash profile list 2>/dev/null)'
 "#;

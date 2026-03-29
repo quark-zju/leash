@@ -85,10 +85,10 @@ pub(crate) fn runtime_root() -> PathBuf {
     if let Some(raw) = std::env::var_os("XDG_RUNTIME_DIR")
         && !raw.is_empty()
     {
-        return PathBuf::from(raw).join("cowjail");
+        return PathBuf::from(raw).join("leash");
     }
     let uid = unsafe { libc::getuid() };
-    PathBuf::from(format!("/run/user/{uid}/cowjail"))
+    PathBuf::from(format!("/run/user/{uid}/leash"))
 }
 
 pub(crate) fn jail_paths_in(layout: &JailLayout, name: &str) -> JailPaths {
@@ -276,7 +276,7 @@ pub(crate) fn remove_jail(paths: &JailPaths) -> Result<()> {
 
 pub(crate) fn home_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
-        .ok_or_else(|| anyhow::anyhow!("HOME is not set; cannot resolve cowjail home paths"))?;
+        .ok_or_else(|| anyhow::anyhow!("HOME is not set; cannot resolve leash home paths"))?;
     Ok(PathBuf::from(home))
 }
 
@@ -293,7 +293,7 @@ pub(crate) fn layout_from_home(home: &Path) -> JailLayout {
 }
 
 pub(crate) fn config_root_from_home(home: &Path) -> PathBuf {
-    home.join(".config/cowjail")
+    home.join(".config/leash")
 }
 
 pub(crate) fn state_root_from_home(_home: &Path) -> PathBuf {

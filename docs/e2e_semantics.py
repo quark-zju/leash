@@ -17,12 +17,12 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run a high-level semantic smoke test for cowjail."
+        description="Run a high-level semantic smoke test for leash."
     )
     parser.add_argument(
         "--bin",
         type=Path,
-        help="path to the cowjail binary; defaults to cargo metadata target/debug/cowjail",
+        help="path to the leash binary; defaults to cargo metadata target/debug/leash",
     )
     parser.add_argument(
         "--keep-temp",
@@ -54,31 +54,31 @@ def resolve_default_binary() -> Path:
     )
     data = json.loads(completed.stdout)
     target_dir = Path(data["target_directory"])
-    return (target_dir / "debug" / "cowjail").resolve()
+    return (target_dir / "debug" / "leash").resolve()
 
 
-def binary_is_usable(cowjail_bin: Path) -> bool:
-    if not cowjail_bin.is_file():
+def binary_is_usable(leash_bin: Path) -> bool:
+    if not leash_bin.is_file():
         return False
 
     if os.geteuid() == 0:
         return True
 
-    meta = cowjail_bin.stat()
+    meta = leash_bin.stat()
     return bool(meta.st_uid == 0 and meta.st_mode & stat.S_ISUID)
 
 
-def ensure_usable_binary(cowjail_bin: Path, *, bootstrap_suid: bool) -> None:
-    if binary_is_usable(cowjail_bin):
+def ensure_usable_binary(leash_bin: Path, *, bootstrap_suid: bool) -> None:
+    if binary_is_usable(leash_bin):
         return
 
     if bootstrap_suid:
         run(["cargo", "run", "--", "_suid"], env=os.environ.copy())
-        if binary_is_usable(cowjail_bin):
+        if binary_is_usable(leash_bin):
             return
 
     fail(
-        "cowjail run requires root or a setuid-root binary; run the binary once with _suid first"
+        "leash run requires root or a setuid-root binary; run the binary once with _suid first"
     )
 
 
@@ -119,14 +119,14 @@ def assert_eq(actual: str, expected: str, *, what: str) -> None:
 
 
 def jail(
-    cowjail_bin: Path,
+    leash_bin: Path,
     env: dict[str, str],
     *args: str,
     check: bool = True,
     capture_stdout: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     return run(
-        [str(cowjail_bin), *args],
+        [str(leash_bin), *args],
         env=env,
         check=check,
         capture_stdout=capture_stdout,
@@ -134,7 +134,7 @@ def jail(
 
 
 def jail_run(
-    cowjail_bin: Path,
+    leash_bin: Path,
     env: dict[str, str],
     profile_path: Path,
     *cmd: str,
@@ -142,7 +142,7 @@ def jail_run(
     capture_stdout: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     return jail(
-        cowjail_bin,
+        leash_bin,
         env,
         "run",
         "--profile",
@@ -158,16 +158,14 @@ def main() -> None:
     args = parse_args()
     if args.bin is None and not args.no_build:
         run(["cargo", "build"], env=os.environ.copy())
-    cowjail_bin = (
-        args.bin.resolve() if args.bin is not None else resolve_default_binary()
-    )
-    ensure_usable_binary(cowjail_bin, bootstrap_suid=not args.no_bootstrap_suid)
+    leash_bin = args.bin.resolve() if args.bin is not None else resolve_default_binary()
+    ensure_usable_binary(leash_bin, bootstrap_suid=not args.no_bootstrap_suid)
 
     system_git = shutil.which("git")
     if system_git is None:
         fail("system git not found in PATH")
 
-    tmpdir_path = Path(tempfile.mkdtemp(prefix="cowjail-e2e-"))
+    tmpdir_path = Path(tempfile.mkdtemp(prefix="leash-e2e-"))
     try:
         tmpdir = tmpdir_path
         if args.keep_temp:
@@ -185,7 +183,7 @@ def main() -> None:
         nonrepo = workspace / "nonrepo"
 
         for path in [
-            home / ".config" / "cowjail" / "profiles",
+            home / ".config" / "leash" / "profiles",
             runtime,
             ro_dir,
             rw_dir,
@@ -218,10 +216,10 @@ def main() -> None:
                 "XDG_RUNTIME_DIR": str(runtime),
                 "LC_ALL": "C",
                 "GIT_CONFIG_GLOBAL": "/dev/null",
-                "GIT_AUTHOR_NAME": "cowjail e2e",
-                "GIT_AUTHOR_EMAIL": "cowjail@example.com",
-                "GIT_COMMITTER_NAME": "cowjail e2e",
-                "GIT_COMMITTER_EMAIL": "cowjail@example.com",
+                "GIT_AUTHOR_NAME": "leash e2e",
+                "GIT_AUTHOR_EMAIL": "leash@example.com",
+                "GIT_COMMITTER_NAME": "leash e2e",
+                "GIT_COMMITTER_EMAIL": "leash@example.com",
             }
         )
 
@@ -253,7 +251,7 @@ def main() -> None:
         try:
             print("[1/5] verifying ro and rw")
             completed = jail_run(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 profile_path,
                 "/bin/sh",
@@ -266,7 +264,7 @@ def main() -> None:
                 fail("ro read unexpectedly failed")
 
             completed = jail_run(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 profile_path,
                 "/bin/sh",
@@ -281,7 +279,7 @@ def main() -> None:
             assert_eq(ro_file.read_text(), "ro-ok\n", what="host ro file content")
 
             jail_run(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 profile_path,
                 "/bin/sh",
@@ -294,7 +292,7 @@ def main() -> None:
 
             print("[2/5] verifying hide")
             completed = jail_run(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 profile_path,
                 "/bin/sh",
@@ -308,7 +306,7 @@ def main() -> None:
 
             print("[3/5] verifying deny")
             completed = jail_run(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 profile_path,
                 "/bin/sh",
@@ -328,7 +326,7 @@ def main() -> None:
 
             print("[4/5] verifying git-rw worktree and non-repo behavior")
             jail_run(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 profile_path,
                 "/bin/sh",
@@ -342,7 +340,7 @@ def main() -> None:
             )
 
             completed = jail_run(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 profile_path,
                 "/bin/sh",
@@ -363,7 +361,7 @@ def main() -> None:
             print("[5/5] verifying .git read-only protection and trusted git access")
             expected_head = (repo / ".git" / "HEAD").read_text()
             completed = jail_run(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 profile_path,
                 "/bin/sh",
@@ -376,7 +374,7 @@ def main() -> None:
             assert_eq(completed.stdout, expected_head, what=".git HEAD content")
 
             completed = jail_run(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 profile_path,
                 "/bin/sh",
@@ -395,7 +393,7 @@ def main() -> None:
             )
 
             completed = jail_run(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 profile_path,
                 "/bin/sh",
@@ -408,7 +406,7 @@ def main() -> None:
                 fail("trusted git status could not observe modified tracked file")
 
             completed = jail_run(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 profile_path,
                 "/bin/sh",
@@ -421,7 +419,7 @@ def main() -> None:
                 fail("trusted git log did not return the expected commit subject")
         finally:
             jail(
-                cowjail_bin,
+                leash_bin,
                 base_env,
                 "_rm",
                 "*",

@@ -6,7 +6,7 @@ pub(crate) const DEFAULT_PROFILE_SOURCE: &str = "\
 ";
 
 const DENY_SENSITIVE_PROFILE_SOURCE: &str = "\
-~/.config/cowjail deny
+~/.config/leash deny
 ~/.cache/mozilla hide
 ~/.config/google-chrome* hide
 ~/.config/chromium* hide

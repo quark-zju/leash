@@ -15,7 +15,7 @@ pub(crate) fn list_command(_list: ListCommand) -> Result<()> {
 }
 
 pub(crate) fn rm_command(rm: RmCommand) -> Result<()> {
-    privileges::require_root_euid("cowjail _rm")?;
+    privileges::require_root_euid("leash _rm")?;
     for selector in rm.selectors {
         if !contains_glob_syntax(&selector) {
             remove_one_jail(&selector)?;

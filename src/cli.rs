@@ -745,8 +745,8 @@ mod tests {
             }
         );
         let text = crate::cmd_help::help_text(HelpTopic::Root, true);
-        assert!(text.contains("cowjail _mount"));
-        assert!(text.contains("cowjail _suid"));
+        assert!(text.contains("leash _mount"));
+        assert!(text.contains("leash _suid"));
     }
 
     #[test]

@@ -4,15 +4,15 @@ This document explains where jail data lives after the runtime-only simplificati
 
 ## Directory Roots
 
-- Config root: `~/.config/cowjail`
-- Runtime root: `${XDG_RUNTIME_DIR}/cowjail`
-- Fallback runtime root: `/run/user/<uid>/cowjail`
+- Config root: `~/.config/leash`
+- Runtime root: `${XDG_RUNTIME_DIR}/leash`
+- Fallback runtime root: `/run/user/<uid>/leash`
 
-`cowjail` no longer keeps persistent jail state under `~/.local/state`. All per-jail state lives under the runtime root and is expected to disappear across reboot or runtime directory cleanup.
+`leash` no longer keeps persistent jail state under `~/.local/state`. All per-jail state lives under the runtime root and is expected to disappear across reboot or runtime directory cleanup.
 
 ## Per-Jail Layout
 
-`.../cowjail/<name>/`:
+`.../leash/<name>/`:
 
 - `profile`: normalized resolved profile source
 - `profile.sources`: optional CBOR source map for `%include` expansion

@@ -14,8 +14,8 @@ use crate::privileges;
 use crate::run_with_log;
 
 pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
-    privileges::require_root_euid("cowjail run")?;
-    set_process_name(c"cowjail-run")?;
+    privileges::require_root_euid("leash run")?;
+    set_process_name(c"leash-run")?;
 
     let cwd = run_with_log(jail::current_pwd, || {
         "resolve current working directory".to_string()
@@ -169,7 +169,7 @@ fn enter_pid_namespace_worker_or_reap() -> Result<()> {
         if let Err(_err) = privileges::drop_to_real_user() {
             unsafe { libc::_exit(1) };
         }
-        let _ = set_process_name(c"cowjail-init");
+        let _ = set_process_name(c"leash-init");
         run_pidns_init_reaper(worker_pid);
     }
     Ok(())

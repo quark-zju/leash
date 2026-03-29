@@ -30,7 +30,7 @@ In practice, `opencode` also benefits from allowing its own state directories su
 
 ### Root switch must preserve unprivileged user namespaces
 
-The `bwrap` sandbox used by `codex` relies on user namespaces. A plain `chroot` setup tends to break unprivileged user-namespace use, so `cowjail` needs the `pivot_root`-based approach here.
+The `bwrap` sandbox used by `codex` relies on user namespaces. A plain `chroot` setup tends to break unprivileged user-namespace use, so `leash` needs the `pivot_root`-based approach here.
 
 ### `/proc/self/exe` must work
 

@@ -1,6 +1,6 @@
-# cowjail
+# leash
 
-`cowjail` is a Linux filesystem safety layer for coding agents.
+`leash` is a Linux filesystem safety layer for coding agents - keep your AI on a leash.
 
 It combines:
 
@@ -13,7 +13,8 @@ Out of scope:
 - network/container isolation
 - non-Linux support
 
-`cowjail` 是一个 Linux 文件系统防护层，主要面向 AI 编码工具。
+`leash` 是一个 Linux 文件系统防护层，主要面向 AI 编码工具。
+
 
 包含：
 
@@ -35,29 +36,29 @@ I personally use this project with `codex` and `opencode`.
 Install from GitHub:
 
 ```bash
-cargo install --git https://github.com/quark-zju/cowjail cowjail
+cargo install --git https://github.com/quark-zju/leash leash
 ```
 
 Then bootstrap setuid helper:
 
 ```bash
-cowjail _suid
+leash _suid
 ```
 
 Shell completion: put this line in your shell rc file:
 
 ```bash
-source <(cowjail completion)
+source <(leash completion)
 ```
 
 ## Usage
 
 ### Quick start
 
-Use `cowjail run` to run a command. It uses the built-in `default` profile.
+Use `leash run` to run a command. It uses the built-in `default` profile.
 
 ```bash
-cowjail run codex # or opencode, bash, ...
+leash run codex # or opencode, bash, ...
 ```
 
 The built-in `default` profile is tuned for coding-agent workflows:
@@ -74,11 +75,11 @@ So the default behavior is: keep most of the home directory read-only, allow dir
 If a tool needs access to another path, edit your `default` profile override directly. For example, to allow writes under `~/Downloads`:
 
 ```bash
-cowjail profile edit default
+leash profile edit default
 ~/Downloads rw
 ```
 
-The shipped builtin fragments are also inspectable through `cowjail profile show builtin:deny-sensitive`, `builtin:basic`, and `builtin:agents`, but they are read-only.
+The shipped builtin fragments are also inspectable through `leash profile show builtin:deny-sensitive`, `builtin:basic`, and `builtin:agents`, but they are read-only.
 
 See [`docs/PROFILE.md`](docs/PROFILE.md) for profile syntax and more examples.
 

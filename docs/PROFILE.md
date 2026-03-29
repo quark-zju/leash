@@ -1,24 +1,24 @@
 # Profile Guide
 
-This document is the source of truth for profile syntax and default profile behavior used by `cowjail`.
+This document is the source of truth for profile syntax and default profile behavior used by `leash`.
 
 ## Managing Profiles
 
-- `cowjail profile list`: list profile files under `~/.config/cowjail/profiles`
-- `cowjail profile show [name]`: print profile source
+- `leash profile list`: list profile files under `~/.config/leash/profiles`
+- `leash profile show [name]`: print profile source
   - `name` is optional; default is `default`
   - `name` may also be a readonly builtin such as `builtin:basic`
-- `cowjail profile edit [name]`: open profile in `$EDITOR`
+- `leash profile edit [name]`: open profile in `$EDITOR`
   - `name` is optional; default is `default`
-  - short names (no `/`) are resolved under `~/.config/cowjail/profiles`
+  - short names (no `/`) are resolved under `~/.config/leash/profiles`
   - names follow the same validation rules as jail names
   - builtin profiles are readonly and cannot be edited
-- `cowjail profile rm [name]`: remove profile file
+- `leash profile rm [name]`: remove profile file
   - `name` is optional; default is `default`
-  - short names (no `/`) are resolved under `~/.config/cowjail/profiles`
+  - short names (no `/`) are resolved under `~/.config/leash/profiles`
   - names follow the same validation rules as jail names
   - builtin profiles are readonly and cannot be removed
-  - `cowjail profile rm default` removes the user override file and falls back to the built-in default profile
+- `leash profile rm default` removes the user override file and falls back to the built-in default profile
 
 The built-in `default` profile source includes:
 
@@ -32,10 +32,10 @@ The built-in `default` profile source includes:
 That means the normal way to extend the shipped default policy is to edit `default` itself when you want a user override:
 
 ```bash
-cowjail profile edit default
+leash profile edit default
 ```
 
-You can inspect the shipped fragments with `cowjail profile show builtin:deny-sensitive`, `builtin:basic`, and `builtin:agents`.
+You can inspect the shipped fragments with `leash profile show builtin:deny-sensitive`, `builtin:basic`, and `builtin:agents`.
 
 ## Syntax
 
@@ -77,7 +77,7 @@ Example:
 
 ## Automatic Mount Handling
 
-`cowjail` keeps profile syntax simple and applies special mount behavior internally during `run`:
+`leash` keeps profile syntax simple and applies special mount behavior internally during `run`:
 
 - `/proc`:
   - only exact `/proc` is supported
@@ -89,23 +89,23 @@ Example:
   - implemented as `sysfs` mount in the child mount namespace
 - `/dev`:
   - glob is not allowed; use explicit paths
-  - for `ro` or `rw` rules that point to a host character device or directory, `cowjail` automatically plans bind mounts in the child mount namespace
+  - for `ro` or `rw` rules that point to a host character device or directory, `leash` automatically plans bind mounts in the child mount namespace
   - once a path is auto-promoted to a bind mount root, descendant profile rules under that root are rejected as conflicts
 - `/tmp`:
   - exact `/tmp ro` or `/tmp rw` may be planned as a bind mount in the child mount namespace when no other rule mentions `/tmp` and no other glob rule matches it
 
 ## Default Profile Resolution
 
-When `--profile default` is used, or `run` and `add` omit `--profile`, `cowjail` resolves profile source in this order:
+When `--profile default` is used, or `run` and `add` omit `--profile`, `leash` resolves profile source in this order:
 
-1. `~/.config/cowjail/profiles/default` when the file exists
+1. `~/.config/leash/profiles/default` when the file exists
 2. built-in fallback source when the file is missing
 
 The built-in fallback source is assembled from readonly builtin fragments and ends with `~ git-rw`.
-If you want a user override, create or edit `~/.config/cowjail/profiles/default`.
+If you want a user override, create or edit `~/.config/leash/profiles/default`.
 
 To inspect the currently effective on-disk default profile, use:
 
 ```bash
-cowjail profile show
+leash profile show
 ```

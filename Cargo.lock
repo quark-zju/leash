@@ -52,24 +52,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
-name = "cowjail"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "env_logger",
- "fs-err",
- "fuser",
- "globset",
- "libc",
- "log",
- "pico-args",
- "serde",
- "serde_cbor",
- "tempfile",
- "twox-hash",
-]
-
-[[package]]
 name = "env_filter"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -158,6 +140,24 @@ name = "half"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b43ede17f21864e81be2fa654110bf1e793774238d86ef8555c37e6519c0403"
+
+[[package]]
+name = "leash"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "env_logger",
+ "fs-err",
+ "fuser",
+ "globset",
+ "libc",
+ "log",
+ "pico-args",
+ "serde",
+ "serde_cbor",
+ "tempfile",
+ "twox-hash",
+]
 
 [[package]]
 name = "libc"

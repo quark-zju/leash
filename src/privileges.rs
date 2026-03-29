@@ -4,7 +4,7 @@ pub(crate) fn require_root_euid(cmd: &str) -> Result<()> {
     let euid = unsafe { libc::geteuid() };
     if euid != 0 {
         bail!(
-            "{cmd} requires root euid (current euid={euid}).\nRun `cowjail _suid` once to set setuid-root on the current binary.",
+            "{cmd} requires root euid (current euid={euid}).\nRun `leash _suid` once to set setuid-root on the current binary.",
             cmd = cmd,
             euid = euid
         );

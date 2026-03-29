@@ -4,7 +4,7 @@ This document keeps implementation-level details that are intentionally minimize
 
 ## Scope and Boundary
 
-`cowjail` focuses on filesystem-risk reduction:
+`leash` focuses on filesystem-risk reduction:
 
 - path visibility filtering via profile rules
 - direct host writes for allowed paths
@@ -29,7 +29,7 @@ Main components:
 
 Runtime state:
 
-- runtime-only jail state under `${XDG_RUNTIME_DIR}/cowjail/<name>/...` or `/run/user/<uid>/cowjail/<name>/...`
+- runtime-only jail state under `${XDG_RUNTIME_DIR}/leash/<name>/...` or `/run/user/<uid>/leash/<name>/...`
 - normalized `profile` file and optional `profile.sources` map live beside other runtime artifacts
 
 ## Filesystem Model
@@ -82,7 +82,7 @@ Trusted `git` checks currently inspect `/proc/<pid>/exe` and allow `.git` metada
 
 ## Lock Files
 
-`cowjail` uses two lock domains:
+`leash` uses two lock domains:
 
 1. Runtime root lock on `${runtime_root}/.lock`
 2. Per-jail runtime lock on `.../<name>/lock`

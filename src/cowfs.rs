@@ -423,7 +423,7 @@ fn fuse_mount_options(allow_other: bool) -> Vec<fuser::MountOption> {
     if allow_other {
         options.push(fuser::MountOption::AllowOther);
     }
-    options.push(fuser::MountOption::FSName("cowjail".to_string()));
+    options.push(fuser::MountOption::FSName("leash".to_string()));
     options
 }
 
@@ -1231,9 +1231,9 @@ mod tests {
     #[test]
     fn runtime_root_is_hard_denied_even_if_profile_allows_it() {
         let fs = test_fs("/run/** rw\n");
-        let guarded = fs.with_mount_root(PathBuf::from("/run/user/1000/cowjail/demo/mount"));
-        let runtime_root = Path::new("/run/user/1000/cowjail");
-        let runtime_child = Path::new("/run/user/1000/cowjail/demo/fuse.pid");
+        let guarded = fs.with_mount_root(PathBuf::from("/run/user/1000/leash/demo/mount"));
+        let runtime_root = Path::new("/run/user/1000/leash");
+        let runtime_child = Path::new("/run/user/1000/leash/demo/fuse.pid");
 
         assert_eq!(guarded.access_errno(runtime_root), Some(EACCES));
         assert_eq!(guarded.access_errno(runtime_child), Some(EACCES));
@@ -1378,8 +1378,8 @@ mod tests {
     fn proc_exe_readlink_target_strips_mount_prefix() {
         let rewritten = rewrite_proc_exe_readlink_target(
             Path::new("/proc/self/exe"),
-            Path::new("/run/user/1000/cowjail/demo/mount/usr/bin/readlink"),
-            Some(Path::new("/run/user/1000/cowjail/demo/mount")),
+            Path::new("/run/user/1000/leash/demo/mount/usr/bin/readlink"),
+            Some(Path::new("/run/user/1000/leash/demo/mount")),
         );
         assert_eq!(rewritten, Path::new("/usr/bin/readlink"));
     }
@@ -1390,7 +1390,7 @@ mod tests {
         let rewritten = rewrite_proc_exe_readlink_target(
             Path::new("/proc/123/exe"),
             target,
-            Some(Path::new("/run/user/1000/cowjail/demo/mount")),
+            Some(Path::new("/run/user/1000/leash/demo/mount")),
         );
         assert_eq!(rewritten, target);
     }

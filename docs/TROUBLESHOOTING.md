@@ -4,7 +4,7 @@
 
 ### `fusermount: option allow_other only allowed if 'user_allow_other' is set in /etc/fuse.conf`
 
-`cowjail` may need `allow_other` for high-level `run` mounts.
+`leash` may need `allow_other` for high-level `run` mounts.
 
 Fix:
 
@@ -22,51 +22,51 @@ This is often a follow-on symptom when mount/root-switch access failed earlier.
 Run with verbose logging to inspect the step that failed:
 
 ```bash
-cowjail run -v --profile <profile> -- <command>
+leash run -v --profile <profile> -- <command>
 ```
 
 If `_fuse` starts but fails later, inspect the runtime log:
 
-- `${XDG_RUNTIME_DIR}/cowjail/<derived-name>/fuse.log`
-- fallback: `/run/user/<uid>/cowjail/<derived-name>/fuse.log`
-- use `cowjail _list` to inspect active runtime names when needed
+- `${XDG_RUNTIME_DIR}/leash/<derived-name>/fuse.log`
+- fallback: `/run/user/<uid>/leash/<derived-name>/fuse.log`
+- use `leash _list` to inspect active runtime names when needed
 
 You can also enable vendored `fuse` crate logs for `_fuse` using:
 
 ```bash
-COWJAIL_FUSE_LOG=debug cowjail run -v --profile <profile> -- <command>
+LEASH_FUSE_LOG=debug leash run -v --profile <profile> -- <command>
 ```
 
 Accepted levels follow `env_logger` filter syntax (for example: `error`, `warn`, `info`, `debug`, `trace`).
 
 ## `strace` debugging
 
-When debugging a jailed command with `strace`, place `strace` after `cowjail run --`.
+When debugging a jailed command with `strace`, place `strace` after `leash run --`.
 
 Correct:
 
 ```bash
-cowjail run -- strace -ff -s 256 -yy -o /tmp/cowjail.strace <command>
+leash run -- strace -ff -s 256 -yy -o /tmp/leash.strace <command>
 ```
 
 Avoid this form:
 
 ```bash
-strace cowjail run -- <command>
+strace leash run -- <command>
 ```
 
 Why:
 
-- `cowjail run` relies on the binary's setuid-root behavior for mount and root-switch setup.
-- Tracing the `cowjail` binary itself changes exec/setuid behavior, so you are no longer observing the normal privileged path.
+- `leash run` relies on the binary's setuid-root behavior for mount and root-switch setup.
+- Tracing the `leash` binary itself changes exec/setuid behavior, so you are no longer observing the normal privileged path.
 - In practice this can make failures look unrelated to the real problem because the jail setup is no longer running under the same privilege model.
 
 For runtime crashes involving native modules or `mmap`-heavy tools, useful syscall filters include:
 
 ```bash
-cowjail run -- strace -ff -s 256 -yy \
+leash run -- strace -ff -s 256 -yy \
   -e trace=openat,statx,readlink,mmap,mprotect,munmap,close \
-  -o /tmp/cowjail.strace \
+  -o /tmp/leash.strace \
   <command>
 ```
 
@@ -79,7 +79,7 @@ The binary may be on a `nosuid` mount.
 Check owner/mode:
 
 ```bash
-ls -l ./target/debug/cowjail
+ls -l ./target/debug/leash
 ```
 
 Expected: owner `root`, and mode containing `s` on user execute bit (for example `-rwsr-xr-x`).
@@ -97,7 +97,7 @@ python3 docs/e2e_semantics.py
 By default the script:
 
 1. runs `cargo build`
-2. uses `cargo metadata` to locate `target/debug/cowjail`
+2. uses `cargo metadata` to locate `target/debug/leash`
 3. runs `cargo run -- _suid` automatically when the binary is not yet usable for `run`
 
 Use `--bin <path>` to point at another binary, `--no-build` to skip the rebuild, or `--no-bootstrap-suid` if you want to manage `_suid` manually.
@@ -109,9 +109,9 @@ Use `--bin <path>` to point at another binary, `--no-build` to skip the rebuild,
 A FUSE mount may still be active. Retry with verbose logs to see unmount/cleanup steps:
 
 ```bash
-cowjail _rm -v <name-or-glob>
+leash _rm -v <name-or-glob>
 ```
 
 ### `Transport endpoint is not connected (os error 107)`
 
-This indicates a stale/disconnected FUSE mountpoint. `cowjail _rm` includes recovery logic; rerun with `-v` for details.
+This indicates a stale/disconnected FUSE mountpoint. `leash _rm` includes recovery logic; rerun with `-v` for details.

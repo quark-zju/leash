@@ -1,6 +1,6 @@
 # Privilege Model
 
-This document describes how `cowjail` handles privilege transitions and why.
+This document describes how `leash` handles privilege transitions and why.
 
 ## Goals
 
@@ -10,8 +10,8 @@ This document describes how `cowjail` handles privilege transitions and why.
 
 ## Entry Points Requiring Root EUID
 
-- `cowjail run`
-- `cowjail _rm`
+- `leash run`
+- `leash _rm`
 - low-level `_fuse`
 
 These commands fail fast when `euid != 0`.
@@ -21,10 +21,10 @@ These commands fail fast when `euid != 0`.
 When running as a setuid-root binary (`ruid != 0`, `euid == 0`), these commands
 drop to the real user before doing any work:
 
-- `cowjail help`
-- `cowjail profile ...`
-- `cowjail _list`
-- `cowjail _show`
+- `leash help`
+- `leash profile ...`
+- `leash _list`
+- `leash _show`
 - low-level `_mount`
 
 This keeps read/metadata/update workflows from accidentally executing with root
@@ -32,7 +32,7 @@ effective privileges.
 
 ## `_suid` Bootstrap
 
-`cowjail _suid` ensures the current binary is setuid-root:
+`leash _suid` ensures the current binary is setuid-root:
 
 1. If binary is already `root` + `u+s`, it exits.
 2. If caller is not root euid, it reinvokes itself with `sudo`.
@@ -43,7 +43,7 @@ This avoids requiring users to manually run separate `chown`/`chmod` commands.
 
 ## Runtime Privilege Flow (`run`)
 
-For `cowjail run`, the child setup path is:
+For `leash run`, the child setup path is:
 
 1. unshare IPC namespace (`unshare(CLONE_NEWIPC)`)
 2. adjust fs credentials (`setfsuid/setfsgid`) for FUSE access checks
@@ -77,7 +77,7 @@ This same drop path is used for `run`: the outer waiter process, pidns reaper, a
 
 `allow_other` is primarily a root-switch compatibility requirement: the jail root transition is performed while still root, and without `allow_other` a FUSE mount is generally only accessible to the mounting user, which can block root-side path traversal into the jail mount during `run` setup.
 
-Exposure is constrained by runtime path placement and ownership checks: mounts live under `${XDG_RUNTIME_DIR}/cowjail` (or `/run/user/<uid>/cowjail` fallback), so other users are blocked by the per-user runtime directory boundary rather than by omitting `allow_other`.
+Exposure is constrained by runtime path placement and ownership checks: mounts live under `${XDG_RUNTIME_DIR}/leash` (or `/run/user/<uid>/leash` fallback), so other users are blocked by the per-user runtime directory boundary rather than by omitting `allow_other`.
 
 It:
 
@@ -98,7 +98,7 @@ When `--verbose` is enabled, privilege transitions are logged via `vlog!`, inclu
 
 ## Non-Goals
 
-`cowjail` is not a full process sandbox. It does not currently provide:
+`leash` is not a full process sandbox. It does not currently provide:
 
 - seccomp policy isolation
 - capability-minimization beyond current uid/gid handling

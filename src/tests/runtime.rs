@@ -22,12 +22,12 @@ fn auto_jail_name_is_stable_hex() {
 }
 
 #[test]
-fn cowjail_path_helpers_are_testable_without_process_home() {
-    let home = Path::new("/tmp/cowjail-home");
+fn leash_path_helpers_are_testable_without_process_home() {
+    let home = Path::new("/tmp/leash-home");
     let layout = jail::layout_from_home(home);
     assert_eq!(
         jail::config_root_from_home(home),
-        home.join(".config/cowjail")
+        home.join(".config/leash")
     );
     assert_eq!(
         jail::state_root_from_home(home),
@@ -35,7 +35,7 @@ fn cowjail_path_helpers_are_testable_without_process_home() {
     );
     assert_eq!(
         jail::profile_definition_path_in(&layout, "default"),
-        home.join(".config/cowjail/profiles/default")
+        home.join(".config/leash/profiles/default")
     );
 }
 
@@ -155,32 +155,26 @@ fn resolve_in_rejects_rebinding_existing_named_jail_to_different_profile() {
 
 #[test]
 fn ns_runtime_paths_track_runtime_layout() {
-    let home = Path::new("/tmp/cowjail-home");
+    let home = Path::new("/tmp/leash-home");
     let mut layout = jail::layout_from_home(home);
-    layout.runtime_root = Path::new("/run/cowjail-test").to_path_buf();
+    layout.runtime_root = Path::new("/run/leash-test").to_path_buf();
     layout.state_root = layout.runtime_root.join("state");
 
     let jail_paths = jail::jail_paths_in(&layout, "demo");
     let runtime = ns_runtime::paths_for(&jail_paths);
 
-    assert_eq!(runtime.runtime_dir, Path::new("/run/cowjail-test/demo"));
-    assert_eq!(
-        runtime.mntns_path,
-        Path::new("/run/cowjail-test/demo/mntns")
-    );
-    assert_eq!(
-        runtime.ipcns_path,
-        Path::new("/run/cowjail-test/demo/ipcns")
-    );
-    assert_eq!(runtime.lock_path, Path::new("/run/cowjail-test/demo/lock"));
-    assert_eq!(runtime.mount_dir, Path::new("/run/cowjail-test/demo/mount"));
+    assert_eq!(runtime.runtime_dir, Path::new("/run/leash-test/demo"));
+    assert_eq!(runtime.mntns_path, Path::new("/run/leash-test/demo/mntns"));
+    assert_eq!(runtime.ipcns_path, Path::new("/run/leash-test/demo/ipcns"));
+    assert_eq!(runtime.lock_path, Path::new("/run/leash-test/demo/lock"));
+    assert_eq!(runtime.mount_dir, Path::new("/run/leash-test/demo/mount"));
     assert_eq!(
         runtime.fuse_pid_path,
-        Path::new("/run/cowjail-test/demo/fuse.pid")
+        Path::new("/run/leash-test/demo/fuse.pid")
     );
     assert_eq!(
         runtime.fuse_log_path,
-        Path::new("/run/cowjail-test/demo/fuse.log")
+        Path::new("/run/leash-test/demo/fuse.log")
     );
 }
 
@@ -403,18 +397,18 @@ fn ns_runtime_reads_fuse_pid_file() {
 #[test]
 fn ns_runtime_mountinfo_parser_handles_escaped_mountpoints() {
     let raw = "\
-40 30 0:35 / /run/cowjail/demo/mount rw,nosuid - fuse.cowjail cowjail rw\n\
-41 30 0:36 / /run/cowjail/demo/space\\040path rw,nosuid - fuse.cowjail cowjail rw\n";
+40 30 0:35 / /run/leash/demo/mount rw,nosuid - fuse.leash leash rw\n\
+41 30 0:36 / /run/leash/demo/space\\040path rw,nosuid - fuse.leash leash rw\n";
     assert!(ns_runtime::mountinfo_has_mountpoint_for_test(
         raw,
-        Path::new("/run/cowjail/demo/mount")
+        Path::new("/run/leash/demo/mount")
     ));
     assert!(ns_runtime::mountinfo_has_mountpoint_for_test(
         raw,
-        Path::new("/run/cowjail/demo/space path")
+        Path::new("/run/leash/demo/space path")
     ));
     assert!(!ns_runtime::mountinfo_has_mountpoint_for_test(
         raw,
-        Path::new("/run/cowjail/demo/missing")
+        Path::new("/run/leash/demo/missing")
     ));
 }

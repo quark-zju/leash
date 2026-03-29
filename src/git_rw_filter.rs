@@ -241,8 +241,8 @@ mod tests {
     #[test]
     fn strip_mount_root_prefix_rewrites_fuse_backed_exe_path() {
         let stripped = strip_mount_root_prefix(
-            PathBuf::from("/run/user/1000/cowjail/demo/mount/usr/bin/git"),
-            Some(Path::new("/run/user/1000/cowjail/demo/mount")),
+            PathBuf::from("/run/user/1000/leash/demo/mount/usr/bin/git"),
+            Some(Path::new("/run/user/1000/leash/demo/mount")),
         );
         assert_eq!(stripped, PathBuf::from("/usr/bin/git"));
     }
