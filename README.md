@@ -1,6 +1,6 @@
 # cowjail
 
-`cowjail` is a Linux filesystem safety layer for untrusted programs and coding agents.
+`cowjail` is a Linux filesystem safety layer for coding agents.
 
 It combines:
 
@@ -14,7 +14,7 @@ Out of scope:
 - network/container isolation
 - non-Linux support
 
-`cowjail` 是一个 Linux 文件系统防护层，面向不可信程序和 AI 编码工具。
+`cowjail` 是一个 Linux 文件系统防护层，主要面向 AI 编码工具。
 
 包含：
 
