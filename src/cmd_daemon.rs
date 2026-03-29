@@ -2,8 +2,9 @@ use anyhow::{Context, Result, bail};
 use fs_err as fs;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
@@ -107,6 +108,11 @@ struct DaemonState {
     sessions: HashMap<NamespaceKey, RegisteredSession>,
 }
 
+struct ReceivedRequest {
+    request: String,
+    received_fd: Option<File>,
+}
+
 fn peer_credentials(stream: &UnixStream) -> Result<PeerCredentials> {
     let fd = stream.as_raw_fd();
     let mut creds = libc::ucred {
@@ -153,32 +159,26 @@ fn handle_client(
     stream: &mut UnixStream,
     peer: PeerCredentials,
 ) -> Result<()> {
-    let mut request = String::new();
-    {
-        let mut reader = BufReader::new(
-            stream
-                .try_clone()
-                .context("failed to clone daemon stream")?,
-        );
-        reader
-            .read_line(&mut request)
-            .context("failed to read daemon request")?;
-    }
-
-    let request = request.trim();
+    let received = recv_request(stream)?;
+    let request = received.request.trim();
     crate::vlog!(
         "daemon: request='{}' from pid={} uid={}",
         request,
         peer.pid,
         peer.uid
     );
-    let response = handle_request_line(state, request, peer);
+    let response = handle_request_line(state, request, peer, received.received_fd);
     stream
         .write_all(response.as_bytes())
         .context("failed to write daemon response")
 }
 
-fn handle_request_line(state: &mut DaemonState, request: &str, peer: PeerCredentials) -> String {
+fn handle_request_line(
+    state: &mut DaemonState,
+    request: &str,
+    peer: PeerCredentials,
+    received_fd: Option<File>,
+) -> String {
     let trimmed = request.trim();
     if trimmed.is_empty() {
         return "error empty-request\n".to_string();
@@ -192,7 +192,10 @@ fn handle_request_line(state: &mut DaemonState, request: &str, peer: PeerCredent
             if parts.next().is_some() {
                 return "error unexpected-arguments\n".to_string();
             }
-            match register_session(state, &peer) {
+            let Some(namespace_file) = received_fd else {
+                return "error missing-mntns-fd\n".to_string();
+            };
+            match register_session(state, &peer, namespace_file) {
                 Ok(key) => format!("ok registered {}:{}\n", key.dev, key.ino),
                 Err(err) => format!("error {}\n", sanitize_error_text(&err.to_string())),
             }
@@ -213,8 +216,18 @@ fn handle_request_line(state: &mut DaemonState, request: &str, peer: PeerCredent
     }
 }
 
-fn register_session(state: &mut DaemonState, peer: &PeerCredentials) -> Result<NamespaceKey> {
-    let (key, namespace_file) = open_mount_namespace_for_pid(peer.pid)?;
+fn register_session(
+    state: &mut DaemonState,
+    peer: &PeerCredentials,
+    namespace_file: File,
+) -> Result<NamespaceKey> {
+    let meta = namespace_file
+        .metadata()
+        .context("failed to stat received mount namespace fd")?;
+    let key = NamespaceKey {
+        dev: meta.dev(),
+        ino: meta.ino(),
+    };
     state.sessions.insert(
         key,
         RegisteredSession {
@@ -226,6 +239,52 @@ fn register_session(state: &mut DaemonState, peer: &PeerCredentials) -> Result<N
         },
     );
     Ok(key)
+}
+
+fn recv_request(stream: &UnixStream) -> Result<ReceivedRequest> {
+    let fd = stream.as_raw_fd();
+    let mut data = [0u8; 1024];
+    let mut iov = libc::iovec {
+        iov_base: data.as_mut_ptr() as *mut libc::c_void,
+        iov_len: data.len(),
+    };
+    let mut control = [0u8; 128];
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.as_mut_ptr() as *mut libc::c_void;
+    msg.msg_controllen = control.len();
+
+    let received = unsafe { libc::recvmsg(fd, &mut msg, 0) };
+    if received < 0 {
+        return Err(std::io::Error::last_os_error()).context("recvmsg failed for daemon request");
+    }
+    if received == 0 {
+        bail!("daemon client disconnected before sending request")
+    }
+
+    let request = std::str::from_utf8(&data[..received as usize])
+        .context("daemon request was not valid UTF-8")?
+        .to_string();
+    let received_fd = extract_received_fd(&msg);
+    Ok(ReceivedRequest {
+        request,
+        received_fd,
+    })
+}
+
+fn extract_received_fd(msg: &libc::msghdr) -> Option<File> {
+    let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(msg as *const libc::msghdr as *mut libc::msghdr) };
+    while !cmsg.is_null() {
+        let header = unsafe { &*cmsg };
+        if header.cmsg_level == libc::SOL_SOCKET && header.cmsg_type == libc::SCM_RIGHTS {
+            let data_ptr = unsafe { libc::CMSG_DATA(cmsg) as *const libc::c_int };
+            let raw_fd = unsafe { *data_ptr };
+            return Some(unsafe { File::from_raw_fd(raw_fd) });
+        }
+        cmsg = unsafe { libc::CMSG_NXTHDR(msg as *const libc::msghdr as *mut libc::msghdr, cmsg) };
+    }
+    None
 }
 
 fn namespace_key_for_pid(pid: libc::pid_t) -> Result<Option<NamespaceKey>> {
@@ -242,22 +301,6 @@ fn namespace_key_for_pid(pid: libc::pid_t) -> Result<Option<NamespaceKey>> {
         dev: meta.dev(),
         ino: meta.ino(),
     }))
-}
-
-fn open_mount_namespace_for_pid(pid: libc::pid_t) -> Result<(NamespaceKey, File)> {
-    let path = mount_namespace_path_for_pid(pid);
-    let file = File::open(&path)
-        .with_context(|| format!("failed to open mount namespace handle {}", path.display()))?;
-    let meta = file
-        .metadata()
-        .with_context(|| format!("failed to stat mount namespace handle {}", path.display()))?;
-    Ok((
-        NamespaceKey {
-            dev: meta.dev(),
-            ino: meta.ino(),
-        },
-        file,
-    ))
 }
 
 fn mount_namespace_path_for_pid(pid: libc::pid_t) -> PathBuf {
@@ -297,10 +340,12 @@ mod tests {
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
         };
-        let register = handle_request_line(&mut state, "register-session", peer);
+        let namespace_file = File::open("/proc/self/ns/mnt").expect("open current mntns");
+        let register =
+            handle_request_line(&mut state, "register-session", peer, Some(namespace_file));
         assert!(register.starts_with("ok registered "));
 
-        let query = handle_request_line(&mut state, "query-session", peer);
+        let query = handle_request_line(&mut state, "query-session", peer, None);
         assert!(query.starts_with("ok session "));
     }
 
@@ -313,8 +358,22 @@ mod tests {
             gid: unsafe { libc::getgid() },
         };
         assert_eq!(
-            handle_request_line(&mut state, "query-session", peer),
+            handle_request_line(&mut state, "query-session", peer, None),
             "ok missing\n"
+        );
+    }
+
+    #[test]
+    fn register_session_requires_mntns_fd() {
+        let mut state = DaemonState::default();
+        let peer = PeerCredentials {
+            pid: unsafe { libc::getpid() },
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+        };
+        assert_eq!(
+            handle_request_line(&mut state, "register-session", peer, None),
+            "error missing-mntns-fd\n"
         );
     }
 }

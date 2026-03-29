@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -19,7 +21,13 @@ pub(crate) fn ensure_daemon_running(verbose: bool) -> Result<()> {
 }
 
 pub(crate) fn register_session() -> Result<()> {
-    let response = send_request(&cmd_daemon::default_socket_path(), "register-session")?;
+    let namespace_file =
+        File::open("/proc/self/ns/mnt").context("failed to open current mount namespace handle")?;
+    let response = send_request_with_fd(
+        &cmd_daemon::default_socket_path(),
+        "register-session",
+        namespace_file.as_raw_fd(),
+    )?;
     if response.starts_with("ok registered ") {
         return Ok(());
     }
@@ -63,6 +71,64 @@ fn send_request(socket_path: &Path, request: &str) -> Result<String> {
         )
     })?;
     Ok(response)
+}
+
+fn send_request_with_fd(socket_path: &Path, request: &str, raw_fd: libc::c_int) -> Result<String> {
+    let stream = UnixStream::connect(socket_path).with_context(|| {
+        format!(
+            "failed to connect to daemon socket {}",
+            socket_path.display()
+        )
+    })?;
+    sendmsg_with_fd(&stream, request, raw_fd)?;
+
+    let mut response = String::new();
+    let mut reader = BufReader::new(stream);
+    reader.read_line(&mut response).with_context(|| {
+        format!(
+            "failed to read daemon response from {}",
+            socket_path.display()
+        )
+    })?;
+    Ok(response)
+}
+
+fn sendmsg_with_fd(stream: &UnixStream, request: &str, raw_fd: libc::c_int) -> Result<()> {
+    let fd = stream.as_raw_fd();
+    let mut payload = Vec::with_capacity(request.len() + 1);
+    payload.extend_from_slice(request.as_bytes());
+    payload.push(b'\n');
+
+    let mut iov = libc::iovec {
+        iov_base: payload.as_mut_ptr() as *mut libc::c_void,
+        iov_len: payload.len(),
+    };
+    let mut control = [0u8; 128];
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.as_mut_ptr() as *mut libc::c_void;
+    msg.msg_controllen = control.len();
+
+    let cmsg = unsafe { libc::CMSG_FIRSTHDR(&msg as *const libc::msghdr as *mut libc::msghdr) };
+    if cmsg.is_null() {
+        bail!("failed to allocate ancillary data header for daemon request")
+    }
+    unsafe {
+        (*cmsg).cmsg_level = libc::SOL_SOCKET;
+        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+        (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as u32) as usize;
+        let data_ptr = libc::CMSG_DATA(cmsg) as *mut libc::c_int;
+        *data_ptr = raw_fd;
+    }
+    msg.msg_controllen =
+        unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32) as usize };
+
+    let sent = unsafe { libc::sendmsg(fd, &msg, 0) };
+    if sent < 0 {
+        return Err(std::io::Error::last_os_error()).context("sendmsg failed for daemon request");
+    }
+    Ok(())
 }
 
 fn spawn_daemon_process(verbose: bool) -> Result<()> {
