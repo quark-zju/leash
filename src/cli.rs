@@ -187,55 +187,32 @@ fn parse_profile(mut args: Arguments) -> Result<Command> {
                 action: ProfileAction::List,
             }))
         }
-        "edit" => {
+        "show" | "edit" | "rm" => {
             if extra.len() > 2 {
-                bail!("profile edit got unexpected trailing arguments");
+                bail!("profile {subcmd} got unexpected trailing arguments");
             }
-            let name = if extra.len() == 2 {
-                extra[1]
-                    .to_str()
-                    .ok_or_else(|| anyhow::anyhow!("profile NAME must be valid UTF-8"))?
-                    .to_string()
-            } else {
-                DEFAULT_PROFILE.to_string()
+            let name = parse_optional_profile_name(&extra, 1)?;
+            let action = match subcmd {
+                "show" => ProfileAction::Show { name },
+                "edit" => ProfileAction::Edit { name },
+                _ => ProfileAction::Rm { name },
             };
-            Ok(Command::Profile(ProfileCommand {
-                action: ProfileAction::Edit { name },
-            }))
-        }
-        "show" => {
-            if extra.len() > 2 {
-                bail!("profile show got unexpected trailing arguments");
-            }
-            let name = if extra.len() == 2 {
-                extra[1]
-                    .to_str()
-                    .ok_or_else(|| anyhow::anyhow!("profile NAME must be valid UTF-8"))?
-                    .to_string()
-            } else {
-                DEFAULT_PROFILE.to_string()
-            };
-            Ok(Command::Profile(ProfileCommand {
-                action: ProfileAction::Show { name },
-            }))
-        }
-        "rm" => {
-            if extra.len() > 2 {
-                bail!("profile rm got unexpected trailing arguments");
-            }
-            let name = if extra.len() == 2 {
-                extra[1]
-                    .to_str()
-                    .ok_or_else(|| anyhow::anyhow!("profile NAME must be valid UTF-8"))?
-                    .to_string()
-            } else {
-                DEFAULT_PROFILE.to_string()
-            };
-            Ok(Command::Profile(ProfileCommand {
-                action: ProfileAction::Rm { name },
-            }))
+            Ok(Command::Profile(ProfileCommand { action }))
         }
         other => bail!("unknown profile subcommand: {other}"),
+    }
+}
+
+/// Extract an optional profile name from positional arguments.
+/// Returns `DEFAULT_PROFILE` if the argument at `pos` is absent.
+fn parse_optional_profile_name(extra: &[std::ffi::OsString], pos: usize) -> Result<String> {
+    if extra.len() > pos {
+        extra[pos]
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("profile NAME must be valid UTF-8"))
+            .map(ToOwned::to_owned)
+    } else {
+        Ok(DEFAULT_PROFILE.to_string())
     }
 }
 
