@@ -13,7 +13,7 @@ use fuser::{
     self, FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
-use libc::{EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, EOPNOTSUPP};
+use libc::{EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, EOPNOTSUPP, EPERM};
 
 use crate::op::{FileState, Operation};
 use crate::profile::{Profile, RuleAction, Visibility};
@@ -135,6 +135,18 @@ impl CowFs {
         }
         match self.profile.visibility(path) {
             Visibility::Hidden | Visibility::Action(RuleAction::Hide) => Some(ENOENT),
+            Visibility::Action(RuleAction::Deny) => Some(EACCES),
+            Visibility::ImplicitAncestor if !self.path_is_directory(path) => Some(ENOENT),
+            _ => None,
+        }
+    }
+
+    fn mutation_errno(&self, path: &Path) -> Option<i32> {
+        if is_blocked_proc_thread_self(path) {
+            return Some(ENOENT);
+        }
+        match self.profile.visibility(path) {
+            Visibility::Hidden | Visibility::Action(RuleAction::Hide) => Some(EPERM),
             Visibility::Action(RuleAction::Deny) => Some(EACCES),
             Visibility::ImplicitAncestor if !self.path_is_directory(path) => Some(ENOENT),
             _ => None,
@@ -861,15 +873,18 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if let Some(errno) = self.access_errno(path) {
-            reply.error(errno);
-            return;
-        }
         // allow write open only for writable rules.
-        if flags & libc::O_ACCMODE != libc::O_RDONLY
-            && self.write_mode(path) == WriteMode::Forbidden
-        {
-            reply.error(EACCES);
+        if flags & libc::O_ACCMODE != libc::O_RDONLY {
+            if let Some(errno) = self.mutation_errno(path) {
+                reply.error(errno);
+                return;
+            }
+            if self.write_mode(path) == WriteMode::Forbidden {
+                reply.error(EACCES);
+                return;
+            }
+        } else if let Some(errno) = self.access_errno(path) {
+            reply.error(errno);
             return;
         }
         reply.opened(0, 0);
@@ -890,7 +905,7 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if let Some(errno) = self.access_errno(&path) {
+        if let Some(errno) = self.mutation_errno(&path) {
             reply.error(errno);
             return;
         }
@@ -958,7 +973,7 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if let Some(errno) = self.access_errno(&path) {
+        if let Some(errno) = self.mutation_errno(&path) {
             reply.error(errno);
             return;
         }
@@ -1004,7 +1019,7 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if let Some(errno) = self.access_errno(&path) {
+        if let Some(errno) = self.mutation_errno(&path) {
             reply.error(errno);
             return;
         }
@@ -1149,7 +1164,7 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if let Some(errno) = self.access_errno(&path) {
+        if let Some(errno) = self.mutation_errno(&path) {
             reply.error(errno);
             return;
         }
@@ -1190,7 +1205,7 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if let Some(errno) = self.access_errno(&path) {
+        if let Some(errno) = self.mutation_errno(&path) {
             reply.error(errno);
             return;
         }
@@ -1242,7 +1257,7 @@ impl Filesystem for CowFs {
             return;
         };
         let path = parent_path.join(name);
-        if let Some(errno) = self.access_errno(&path) {
+        if let Some(errno) = self.mutation_errno(&path) {
             reply.error(errno);
             return;
         }
@@ -1350,11 +1365,11 @@ impl Filesystem for CowFs {
         };
         let from = parent_path.join(name);
         let to = newparent_path.join(newname);
-        if let Some(errno) = self.access_errno(&from) {
+        if let Some(errno) = self.mutation_errno(&from) {
             reply.error(errno);
             return;
         }
-        if let Some(errno) = self.access_errno(&to) {
+        if let Some(errno) = self.mutation_errno(&to) {
             reply.error(errno);
             return;
         }
@@ -1409,7 +1424,7 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        if let Some(errno) = self.access_errno(&path) {
+        if let Some(errno) = self.mutation_errno(&path) {
             reply.error(errno);
             return;
         }
@@ -1909,12 +1924,19 @@ mod tests {
     fn deny_path_returns_eacces() {
         let (_dir, _record_path, fs) = test_fs("/tmp/deny-me deny");
         assert_eq!(fs.access_errno(Path::new("/tmp/deny-me")), Some(EACCES));
+        assert_eq!(fs.mutation_errno(Path::new("/tmp/deny-me")), Some(EACCES));
     }
 
     #[test]
     fn hide_path_returns_enoent() {
         let (_dir, _record_path, fs) = test_fs("/tmp/hide-me hide");
         assert_eq!(fs.access_errno(Path::new("/tmp/hide-me")), Some(ENOENT));
+    }
+
+    #[test]
+    fn hide_path_returns_eperm_for_mutation() {
+        let (_dir, _record_path, fs) = test_fs("/tmp/hide-me hide");
+        assert_eq!(fs.mutation_errno(Path::new("/tmp/hide-me")), Some(EPERM));
     }
 
     #[test]
