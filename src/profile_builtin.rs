@@ -44,7 +44,6 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 ~/.config/opencode rw
 ~/.local/share/opencode rw
 ~/.local/state/opencode rw
-~/bin ro
 ~/.bun rw
 ~/.cargo ro
 ~/.gitconfig* ro
@@ -53,6 +52,10 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 ~/.npm ro
 ~/.pyenv ro
 ~/.rustup ro
+
+~/.local hide
+~/.cache hide
+~/.config hide
 ";
 
 const BUILTINS: &[(&str, &str)] = &[
