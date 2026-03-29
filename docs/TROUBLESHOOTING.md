@@ -98,10 +98,3 @@ cowjail rm -v <name>
 ### `Transport endpoint is not connected (os error 107)`
 
 This indicates a stale/disconnected FUSE mountpoint. `cowjail rm` includes recovery logic; rerun with `-v` for details.
-
-## E2E smoke notes
-
-`docs/e2e_smoke.py` uses `_suid` for high-level tests. If the test reports setuid-related skip/failures, verify:
-
-1. The built binary can become setuid-root.
-2. FUSE config (`user_allow_other`) is set when needed.
