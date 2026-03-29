@@ -8,7 +8,6 @@ use crate::{cli, jail, profile};
 const BUILTIN_DEFAULT_PROFILE_SOURCE: &str = "\
 # Deny access to cowjail state
 ~/.config/cowjail deny
-~/.local/state/cowjail deny
 
 # User overrides
 %include default.local

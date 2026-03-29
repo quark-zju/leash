@@ -48,7 +48,6 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "NOTES:\n",
             "  - Empty lines are ignored\n",
             "  - Lines starting with # are comments\n",
-            "  - Directive: %set max_size = <size|none> (default: 2gb)\n",
             "  - Directive: %include <name> (short profile name only; missing file ignored)\n",
             "  - Globs are supported; `*` does not cross `/`, use `**` for any depth (including 0)\n",
             "  - Rules are first-match wins\n",
@@ -95,7 +94,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "OPTIONS:\n",
             "  --name <name>         Show a jail by name (same as positional NAME)\n",
             "  --profile <profile>   Show the jail selected by profile-derived identity\n",
-            "  -v, --verbose         Also print pending write paths"
+            "  -v, --verbose         Reserved for extra debug output"
         )
         .to_string(),
         HelpTopic::Rm => concat!(
