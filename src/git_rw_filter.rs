@@ -34,6 +34,25 @@ impl GitRwFilter {
         path.file_name() == Some(OsStr::new(".git"))
     }
 
+    /// Returns `true` if the path is `.git/COMMIT_EDITMSG` inside any repository.
+    /// This file is written by editors/hooks (non-git processes) during commit
+    /// message editing, so it must remain writable by any process.
+    pub(crate) fn is_commit_editmsg_path(&self, path: &Path) -> bool {
+        let mut components = path.components().peekable();
+        while let Some(component) = components.next() {
+            if component == Component::Normal(OsStr::new(".git")) {
+                if components.next()
+                    == Some(Component::Normal(OsStr::new("COMMIT_EDITMSG")))
+                    && components.next().is_none()
+                {
+                    return true;
+                }
+                return false;
+            }
+        }
+        false
+    }
+
     pub(crate) fn repo_root_for(&self, path: &Path) -> Option<PathBuf> {
         let mut current = if path.is_dir() {
             path.to_path_buf()
@@ -236,6 +255,22 @@ mod tests {
         assert!(filter.is_git_metadata_path(Path::new("/tmp/repo/.git")));
         assert!(filter.is_git_metadata_path(Path::new("/tmp/repo/.git/config")));
         assert!(!filter.is_git_metadata_path(Path::new("/tmp/repo/src/main.rs")));
+    }
+
+    #[test]
+    fn identifies_commit_editmsg_path() {
+        let filter = GitRwFilter::new();
+        assert!(filter.is_commit_editmsg_path(Path::new("/tmp/repo/.git/COMMIT_EDITMSG")));
+        // Must be a direct child of .git, not nested further
+        assert!(!filter.is_commit_editmsg_path(Path::new(
+            "/tmp/repo/.git/sub/COMMIT_EDITMSG"
+        )));
+        // Other .git files are not COMMIT_EDITMSG
+        assert!(!filter.is_commit_editmsg_path(Path::new("/tmp/repo/.git/config")));
+        // The .git dir itself is not COMMIT_EDITMSG
+        assert!(!filter.is_commit_editmsg_path(Path::new("/tmp/repo/.git")));
+        // Working-tree files are not COMMIT_EDITMSG
+        assert!(!filter.is_commit_editmsg_path(Path::new("/tmp/repo/COMMIT_EDITMSG")));
     }
 
     #[test]

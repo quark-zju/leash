@@ -149,6 +149,7 @@ impl LeashFs {
             return Some(EACCES);
         }
         if self.git_rw_filter.is_git_metadata_path(path)
+            && !self.git_rw_filter.is_commit_editmsg_path(path)
             && !requester_pid.is_some_and(|pid| {
                 self.git_rw_filter
                     .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
@@ -257,6 +258,11 @@ impl LeashFs {
             return WriteMode::Forbidden;
         }
         if self.git_rw_filter.is_git_metadata_path(path) {
+            if self.git_rw_filter.is_commit_editmsg_path(path) {
+                // COMMIT_EDITMSG is written by editors / commit-msg hooks that are
+                // not the git binary itself; allow any process to write it.
+                return WriteMode::Passthrough;
+            }
             return if requester_pid.is_some_and(|pid| {
                 self.git_rw_filter
                     .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
@@ -1425,6 +1431,28 @@ mod tests {
         let fs = test_fs(&profile_src);
         assert_eq!(fs.mutation_errno(&repo.join(".git")), Some(EACCES));
         assert_eq!(fs.write_mode(&repo.join(".git")), WriteMode::Forbidden);
+    }
+
+    #[test]
+    fn commit_editmsg_is_writable_by_non_git_process() {
+        let dir = tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+        fs::write(repo.join(".git/config"), b"[core]\n").expect("write config");
+        fs::write(repo.join(".git/COMMIT_EDITMSG"), b"").expect("write COMMIT_EDITMSG");
+
+        let profile_src = format!("{} git-rw\n", dir.path().display());
+        let fs = test_fs(&profile_src);
+        let commit_editmsg = repo.join(".git/COMMIT_EDITMSG");
+        // Non-git processes (pid=None) must be allowed to write COMMIT_EDITMSG
+        assert_eq!(fs.mutation_errno(&commit_editmsg), None);
+        assert_eq!(fs.write_mode(&commit_editmsg), WriteMode::Passthrough);
+        // Other .git metadata files remain protected
+        assert_eq!(fs.mutation_errno(&repo.join(".git/config")), Some(EACCES));
+        assert_eq!(
+            fs.write_mode(&repo.join(".git/config")),
+            WriteMode::Forbidden
+        );
     }
 
     #[test]
