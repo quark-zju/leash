@@ -5,8 +5,7 @@ use std::time::Duration;
 use crate::cli::LowLevelFuseCommand;
 use crate::cowfs;
 use crate::privileges;
-use crate::profile_loader::{append_profile_header, ensure_record_parent_dir, load_profile};
-use crate::record;
+use crate::profile_loader::load_profile;
 use crate::run_with_log;
 
 pub(crate) fn fuse_command(cmd: LowLevelFuseCommand) -> Result<()> {
@@ -30,39 +29,8 @@ pub(crate) fn fuse_command(cmd: LowLevelFuseCommand) -> Result<()> {
         || load_profile(std::path::Path::new(&cmd.profile)),
         || format!("load fuse profile '{}'", cmd.profile),
     )?;
-    run_with_log(
-        || ensure_record_parent_dir(&cmd.record),
-        || format!("prepare fuse record parent dir {}", cmd.record.display()),
-    )?;
-    let writer = run_with_log(
-        || record::Writer::open_append_with_max_size(&cmd.record, loaded.record_max_size_bytes),
-        || format!("open fuse record writer {}", cmd.record.display()),
-    )?;
-    run_with_log(
-        || append_profile_header(&writer, &loaded.normalized_source),
-        || format!("append fuse profile header into {}", cmd.record.display()),
-    )?;
-
-    let frames = run_with_log(
-        || record::read_frames_best_effort(&cmd.record),
-        || format!("read record frames from {}", cmd.record.display()),
-    )?;
-    let mut fs = cowfs::CowFs::new(loaded.profile, writer).with_mount_root(cmd.mountpoint.clone());
-    let replay = fs.replay_from_record_frames(&frames);
-    crate::vlog!(
-        "_fuse: replay record={} total_frames={} pending_ops={} applied_ops={} skipped_frames={} skipped_ops={}",
-        cmd.record.display(),
-        replay.total_frames,
-        replay.pending_ops,
-        replay.applied_ops,
-        replay.skipped_frames,
-        replay.skipped_ops
-    );
-    crate::vlog!(
-        "_fuse: mounting fuse at {} with record {}",
-        cmd.mountpoint.display(),
-        cmd.record.display()
-    );
+    let fs = cowfs::CowFs::new(loaded.profile).with_mount_root(cmd.mountpoint.clone());
+    crate::vlog!("_fuse: mounting fuse at {}", cmd.mountpoint.display());
     let needs_real_root_for_allow_other =
         !cowfs::allow_other_enabled_in_fuse_conf() && unsafe { libc::getuid() } != 0;
     if needs_real_root_for_allow_other {

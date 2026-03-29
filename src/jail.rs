@@ -26,7 +26,6 @@ pub(crate) struct JailPaths {
     pub(crate) runtime_dir: PathBuf,
     pub(crate) profile_path: PathBuf,
     pub(crate) profile_sources_path: PathBuf,
-    pub(crate) record_path: PathBuf,
     pub(crate) ipcns_path: PathBuf,
     pub(crate) mntns_path: PathBuf,
 }
@@ -108,7 +107,6 @@ pub(crate) fn jail_paths_in(layout: &JailLayout, name: &str) -> JailPaths {
         name: name.to_string(),
         profile_path: state_dir.join("profile"),
         profile_sources_path: state_dir.join("profile.sources"),
-        record_path: state_dir.join("record"),
         ipcns_path: runtime_dir.join("ipcns"),
         mntns_path: runtime_dir.join("mntns"),
         state_dir,
@@ -277,19 +275,6 @@ pub(crate) fn materialize_jail(
         })?;
         ensure_owned_by_real_user(&paths.profile_sources_path)?;
     }
-    if !paths.record_path.exists() {
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&paths.record_path)
-            .map_err(|err| {
-                anyhow::anyhow!(
-                    "failed to create jail record file {}: {err}",
-                    paths.record_path.display()
-                )
-            })?;
-    }
-    ensure_owned_by_real_user(&paths.record_path)?;
     Ok(())
 }
 
@@ -343,7 +328,6 @@ fn remove_known_state_artifacts(paths: &JailPaths) -> Result<()> {
 
     remove_file_if_exists_with_owner_fix(&paths.state_dir, &paths.profile_path)?;
     remove_file_if_exists_with_owner_fix(&paths.state_dir, &paths.profile_sources_path)?;
-    remove_file_if_exists_with_owner_fix(&paths.state_dir, &paths.record_path)?;
     match fs::remove_dir(&paths.state_dir) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -373,7 +357,7 @@ fn list_unknown_state_entries(paths: &JailPaths) -> Result<Vec<String>> {
             unknown.push(format!("{:?}", name));
             continue;
         };
-        if !matches!(name, "profile" | "profile.sources" | "record") {
+        if !matches!(name, "profile" | "profile.sources") {
             unknown.push(name.to_string());
         }
     }

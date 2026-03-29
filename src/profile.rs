@@ -9,7 +9,6 @@ pub enum RuleAction {
     ReadOnly,
     Passthrough,
     GitRw,
-    Cow,
     Deny,
     Hide,
 }
@@ -43,6 +42,7 @@ pub enum Visibility {
 }
 
 impl Profile {
+    #[cfg(test)]
     pub fn parse(profile_src: &str, launch_cwd: &Path) -> Result<Self> {
         let home = home_dir_from_env()?;
         Self::parse_with_home(profile_src, launch_cwd, &home)
@@ -202,10 +202,9 @@ fn parse_action(token: &str) -> Result<RuleAction> {
         "ro" => Ok(RuleAction::ReadOnly),
         "rw" => Ok(RuleAction::Passthrough),
         "git-rw" => Ok(RuleAction::GitRw),
-        "cow" => Ok(RuleAction::Cow),
         "deny" => Ok(RuleAction::Deny),
         "hide" => Ok(RuleAction::Hide),
-        _ => bail!("action must be one of ro/rw/git-rw/cow/deny/hide"),
+        _ => bail!("action must be one of ro/rw/git-rw/deny/hide"),
     }
 }
 
@@ -214,7 +213,6 @@ fn action_to_str(action: RuleAction) -> &'static str {
         RuleAction::ReadOnly => "ro",
         RuleAction::Passthrough => "rw",
         RuleAction::GitRw => "git-rw",
-        RuleAction::Cow => "cow",
         RuleAction::Deny => "deny",
         RuleAction::Hide => "hide",
     }
@@ -587,19 +585,6 @@ mod tests {
             .expect("normalize");
         let expected = format!("{}/x ro\n", home.display());
         assert_eq!(normalized, expected);
-    }
-
-    #[test]
-    fn parse_cow_action() {
-        let profile = parse(
-            r#"
-            /work cow
-            "#,
-        );
-        assert_eq!(
-            profile.first_match_action(Path::new("/work/file.txt")),
-            Some(RuleAction::Cow)
-        );
     }
 
     #[test]

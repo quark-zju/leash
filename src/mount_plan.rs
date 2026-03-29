@@ -54,10 +54,6 @@ pub(crate) fn build_mount_plan_with_sources(
         if under_sys && has_glob {
             bail!("{loc}: /sys rules do not allow glob patterns");
         }
-        if under_dev && rule.action == RuleAction::Cow {
-            bail!("{loc}: /dev does not support cow");
-        }
-
         if under_proc {
             if rule.path != Path::new("/proc") {
                 bail!("{loc}: /proc only allows the exact path /proc");
@@ -209,8 +205,6 @@ mod tests {
         assert!(err.to_string().contains("exact path /proc"));
         let err = build_mount_plan_with_sources("/proc deny\n", None).expect_err("must fail");
         assert!(err.to_string().contains("only supports ro or rw"));
-        let err = build_mount_plan_with_sources("/proc cow\n", None).expect_err("must fail");
-        assert!(err.to_string().contains("only supports ro or rw"));
     }
 
     #[test]
@@ -226,14 +220,6 @@ mod tests {
         assert!(err.to_string().contains("exact path /sys"));
         let err = build_mount_plan_with_sources("/sys deny\n", None).expect_err("must fail");
         assert!(err.to_string().contains("only supports ro or rw"));
-        let err = build_mount_plan_with_sources("/sys cow\n", None).expect_err("must fail");
-        assert!(err.to_string().contains("only supports ro or rw"));
-    }
-
-    #[test]
-    fn dev_rule_disallows_cow() {
-        let err = build_mount_plan_with_sources("/dev/null cow\n", None).expect_err("must fail");
-        assert!(err.to_string().contains("/dev does not support cow"));
     }
 
     #[test]

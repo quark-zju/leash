@@ -1,4 +1,4 @@
-use crate::{jail, ns_runtime, profile_loader};
+use crate::{jail, ns_runtime};
 use fs_err as fs;
 use std::path::Path;
 use tempfile::tempdir;
@@ -34,16 +34,8 @@ fn cowjail_path_helpers_are_testable_without_process_home() {
         jail::runtime_root().join("state")
     );
     assert_eq!(
-        profile_loader::default_record_dir_from_home(home),
-        home.join(".cache/cowjail")
-    );
-    assert_eq!(
         jail::profile_definition_path_in(&layout, "default"),
         home.join(".config/cowjail/profiles/default")
-    );
-    assert_eq!(
-        jail::jail_paths_in(&layout, "demo").record_path,
-        layout.state_root.join("demo/record")
     );
 }
 
@@ -70,7 +62,6 @@ fn resolve_in_can_materialize_generated_jail_without_global_home() {
         fs::read_to_string(&resolved.paths.profile_path).expect("read stored profile"),
         resolved.normalized_profile
     );
-    assert!(resolved.paths.record_path.exists());
     assert_eq!(
         resolved.paths.runtime_dir,
         layout.runtime_root.join(&resolved.name)

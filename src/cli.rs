@@ -17,9 +17,7 @@ pub enum Command {
     Show(ShowCommand),
     Rm(RmCommand),
     Run(RunCommand),
-    Flush(FlushCommand),
     LowLevelMount(MountCommand),
-    LowLevelFlush(LowLevelFlushCommand),
     LowLevelFuse(LowLevelFuseCommand),
     LowLevelSuid(LowLevelSuidCommand),
 }
@@ -33,10 +31,8 @@ pub enum HelpTopic {
     Show,
     Rm,
     Run,
-    Flush,
     Completion,
     LowLevelMount,
-    LowLevelFlush,
     LowLevelFuse,
     LowLevelSuid,
 }
@@ -89,31 +85,13 @@ pub struct RunCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountCommand {
     pub profile: String,
-    pub record: PathBuf,
     pub verbose: bool,
     pub path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FlushCommand {
-    pub name: Option<String>,
-    pub profile: Option<String>,
-    pub dry_run: bool,
-    pub verbose: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LowLevelFlushCommand {
-    pub record: PathBuf,
-    pub profile: Option<String>,
-    pub dry_run: bool,
-    pub verbose: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LowLevelFuseCommand {
     pub profile: String,
-    pub record: PathBuf,
     pub mountpoint: PathBuf,
     pub pid_path: PathBuf,
     pub verbose: bool,
@@ -145,7 +123,7 @@ where
     let mut args = Arguments::from_vec(raw);
     let subcmd = args.subcommand()?.ok_or_else(|| {
         anyhow::anyhow!(
-            "missing subcommand (expected: completion, profile, add, list, show, rm, run, flush)"
+            "missing subcommand (expected: completion, profile, add, list, show, rm, run)"
         )
     })?;
 
@@ -158,9 +136,7 @@ where
         "show" => parse_show(args)?,
         "rm" => parse_rm(args)?,
         "run" => parse_run(args)?,
-        "flush" => parse_flush(args)?,
         "_mount" => parse_mount(args)?,
-        "_flush" => parse_low_level_flush(args)?,
         "_fuse" => parse_low_level_fuse(args)?,
         "_suid" => parse_low_level_suid(args)?,
         other => bail!("unknown subcommand: {other}"),
@@ -387,9 +363,6 @@ fn parse_mount(mut args: Arguments) -> Result<Command> {
     let profile = args
         .value_from_str("--profile")
         .context("mount requires --profile <profile>")?;
-    let record = args
-        .value_from_os_str("--record", parse_pathbuf)
-        .context("mount requires --record <record_path>")?;
     let path = args
         .free_from_os_str(parse_pathbuf)
         .context("mount requires <path>")?;
@@ -401,25 +374,8 @@ fn parse_mount(mut args: Arguments) -> Result<Command> {
 
     Ok(Command::LowLevelMount(MountCommand {
         profile,
-        record,
         verbose,
         path,
-    }))
-}
-
-fn parse_flush(mut args: Arguments) -> Result<Command> {
-    if args.contains(["-h", "--help"]) {
-        return Ok(help_command(HelpTopic::Flush, false));
-    }
-    let verbose = args.contains(["-v", "--verbose"]);
-    let dry_run = args.contains(["-n", "--dry-run"]);
-    let selector = parse_optional_jail_selector(args, "flush")?;
-
-    Ok(Command::Flush(FlushCommand {
-        name: selector.name,
-        profile: selector.profile,
-        dry_run,
-        verbose,
     }))
 }
 
@@ -452,30 +408,6 @@ fn parse_optional_jail_selector(mut args: Arguments, command: &str) -> Result<Ja
     Ok(JailSelector { name, profile })
 }
 
-fn parse_low_level_flush(mut args: Arguments) -> Result<Command> {
-    if args.contains(["-h", "--help"]) {
-        return Ok(help_command(HelpTopic::LowLevelFlush, true));
-    }
-    let verbose = args.contains(["-v", "--verbose"]);
-    let dry_run = args.contains(["-n", "--dry-run"]);
-    let profile = args.opt_value_from_str("--profile")?;
-    let record = args
-        .value_from_os_str("--record", parse_pathbuf)
-        .context("_flush requires --record <record_path>")?;
-
-    let extra = args.finish();
-    if !extra.is_empty() {
-        bail!("_flush got unexpected trailing arguments");
-    }
-
-    Ok(Command::LowLevelFlush(LowLevelFlushCommand {
-        record,
-        profile,
-        dry_run,
-        verbose,
-    }))
-}
-
 fn parse_low_level_fuse(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
         return Ok(help_command(HelpTopic::LowLevelFuse, true));
@@ -484,9 +416,6 @@ fn parse_low_level_fuse(mut args: Arguments) -> Result<Command> {
     let profile = args
         .value_from_str("--profile")
         .context("_fuse requires --profile <profile>")?;
-    let record = args
-        .value_from_os_str("--record", parse_pathbuf)
-        .context("_fuse requires --record <record_path>")?;
     let mountpoint = args
         .value_from_os_str("--mountpoint", parse_pathbuf)
         .context("_fuse requires --mountpoint <path>")?;
@@ -501,7 +430,6 @@ fn parse_low_level_fuse(mut args: Arguments) -> Result<Command> {
 
     Ok(Command::LowLevelFuse(LowLevelFuseCommand {
         profile,
-        record,
         mountpoint,
         pid_path,
         verbose,
@@ -552,29 +480,6 @@ mod tests {
         let err = parse_from(os(&["_mount", "./mnt"]))
             .expect_err("_mount without required flags should fail");
         assert!(err.to_string().contains("mount requires --profile"));
-    }
-
-    #[test]
-    fn parse_flush_dry_run() {
-        let cmd = parse_from(os(&["flush", "--dry-run"])).expect("flush should parse with dry-run");
-        let flush = match cmd {
-            Command::Flush(flush) => flush,
-            other => panic!("expected flush, got {other:?}"),
-        };
-        assert!(flush.dry_run);
-        assert!(!flush.verbose);
-        assert!(flush.name.is_none());
-        assert!(flush.profile.is_none());
-    }
-
-    #[test]
-    fn parse_flush_short_dry_run() {
-        let cmd = parse_from(os(&["flush", "-n"])).expect("flush should parse with short dry-run");
-        let flush = match cmd {
-            Command::Flush(flush) => flush,
-            other => panic!("expected flush, got {other:?}"),
-        };
-        assert!(flush.dry_run);
     }
 
     #[test]
@@ -719,7 +624,6 @@ mod tests {
         );
         let text = crate::cmd_help::help_text(HelpTopic::Profile, false);
         assert!(text.contains("ACTIONS:"));
-        assert!(text.contains("cow"));
         assert!(text.contains("git-rw"));
     }
 
@@ -861,28 +765,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_flush_accepts_positional_name() {
-        let cmd =
-            parse_from(os(&["flush", "agent"])).expect("flush with positional name should parse");
-        let flush = match cmd {
-            Command::Flush(flush) => flush,
-            other => panic!("expected flush, got {other:?}"),
-        };
-        assert_eq!(flush.name.as_deref(), Some("agent"));
-        assert!(flush.profile.is_none());
-    }
-
-    #[test]
     fn parse_run_requires_exactly_one_selector() {
         let err = parse_from(os(&["run", "--name", "a", "--profile", "b", "echo"]))
             .expect_err("run with two selectors should fail");
-        assert!(err.to_string().contains("only one of"));
-    }
-
-    #[test]
-    fn parse_flush_requires_exactly_one_selector() {
-        let err = parse_from(os(&["flush", "--name", "a", "--profile", "b"]))
-            .expect_err("flush with two selectors should fail");
         assert!(err.to_string().contains("only one of"));
     }
 
@@ -898,7 +783,6 @@ mod tests {
         );
         let text = crate::cmd_help::help_text(HelpTopic::Root, true);
         assert!(text.contains("cowjail _mount"));
-        assert!(text.contains("cowjail _flush"));
         assert!(text.contains("cowjail _suid"));
     }
 
@@ -910,38 +794,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_low_level_flush_requires_record() {
-        let err = parse_from(os(&["_flush"])).expect_err("_flush without record should fail");
-        assert!(err.to_string().contains("_flush requires --record"));
-    }
-
-    #[test]
-    fn parse_low_level_flush_short_dry_run() {
-        let cmd = parse_from(os(&["_flush", "-n", "--record", "/tmp/r"]))
-            .expect("_flush should parse with short dry-run");
-        let flush = match cmd {
-            Command::LowLevelFlush(flush) => flush,
-            other => panic!("expected low-level flush, got {other:?}"),
-        };
-        assert!(flush.dry_run);
-    }
-
-    #[test]
     fn parse_low_level_help_topics() {
         let mount_help = parse_from(os(&["_mount", "--help"])).expect("_mount help should parse");
         assert_eq!(
             mount_help,
             Command::Help {
                 topic: HelpTopic::LowLevelMount,
-                verbose: true,
-            }
-        );
-
-        let flush_help = parse_from(os(&["_flush", "--help"])).expect("_flush help should parse");
-        assert_eq!(
-            flush_help,
-            Command::Help {
-                topic: HelpTopic::LowLevelFlush,
                 verbose: true,
             }
         );

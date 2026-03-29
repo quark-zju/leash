@@ -14,115 +14,51 @@ use fuser::{
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::{
-    EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, EOPNOTSUPP, EPERM,
+    EACCES, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR, EPERM,
 };
 
 use crate::git_rw_filter::GitRwFilter;
-use crate::op::{FileState, Operation};
 use crate::profile::{Profile, RuleAction, Visibility};
-use crate::record;
 
 const TTL: Duration = Duration::from_secs(1);
 const ROOT_INO: u64 = 1;
 
 pub struct CowFs {
     profile: Profile,
-    record: record::Writer,
     git_rw_filter: GitRwFilter,
     mount_root: Option<PathBuf>,
     next_ino: u64,
     next_fh: u64,
     ino_to_path: std::collections::HashMap<u64, PathBuf>,
     path_to_ino: std::collections::HashMap<PathBuf, u64>,
-    overlay: std::collections::HashMap<PathBuf, OverlayNode>,
-    atime_overrides: std::collections::HashMap<PathBuf, SystemTime>,
     handles: std::collections::HashMap<u64, OpenHandle>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ReplayStats {
-    pub total_frames: usize,
-    pub pending_ops: usize,
-    pub applied_ops: usize,
-    pub skipped_frames: usize,
-    pub skipped_ops: usize,
-}
-
-#[derive(Debug, Clone)]
-struct OverlayTimes {
-    atime: SystemTime,
-    mtime: SystemTime,
-    ctime: SystemTime,
-}
-
-#[derive(Debug, Clone)]
-enum OverlayNode {
-    Deleted,
-    Dir {
-        mode: u16,
-        times: OverlayTimes,
-    },
-    Regular {
-        data: Vec<u8>,
-        mode: u16,
-        times: OverlayTimes,
-    },
-    Symlink {
-        target: PathBuf,
-        times: OverlayTimes,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WriteMode {
     Forbidden,
     Passthrough,
-    Cow,
 }
 
 enum OpenHandle {
     Passthrough { ino: u64, file: fs::File },
-    Cow { ino: u64 },
-}
-
-impl OverlayNode {
-    fn times(&self) -> Option<&OverlayTimes> {
-        match self {
-            OverlayNode::Deleted => None,
-            OverlayNode::Dir { times, .. }
-            | OverlayNode::Regular { times, .. }
-            | OverlayNode::Symlink { times, .. } => Some(times),
-        }
-    }
-
-    fn times_mut(&mut self) -> Option<&mut OverlayTimes> {
-        match self {
-            OverlayNode::Deleted => None,
-            OverlayNode::Dir { times, .. }
-            | OverlayNode::Regular { times, .. }
-            | OverlayNode::Symlink { times, .. } => Some(times),
-        }
-    }
 }
 
 impl CowFs {
-    pub fn new(profile: Profile, record: record::Writer) -> Self {
+    pub fn new(profile: Profile) -> Self {
         let mut ino_to_path = std::collections::HashMap::new();
         let mut path_to_ino = std::collections::HashMap::new();
-        ino_to_path.insert(ROOT_INO, std::path::PathBuf::from("/"));
-        path_to_ino.insert(std::path::PathBuf::from("/"), ROOT_INO);
+        ino_to_path.insert(ROOT_INO, PathBuf::from("/"));
+        path_to_ino.insert(PathBuf::from("/"), ROOT_INO);
 
         Self {
             profile,
-            record,
             git_rw_filter: GitRwFilter::new(),
             mount_root: None,
             next_ino: ROOT_INO + 1,
             next_fh: 1,
             ino_to_path,
             path_to_ino,
-            overlay: std::collections::HashMap::new(),
-            atime_overrides: std::collections::HashMap::new(),
             handles: std::collections::HashMap::new(),
         }
     }
@@ -191,11 +127,10 @@ impl CowFs {
             return Some(EACCES);
         }
         if self.git_rw_filter.is_git_metadata_path(path)
-            && !requester_pid
-                .is_some_and(|pid| {
-                    self.git_rw_filter
-                        .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
-                })
+            && !requester_pid.is_some_and(|pid| {
+                self.git_rw_filter
+                    .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
+            })
         {
             return Some(EACCES);
         }
@@ -220,11 +155,10 @@ impl CowFs {
             return Some(EACCES);
         }
         if self.git_rw_filter.is_git_metadata_path(path)
-            && !requester_pid
-                .is_some_and(|pid| {
-                    self.git_rw_filter
-                        .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
-                })
+            && !requester_pid.is_some_and(|pid| {
+                self.git_rw_filter
+                    .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
+            })
         {
             return Some(EACCES);
         }
@@ -242,9 +176,6 @@ impl CowFs {
     }
 
     fn path_is_directory(&self, path: &Path) -> bool {
-        if let Some(node) = self.overlay.get(path) {
-            return matches!(node, OverlayNode::Dir { .. });
-        }
         match fs::symlink_metadata(path) {
             Ok(meta) => meta.file_type().is_dir(),
             Err(_) => false,
@@ -253,7 +184,7 @@ impl CowFs {
 
     fn runtime_guard_root(&self) -> Option<&Path> {
         let mount_root = self.mount_root.as_deref()?;
-        if mount_root.file_name() != Some(std::ffi::OsStr::new(crate::ns_runtime::MOUNT_DIR_NAME)) {
+        if mount_root.file_name() != Some(OsStr::new(crate::ns_runtime::MOUNT_DIR_NAME)) {
             return None;
         }
         let runtime_dir = mount_root.parent()?;
@@ -286,12 +217,10 @@ impl CowFs {
 
     fn write_mode_for_pid(&self, path: &Path, requester_pid: Option<u32>) -> WriteMode {
         if self.git_rw_filter.is_git_metadata_path(path) {
-            return if requester_pid
-                .is_some_and(|pid| {
-                    self.git_rw_filter
-                        .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
-                })
-            {
+            return if requester_pid.is_some_and(|pid| {
+                self.git_rw_filter
+                    .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
+            }) {
                 WriteMode::Passthrough
             } else {
                 WriteMode::Forbidden
@@ -299,7 +228,6 @@ impl CowFs {
         }
         match self.dynamic_visibility(path) {
             Visibility::Action(RuleAction::Passthrough) => WriteMode::Passthrough,
-            Visibility::Action(RuleAction::Cow) => WriteMode::Cow,
             _ => WriteMode::Forbidden,
         }
     }
@@ -310,21 +238,15 @@ impl CowFs {
     }
 
     fn attr_for_path(&mut self, path: &Path, metadata: &Metadata) -> FileAttr {
-        let kind = filetype_from_metadata(metadata);
-        let ino = self.ensure_ino(path);
-        let atime = system_time_from_unix(metadata.atime(), metadata.atime_nsec());
-        let mtime = system_time_from_unix(metadata.mtime(), metadata.mtime_nsec());
-        let ctime = system_time_from_unix(metadata.ctime(), metadata.ctime_nsec());
-
-        let mut attr = FileAttr {
-            ino,
+        FileAttr {
+            ino: self.ensure_ino(path),
             size: metadata.len(),
             blocks: metadata.blocks(),
-            atime,
-            mtime,
-            ctime,
-            crtime: ctime,
-            kind,
+            atime: system_time_from_unix(metadata.atime(), metadata.atime_nsec()),
+            mtime: system_time_from_unix(metadata.mtime(), metadata.mtime_nsec()),
+            ctime: system_time_from_unix(metadata.ctime(), metadata.ctime_nsec()),
+            crtime: system_time_from_unix(metadata.ctime(), metadata.ctime_nsec()),
+            kind: filetype_from_metadata(metadata),
             perm: (metadata.mode() & 0o7777) as u16,
             nlink: metadata.nlink() as u32,
             uid: metadata.uid(),
@@ -332,361 +254,6 @@ impl CowFs {
             rdev: metadata.rdev() as u32,
             blksize: 4096,
             flags: 0,
-        };
-        self.apply_atime_override(path, &mut attr);
-        attr
-    }
-
-    fn attr_for_overlay(&mut self, path: &Path, node: &OverlayNode) -> FileAttr {
-        let ino = self.ensure_ino(path);
-        let uid = unsafe { libc::geteuid() };
-        let gid = unsafe { libc::getegid() };
-        let (kind, perm, size, times) = match node {
-            OverlayNode::Deleted => unreachable!("deleted nodes do not have attrs"),
-            OverlayNode::Dir { mode, times } => (FileType::Directory, *mode, 0, times),
-            OverlayNode::Regular { data, mode, times } => {
-                (FileType::RegularFile, *mode, data.len() as u64, times)
-            }
-            OverlayNode::Symlink { target, times } => (
-                FileType::Symlink,
-                0o777,
-                target.as_os_str().len() as u64,
-                times,
-            ),
-        };
-
-        let mut attr = FileAttr {
-            ino,
-            size,
-            blocks: 1,
-            atime: times.atime,
-            mtime: times.mtime,
-            ctime: times.ctime,
-            crtime: times.ctime,
-            kind,
-            perm,
-            nlink: 1,
-            uid,
-            gid,
-            rdev: 0,
-            blksize: 4096,
-            flags: 0,
-        };
-        self.apply_atime_override(path, &mut attr);
-        attr
-    }
-
-    fn overlay_times_from_metadata(metadata: &Metadata) -> OverlayTimes {
-        OverlayTimes {
-            atime: system_time_from_unix(metadata.atime(), metadata.atime_nsec()),
-            mtime: system_time_from_unix(metadata.mtime(), metadata.mtime_nsec()),
-            ctime: system_time_from_unix(metadata.ctime(), metadata.ctime_nsec()),
-        }
-    }
-
-    fn overlay_times_now() -> OverlayTimes {
-        let now = SystemTime::now();
-        OverlayTimes {
-            atime: now,
-            mtime: now,
-            ctime: now,
-        }
-    }
-
-    fn apply_atime_override(&self, path: &Path, attr: &mut FileAttr) {
-        if let Some(atime) = self.atime_overrides.get(path) {
-            attr.atime = *atime;
-        }
-    }
-
-    fn effective_node(&self, path: &Path) -> Result<Option<NodeRef>, i32> {
-        if let Some(node) = self.overlay.get(path) {
-            return match node {
-                OverlayNode::Deleted => Ok(None),
-                _ => Ok(Some(NodeRef::Overlay(node.clone()))),
-            };
-        }
-        match fs::symlink_metadata(path) {
-            Ok(meta) => Ok(Some(NodeRef::Host(meta))),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(_) => Err(EIO),
-        }
-    }
-
-    fn ensure_openable_node(&self, path: &Path) -> Result<(), i32> {
-        match self.effective_node(path)? {
-            None => Err(ENOENT),
-            Some(NodeRef::Host(metadata)) => {
-                if metadata.file_type().is_dir() {
-                    Err(EISDIR)
-                } else {
-                    Ok(())
-                }
-            }
-            Some(NodeRef::Overlay(OverlayNode::Deleted)) => Err(ENOENT),
-            Some(NodeRef::Overlay(OverlayNode::Dir { .. })) => Err(EISDIR),
-            Some(NodeRef::Overlay(OverlayNode::Regular { .. }))
-            | Some(NodeRef::Overlay(OverlayNode::Symlink { .. })) => Ok(()),
-        }
-    }
-
-    fn list_children(
-        &mut self,
-        parent: &Path,
-    ) -> Result<Vec<(u64, FileType, std::ffi::OsString)>, i32> {
-        let mut out = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        if let Ok(rd) = fs::read_dir(parent) {
-            for child in rd {
-                let Ok(child) = child else { continue };
-                let name = child.file_name();
-                let child_path = parent.join(&name);
-                if !self.is_visible(&child_path) {
-                    continue;
-                }
-                if matches!(self.overlay.get(&child_path), Some(OverlayNode::Deleted)) {
-                    continue;
-                }
-                let child_type = if let Some(node) = self.overlay.get(&child_path) {
-                    overlay_filetype(node)
-                } else {
-                    match child.metadata() {
-                        Ok(meta) => filetype_from_metadata(&meta),
-                        Err(_) => continue,
-                    }
-                };
-                let child_ino = self.ensure_ino(&child_path);
-                out.push((child_ino, child_type, name.clone()));
-                seen.insert(name);
-            }
-        }
-
-        let snapshot: Vec<(PathBuf, OverlayNode)> = self
-            .overlay
-            .iter()
-            .map(|(p, n)| (p.clone(), n.clone()))
-            .collect();
-        for (path, node) in snapshot {
-            if matches!(node, OverlayNode::Deleted) {
-                continue;
-            }
-            if path.parent() != Some(parent) {
-                continue;
-            }
-            if !self.is_visible(&path) {
-                continue;
-            }
-            let Some(name) = path.file_name() else {
-                continue;
-            };
-            let name = name.to_os_string();
-            if seen.contains(&name) {
-                continue;
-            }
-            let child_type = overlay_filetype(&node);
-            let child_ino = self.ensure_ino(&path);
-            out.push((child_ino, child_type, name));
-        }
-
-        Ok(out)
-    }
-
-    #[cfg(test)]
-    fn overlay_set(&mut self, path: PathBuf, node: OverlayNode) {
-        self.overlay.insert(path, node);
-    }
-
-    #[cfg(test)]
-    fn apply_cow_setattr_for_test(
-        &mut self,
-        path: &Path,
-        size: Option<u64>,
-        mode: Option<u32>,
-        atime: Option<SystemTime>,
-        mtime: Option<SystemTime>,
-    ) -> Result<FileAttr, i32> {
-        self.apply_cow_setattr(path, size, mode, atime, mtime)
-    }
-
-    #[cfg(test)]
-    fn apply_passthrough_setattr_for_test(
-        &mut self,
-        path: &Path,
-        size: Option<u64>,
-        mode: Option<u32>,
-        atime: Option<TimeOrNow>,
-        mtime: Option<TimeOrNow>,
-    ) -> Result<FileAttr, i32> {
-        self.apply_passthrough_setattr(path, size, mode, atime, mtime)
-    }
-
-    #[cfg(test)]
-    fn open_passthrough_handle_for_test(&mut self, path: &Path, flags: i32) -> Result<u64, i32> {
-        let ino = self.ensure_ino(path);
-        let file = Self::open_passthrough_file(path, flags, false)?;
-        Ok(self.allocate_passthrough_handle(ino, file))
-    }
-
-    #[cfg(test)]
-    fn host_attr_for_handle_for_test(&mut self, path: &Path, fh: u64) -> Result<FileAttr, i32> {
-        self.host_attr_for_handle(path, fh)
-    }
-
-    #[cfg(test)]
-    fn ensure_openable_node_for_test(&self, path: &Path) -> Result<(), i32> {
-        self.ensure_openable_node(path)
-    }
-
-    fn append_record(&self, op: &Operation) -> Result<(), i32> {
-        self.record
-            .append_cbor(record::TAG_WRITE_OP, op)
-            .map(|_| ())
-            .map_err(|_| EIO)
-    }
-
-    pub fn replay_from_record_frames(&mut self, frames: &[record::Frame]) -> ReplayStats {
-        let mut stats = ReplayStats {
-            total_frames: frames.len(),
-            ..ReplayStats::default()
-        };
-        for frame in frames {
-            if frame.flushed || frame.tag != record::TAG_WRITE_OP {
-                stats.skipped_frames += 1;
-                continue;
-            }
-            stats.pending_ops += 1;
-            let op: Operation = match record::decode_cbor(frame) {
-                Ok(op) => op,
-                Err(_) => {
-                    stats.skipped_ops += 1;
-                    continue;
-                }
-            };
-            if self.apply_replayed_operation(&op).is_ok() {
-                stats.applied_ops += 1;
-            } else {
-                stats.skipped_ops += 1;
-            }
-        }
-        stats
-    }
-
-    fn apply_replayed_operation(&mut self, op: &Operation) -> Result<(), ()> {
-        match op {
-            Operation::WriteFile { path, state } => {
-                let node = match state {
-                    FileState::Deleted => {
-                        self.atime_overrides.remove(path);
-                        OverlayNode::Deleted
-                    }
-                    FileState::Regular { data, mode } => OverlayNode::Regular {
-                        data: data.clone(),
-                        mode: (*mode & 0o7777) as u16,
-                        times: Self::overlay_times_now(),
-                    },
-                    FileState::Symlink(target) => OverlayNode::Symlink {
-                        target: target.clone(),
-                        times: Self::overlay_times_now(),
-                    },
-                };
-                self.overlay.insert(path.clone(), node);
-                Ok(())
-            }
-            Operation::CreateDir { path, mode } => {
-                self.overlay.insert(
-                    path.clone(),
-                    OverlayNode::Dir {
-                        mode: (*mode & 0o7777) as u16,
-                        times: Self::overlay_times_now(),
-                    },
-                );
-                Ok(())
-            }
-            Operation::RemoveDir { path } => {
-                self.atime_overrides.remove(path);
-                self.overlay.insert(path.clone(), OverlayNode::Deleted);
-                Ok(())
-            }
-            Operation::Rename { from, to } => self.apply_rename_paths(from, to).map_err(|_| ()),
-            Operation::Truncate { path, size } => {
-                let (mut data, mode) = self.current_regular(path).map_err(|_| ())?.ok_or(())?;
-                data.resize(*size as usize, 0);
-                let times = self
-                    .snapshot_node(path)
-                    .map_err(|_| ())?
-                    .and_then(|node| node.times().cloned())
-                    .unwrap_or_else(Self::overlay_times_now);
-                self.overlay
-                    .insert(path.clone(), OverlayNode::Regular { data, mode, times });
-                Ok(())
-            }
-        }
-    }
-
-    fn snapshot_node(&self, path: &Path) -> Result<Option<OverlayNode>, i32> {
-        if let Some(node) = self.overlay.get(path) {
-            return Ok(match node {
-                OverlayNode::Deleted => None,
-                other => Some(other.clone()),
-            });
-        }
-        let meta = match fs::symlink_metadata(path) {
-            Ok(m) => m,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err(EIO),
-        };
-        if meta.file_type().is_dir() {
-            return Ok(Some(OverlayNode::Dir {
-                mode: (meta.permissions().mode() & 0o7777) as u16,
-                times: Self::overlay_times_from_metadata(&meta),
-            }));
-        }
-        if meta.file_type().is_symlink() {
-            let target = fs::read_link(path).map_err(|_| EIO)?;
-            return Ok(Some(OverlayNode::Symlink {
-                target,
-                times: Self::overlay_times_from_metadata(&meta),
-            }));
-        }
-        if meta.file_type().is_file() {
-            let data = fs::read(path).map_err(|_| EIO)?;
-            let mode = (meta.permissions().mode() & 0o7777) as u16;
-            return Ok(Some(OverlayNode::Regular {
-                data,
-                mode,
-                times: Self::overlay_times_from_metadata(&meta),
-            }));
-        }
-        Ok(None)
-    }
-
-    fn current_regular(&self, path: &Path) -> Result<Option<(Vec<u8>, u16)>, i32> {
-        match self.snapshot_node(path)? {
-            Some(OverlayNode::Regular { data, mode, .. }) => Ok(Some((data, mode))),
-            Some(OverlayNode::Deleted) | None => Ok(None),
-            _ => Err(EIO),
-        }
-    }
-
-    fn ensure_path_absent(&self, path: &Path) -> Result<(), i32> {
-        match self.snapshot_node(path) {
-            Ok(Some(_)) => Err(EEXIST),
-            Ok(None) => Ok(()),
-            Err(code) => Err(code),
-        }
-    }
-
-    fn ensure_dir_empty(&mut self, path: &Path) -> Result<(), i32> {
-        match self.snapshot_node(path)? {
-            Some(OverlayNode::Dir { .. }) => {}
-            Some(_) => return Err(ENOTDIR),
-            None => return Err(ENOENT),
-        }
-        if self.list_children(path)?.is_empty() {
-            Ok(())
-        } else {
-            Err(ENOTEMPTY)
         }
     }
 
@@ -701,7 +268,6 @@ impl CowFs {
             .get(&fh)
             .and_then(|handle| match handle {
                 OpenHandle::Passthrough { file, .. } => Some(file),
-                OpenHandle::Cow { .. } => None,
             })
             .ok_or(ENOENT)?
             .metadata()
@@ -717,28 +283,50 @@ impl CowFs {
         fh
     }
 
-    fn allocate_cow_handle(&mut self, ino: u64) -> u64 {
-        let fh = self.next_fh;
-        self.next_fh += 1;
-        self.handles.insert(fh, OpenHandle::Cow { ino });
-        fh
-    }
-
     fn handle_ino(&self, fh: u64) -> Option<u64> {
         self.handles.get(&fh).map(|handle| match handle {
-            OpenHandle::Passthrough { ino, .. } | OpenHandle::Cow { ino } => *ino,
+            OpenHandle::Passthrough { ino, .. } => *ino,
         })
     }
 
     fn passthrough_file_mut(&mut self, fh: u64) -> Option<&mut fs::File> {
-        self.handles.get_mut(&fh).and_then(|handle| match handle {
-            OpenHandle::Passthrough { file, .. } => Some(file),
-            OpenHandle::Cow { .. } => None,
+        self.handles.get_mut(&fh).map(|handle| match handle {
+            OpenHandle::Passthrough { file, .. } => file,
         })
     }
 
     fn remove_handle(&mut self, fh: u64) {
         self.handles.remove(&fh);
+    }
+
+    fn ensure_openable_node(&self, path: &Path) -> Result<(), i32> {
+        let meta = fs::symlink_metadata(path).map_err(|err| io_errno(&err))?;
+        if meta.file_type().is_dir() {
+            Err(EISDIR)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn list_children(
+        &mut self,
+        parent: &Path,
+    ) -> Result<Vec<(u64, FileType, std::ffi::OsString)>, i32> {
+        let mut out = Vec::new();
+        let rd = fs::read_dir(parent).map_err(|err| io_errno(&err))?;
+        for child in rd {
+            let child = child.map_err(|err| io_errno(&err))?;
+            let name = child.file_name();
+            let child_path = parent.join(&name);
+            if !self.is_visible(&child_path) {
+                continue;
+            }
+            let meta = child.metadata().map_err(|err| io_errno(&err))?;
+            let child_type = filetype_from_metadata(&meta);
+            let child_ino = self.ensure_ino(&child_path);
+            out.push((child_ino, child_type, name));
+        }
+        Ok(out)
     }
 
     fn open_passthrough_file(path: &Path, flags: i32, create_new: bool) -> Result<fs::File, i32> {
@@ -772,128 +360,6 @@ impl CowFs {
         opts.open(path).map_err(|err| io_errno(&err))
     }
 
-    fn record_write_file(&self, path: PathBuf, state: FileState) -> Result<(), i32> {
-        self.append_record(&Operation::WriteFile { path, state })
-    }
-
-    fn set_overlay_regular_and_record(
-        &mut self,
-        path: &Path,
-        data: Vec<u8>,
-        mode: u16,
-    ) -> Result<(), i32> {
-        let now = SystemTime::now();
-        let mut times = self
-            .snapshot_node(path)?
-            .and_then(|node| node.times().cloned())
-            .unwrap_or_else(Self::overlay_times_now);
-        times.mtime = now;
-        times.ctime = now;
-        self.overlay.insert(
-            path.to_path_buf(),
-            OverlayNode::Regular {
-                data: data.clone(),
-                mode,
-                times,
-            },
-        );
-        self.record_write_file(path.to_path_buf(), regular_state(data, mode))
-    }
-
-    fn apply_cow_setattr(
-        &mut self,
-        path: &Path,
-        size: Option<u64>,
-        mode: Option<u32>,
-        atime: Option<SystemTime>,
-        mtime: Option<SystemTime>,
-    ) -> Result<FileAttr, i32> {
-        if size.is_none() && mode.is_none() && atime.is_none() && mtime.is_none() {
-            return Err(ENOSYS);
-        }
-
-        let mut maybe_node = self.snapshot_node(path)?;
-        let now = SystemTime::now();
-        let mut updated_regular = false;
-        let mut regular_data: Vec<u8> = Vec::new();
-        let mut regular_mode = 0u16;
-        let mut time_changed = false;
-
-        if size.is_some() || mode.is_some() {
-            let (mut data, mut current_mode) = match self.current_regular(path) {
-                Ok(Some(v)) => v,
-                Ok(None) => return Err(ENOENT),
-                Err(code) => {
-                    if mode.is_some() && size.is_none() {
-                        return Err(EOPNOTSUPP);
-                    }
-                    return Err(code);
-                }
-            };
-            if let Some(size) = size {
-                data.resize(size as usize, 0);
-                updated_regular = true;
-                time_changed = true;
-            }
-            if let Some(mode) = mode {
-                let next_mode = (mode & 0o7777) as u16;
-                if next_mode != current_mode {
-                    current_mode = next_mode;
-                    updated_regular = true;
-                    time_changed = true;
-                }
-            }
-            regular_data = data;
-            regular_mode = current_mode;
-        }
-
-        if updated_regular {
-            self.set_overlay_regular_and_record(path, regular_data.clone(), regular_mode)?;
-            maybe_node = Some(OverlayNode::Regular {
-                data: regular_data,
-                mode: regular_mode,
-                times: self
-                    .snapshot_node(path)?
-                    .and_then(|node| node.times().cloned())
-                    .unwrap_or_else(Self::overlay_times_now),
-            });
-        } else if mode.is_some() {
-            // Non-regular files do not carry a mode delta in record format.
-            return Err(EOPNOTSUPP);
-        }
-
-        if let Some(node) = maybe_node.as_mut() {
-            if let Some(times) = node.times_mut() {
-                if time_changed {
-                    times.ctime = now;
-                    if size.is_some() {
-                        times.mtime = now;
-                    }
-                }
-                if let Some(ts) = atime {
-                    times.atime = ts;
-                }
-                if let Some(ts) = mtime {
-                    times.mtime = ts;
-                    times.ctime = now;
-                }
-            }
-        }
-
-        if let Some(node) = maybe_node.as_ref() {
-            self.overlay.insert(path.to_path_buf(), node.clone());
-        }
-
-        if let Some(ts) = atime {
-            self.atime_overrides.insert(path.to_path_buf(), ts);
-        }
-
-        match maybe_node {
-            Some(OverlayNode::Deleted) | None => Err(ENOENT),
-            Some(node) => Ok(self.attr_for_overlay(path, &node)),
-        }
-    }
-
     fn apply_passthrough_setattr(
         &mut self,
         path: &Path,
@@ -924,9 +390,7 @@ impl CowFs {
             let times = [to_timespec_or_omit(atime), to_timespec_or_omit(mtime)];
             let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0) };
             if rc != 0 {
-                return Err(std::io::Error::last_os_error()
-                    .raw_os_error()
-                    .unwrap_or(EIO));
+                return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(EIO));
             }
         }
 
@@ -934,142 +398,16 @@ impl CowFs {
         Ok(self.attr_for_path(path, &meta))
     }
 
-    fn move_atime_overrides_subtree(&mut self, from: &Path, to: &Path) {
-        let keys: Vec<PathBuf> = self
-            .atime_overrides
-            .keys()
-            .filter(|k| **k == from || is_strict_descendant(from, k))
-            .cloned()
-            .collect();
-        for key in keys {
-            let Some(atime) = self.atime_overrides.remove(&key) else {
-                continue;
-            };
-            let suffix = key.strip_prefix(from).unwrap_or(Path::new(""));
-            let new_path = if suffix.as_os_str().is_empty() {
-                to.to_path_buf()
-            } else {
-                to.join(suffix)
-            };
-            self.atime_overrides.insert(new_path, atime);
-        }
-    }
-
-    fn apply_rename_paths(&mut self, from: &Path, to: &Path) -> Result<(), i32> {
-        if from == to {
-            return Ok(());
-        }
-        let Some(src_node) = self.snapshot_node(from)? else {
-            return Err(ENOENT);
-        };
-        let src_is_dir = matches!(src_node, OverlayNode::Dir { .. });
-        if src_is_dir && is_strict_descendant(from, to) {
-            return Err(EINVAL);
-        }
-
-        if let Some(dst_node) = self.snapshot_node(to)? {
-            let dst_is_dir = matches!(dst_node, OverlayNode::Dir { .. });
-            if src_is_dir && !dst_is_dir {
-                return Err(ENOTDIR);
-            }
-            if !src_is_dir && dst_is_dir {
-                return Err(EISDIR);
-            }
-            if dst_is_dir && !self.list_children(to)?.is_empty() {
-                return Err(ENOTEMPTY);
-            }
-            self.clear_overlay_subtree(to);
-            self.overlay.insert(to.to_path_buf(), OverlayNode::Deleted);
-        }
-
-        if src_is_dir {
-            let moved = self.move_overlay_subtree(from, to);
-            if !moved {
-                self.overlay.insert(
-                    to.to_path_buf(),
-                    OverlayNode::Dir {
-                        mode: 0o755,
-                        times: Self::overlay_times_now(),
-                    },
-                );
-            }
-            self.move_atime_overrides_subtree(from, to);
-        } else {
-            self.overlay.insert(to.to_path_buf(), src_node);
-            if let Some(atime) = self.atime_overrides.remove(from) {
-                self.atime_overrides.insert(to.to_path_buf(), atime);
-            }
-        }
-        self.overlay
-            .insert(from.to_path_buf(), OverlayNode::Deleted);
-        self.atime_overrides.remove(from);
-        Ok(())
-    }
-
-    fn clear_overlay_subtree(&mut self, root: &Path) {
-        let keys: Vec<PathBuf> = self
-            .overlay
-            .keys()
-            .filter(|k| **k == root || is_strict_descendant(root, k))
-            .cloned()
-            .collect();
-        for key in keys {
-            self.overlay.remove(&key);
-            self.atime_overrides.remove(&key);
-        }
-    }
-
-    fn remap_known_inos_subtree(&mut self, from: &Path, to: &Path) {
-        let old_paths: Vec<PathBuf> = self
-            .path_to_ino
-            .keys()
-            .filter(|path| **path == from || is_strict_descendant(from, path))
-            .cloned()
-            .collect();
-
-        for old_path in old_paths {
-            let Some(ino) = self.path_to_ino.remove(&old_path) else {
-                continue;
-            };
-            let suffix = old_path.strip_prefix(from).unwrap_or(Path::new(""));
-            let new_path = if suffix.as_os_str().is_empty() {
-                to.to_path_buf()
-            } else {
-                to.join(suffix)
-            };
-            self.ino_to_path.insert(ino, new_path.clone());
-            self.path_to_ino.insert(new_path, ino);
-        }
-    }
-
-    fn move_overlay_subtree(&mut self, from: &Path, to: &Path) -> bool {
-        let entries: Vec<(PathBuf, OverlayNode)> = self
-            .overlay
-            .iter()
-            .filter_map(|(p, n)| {
-                if *p == from || is_strict_descendant(from, p) {
-                    Some((p.clone(), n.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if entries.is_empty() {
-            return false;
-        }
-        for (old, _) in &entries {
-            self.overlay.remove(old);
-        }
-        for (old, node) in entries {
-            let suffix = old.strip_prefix(from).unwrap_or(Path::new(""));
-            let new_path = if suffix.as_os_str().is_empty() {
-                to.to_path_buf()
-            } else {
-                to.join(suffix)
-            };
-            self.overlay.insert(new_path, node);
-        }
-        true
+    #[cfg(test)]
+    fn apply_passthrough_setattr_for_test(
+        &mut self,
+        path: &Path,
+        size: Option<u64>,
+        mode: Option<u32>,
+        atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
+    ) -> Result<FileAttr, i32> {
+        self.apply_passthrough_setattr(path, size, mode, atime, mtime)
     }
 }
 
@@ -1092,35 +430,23 @@ pub(crate) fn allow_other_enabled_in_fuse_conf() -> bool {
         .any(|line| line == "user_allow_other")
 }
 
-enum NodeRef {
-    Host(Metadata),
-    Overlay(OverlayNode),
-}
-
 impl Filesystem for CowFs {
     fn lookup(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
             reply.error(ENOENT);
             return;
         };
-
         let path = parent_path.join(name);
         if let Some(errno) = self.access_errno_for_pid(&path, Some(req.pid())) {
             reply.error(errno);
             return;
         }
-
-        match self.effective_node(&path) {
-            Ok(Some(NodeRef::Host(metadata))) => {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
                 let attr = self.attr_for_path(&path, &metadata);
                 reply.entry(&TTL, &attr, 0);
             }
-            Ok(Some(NodeRef::Overlay(node))) => {
-                let attr = self.attr_for_overlay(&path, &node);
-                reply.entry(&TTL, &attr, 0);
-            }
-            Ok(None) => reply.error(ENOENT),
-            Err(code) => reply.error(code),
+            Err(err) => reply.error(io_errno(&err)),
         }
     }
 
@@ -1140,16 +466,8 @@ impl Filesystem for CowFs {
             reply.attr(&TTL, &attr);
             return;
         }
-        match self.effective_node(&path) {
-            Ok(Some(NodeRef::Host(metadata))) => {
-                let attr = self.attr_for_path(&path, &metadata);
-                reply.attr(&TTL, &attr);
-            }
-            Ok(Some(NodeRef::Overlay(node))) => {
-                let attr = self.attr_for_overlay(&path, &node);
-                reply.attr(&TTL, &attr);
-            }
-            Ok(None) => reply.error(ENOENT),
+        match self.host_attr(&path) {
+            Ok(attr) => reply.attr(&TTL, &attr),
             Err(code) => reply.error(code),
         }
     }
@@ -1170,31 +488,19 @@ impl Filesystem for CowFs {
             reply.error(errno);
             return;
         }
-
-        match self.effective_node(&path) {
-            Ok(Some(NodeRef::Host(meta))) => {
-                if !meta.file_type().is_dir() {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-            Ok(Some(NodeRef::Overlay(node))) => {
-                if !matches!(node, OverlayNode::Dir { .. }) {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-            Ok(None) => {
-                reply.error(ENOENT);
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(err) => {
+                reply.error(io_errno(&err));
                 return;
             }
-            Err(code) => {
-                reply.error(code);
-                return;
-            }
+        };
+        if !meta.file_type().is_dir() {
+            reply.error(ENOTDIR);
+            return;
         }
 
-        let mut entries: Vec<(u64, FileType, std::ffi::OsString)> = Vec::new();
+        let mut entries = Vec::new();
         let self_ino = self.ensure_ino(&path);
         let parent_path = if path == Path::new("/") {
             Path::new("/").to_path_buf()
@@ -1203,22 +509,15 @@ impl Filesystem for CowFs {
         };
         let parent_ino = self.ensure_ino(&parent_path);
         entries.push((self_ino, FileType::Directory, std::ffi::OsString::from(".")));
-        entries.push((
-            parent_ino,
-            FileType::Directory,
-            std::ffi::OsString::from(".."),
-        ));
-
-        let overlay_entries = match self.list_children(&path) {
+        entries.push((parent_ino, FileType::Directory, std::ffi::OsString::from("..")));
+        let host_entries = match self.list_children(&path) {
             Ok(entries) => entries,
             Err(code) => {
                 reply.error(code);
                 return;
             }
         };
-        for entry in overlay_entries {
-            entries.push(entry);
-        }
+        entries.extend(host_entries);
 
         append_readdir_entries(&entries, offset, |ino, next_offset, kind, name| {
             reply.add(ino, next_offset, kind, name)
@@ -1231,7 +530,6 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        // allow write open only for writable rules.
         if flags & libc::O_ACCMODE != libc::O_RDONLY {
             if let Some(errno) = self.mutation_errno_for_pid(&path, Some(req.pid())) {
                 reply.error(errno);
@@ -1249,19 +547,14 @@ impl Filesystem for CowFs {
             reply.error(code);
             return;
         }
-        if self.write_mode_for_pid(&path, Some(req.pid())) == WriteMode::Passthrough {
-            let file = match Self::open_passthrough_file(&path, flags, false) {
-                Ok(file) => file,
-                Err(code) => {
-                    reply.error(code);
-                    return;
-                }
-            };
-            let fh = self.allocate_passthrough_handle(ino, file);
-            reply.opened(fh, 0);
-            return;
-        }
-        let fh = self.allocate_cow_handle(ino);
+        let file = match Self::open_passthrough_file(&path, flags, false) {
+            Ok(file) => file,
+            Err(code) => {
+                reply.error(code);
+                return;
+            }
+        };
+        let fh = self.allocate_passthrough_handle(ino, file);
         reply.opened(fh, 0);
     }
 
@@ -1285,38 +578,11 @@ impl Filesystem for CowFs {
             reply.error(errno);
             return;
         }
-
-        if let Some(node) = self.overlay.get(&path) {
-            match node {
-                OverlayNode::Deleted | OverlayNode::Dir { .. } => {
-                    reply.error(ENOENT);
-                    return;
-                }
-                OverlayNode::Symlink { .. } => {
-                    reply.error(EIO);
-                    return;
-                }
-                OverlayNode::Regular { data, .. } => {
-                    if offset < 0 {
-                        reply.error(EIO);
-                        return;
-                    }
-                    let off = offset as usize;
-                    if off >= data.len() {
-                        reply.data(&[]);
-                        return;
-                    }
-                    let end = std::cmp::min(data.len(), off + size as usize);
-                    reply.data(&data[off..end]);
-                    return;
-                }
-            }
-        }
-
         if offset < 0 {
             reply.error(EIO);
             return;
         }
+
         let mut buf = vec![0u8; size as usize];
         let n = if let Some(file) = self.passthrough_file_mut(fh) {
             if file.seek(SeekFrom::Start(offset as u64)).is_err() {
@@ -1325,20 +591,16 @@ impl Filesystem for CowFs {
             }
             match file.read(&mut buf) {
                 Ok(n) => n,
-                Err(_) => {
-                    reply.error(EIO);
+                Err(err) => {
+                    reply.error(io_errno(&err));
                     return;
                 }
             }
         } else {
             let mut file = match fs::File::open(&path) {
                 Ok(file) => file,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    reply.error(ENOENT);
-                    return;
-                }
-                Err(_) => {
-                    reply.error(EIO);
+                Err(err) => {
+                    reply.error(io_errno(&err));
                     return;
                 }
             };
@@ -1348,8 +610,8 @@ impl Filesystem for CowFs {
             }
             match file.read(&mut buf) {
                 Ok(n) => n,
-                Err(_) => {
-                    reply.error(EIO);
+                Err(err) => {
+                    reply.error(io_errno(&err));
                     return;
                 }
             }
@@ -1370,26 +632,13 @@ impl Filesystem for CowFs {
             reply.data(rewritten.as_bytes());
             return;
         }
-        if let Some(node) = self.overlay.get(&path) {
-            match node {
-                OverlayNode::Symlink { target, .. } => {
-                    let rewritten =
-                        rewrite_proc_exe_readlink_target(&path, target, self.mount_root.as_deref());
-                    reply.data(rewritten.as_os_str().as_bytes());
-                }
-                OverlayNode::Deleted => reply.error(ENOENT),
-                _ => reply.error(EIO),
-            }
-            return;
-        }
         match fs::read_link(&path) {
             Ok(target) => {
                 let rewritten =
                     rewrite_proc_exe_readlink_target(&path, &target, self.mount_root.as_deref());
                 reply.data(rewritten.as_os_str().as_bytes());
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => reply.error(ENOENT),
-            Err(_) => reply.error(EIO),
+            Err(err) => reply.error(io_errno(&err)),
         }
     }
 
@@ -1412,65 +661,31 @@ impl Filesystem for CowFs {
             reply.error(errno);
             return;
         }
-        match self.write_mode_for_pid(&path, Some(req.pid())) {
-            WriteMode::Forbidden => {
-                reply.error(EACCES);
-            }
-            WriteMode::Cow => {
-                if let Err(code) = self.ensure_path_absent(&path) {
-                    reply.error(code);
-                    return;
-                }
-                let mode = normalize_create_mode(mode, umask);
-                let node = OverlayNode::Regular {
-                    data: Vec::new(),
-                    mode,
-                    times: Self::overlay_times_now(),
-                };
-                self.overlay.insert(path.clone(), node.clone());
-                if self
-                    .record_write_file(
-                        path.clone(),
-                        FileState::Regular {
-                            data: Vec::new(),
-                            mode: mode as u32,
-                        },
-                    )
-                    .is_err()
-                {
-                    reply.error(EIO);
-                    return;
-                }
-                let attr = self.attr_for_overlay(&path, &node);
-                let fh = self.allocate_cow_handle(attr.ino);
-                reply.created(&TTL, &attr, 0, fh, 0);
-            }
-            WriteMode::Passthrough => {
-                let file = match Self::open_passthrough_file(&path, flags, true) {
-                    Ok(file) => file,
-                    Err(code) => {
-                        reply.error(code);
-                        return;
-                    }
-                };
-                let created_mode = (normalize_create_mode(mode, umask) as u32) & 0o7777;
-                if let Err(err) =
-                    file.set_permissions(std::fs::Permissions::from_mode(created_mode))
-                {
-                    reply.error(io_errno(&err));
-                    return;
-                }
-                let attr = match self.host_attr(&path) {
-                    Ok(attr) => attr,
-                    Err(code) => {
-                        reply.error(code);
-                        return;
-                    }
-                };
-                let fh = self.allocate_passthrough_handle(attr.ino, file);
-                reply.created(&TTL, &attr, 0, fh, 0);
-            }
+        if self.write_mode_for_pid(&path, Some(req.pid())) == WriteMode::Forbidden {
+            reply.error(EACCES);
+            return;
         }
+        let file = match Self::open_passthrough_file(&path, flags, true) {
+            Ok(file) => file,
+            Err(code) => {
+                reply.error(code);
+                return;
+            }
+        };
+        let created_mode = (normalize_create_mode(mode, umask) as u32) & 0o7777;
+        if let Err(err) = file.set_permissions(std::fs::Permissions::from_mode(created_mode)) {
+            reply.error(io_errno(&err));
+            return;
+        }
+        let attr = match self.host_attr(&path) {
+            Ok(attr) => attr,
+            Err(code) => {
+                reply.error(code);
+                return;
+            }
+        };
+        let fh = self.allocate_passthrough_handle(attr.ino, file);
+        reply.created(&TTL, &attr, 0, fh, 0);
     }
 
     fn write(
@@ -1490,64 +705,27 @@ impl Filesystem for CowFs {
             reply.error(ENOENT);
             return;
         };
-        match self.write_mode_for_pid(&path, Some(req.pid())) {
-            WriteMode::Forbidden => {
-                reply.error(EACCES);
-            }
-            WriteMode::Cow => {
-                if offset < 0 {
-                    reply.error(EIO);
-                    return;
-                }
-                let (mut content, mode) = match self.current_regular(&path) {
-                    Ok(Some(v)) => v,
-                    Ok(None) => {
-                        reply.error(ENOENT);
-                        return;
-                    }
-                    Err(code) => {
-                        reply.error(code);
-                        return;
-                    }
-                };
-                let off = offset as usize;
-                if content.len() < off {
-                    content.resize(off, 0);
-                }
-                if content.len() < off + data.len() {
-                    content.resize(off + data.len(), 0);
-                }
-                content[off..off + data.len()].copy_from_slice(data);
-
-                if self
-                    .set_overlay_regular_and_record(&path, content, mode)
-                    .is_err()
-                {
-                    reply.error(EIO);
-                    return;
-                }
-                reply.written(data.len() as u32);
-            }
-            WriteMode::Passthrough => {
-                if offset < 0 {
-                    reply.error(EIO);
-                    return;
-                }
-                let Some(file) = self.passthrough_file_mut(fh) else {
-                    reply.error(ENOENT);
-                    return;
-                };
-                if let Err(err) = file.seek(SeekFrom::Start(offset as u64)) {
-                    reply.error(io_errno(&err));
-                    return;
-                }
-                if let Err(err) = file.write_all(data) {
-                    reply.error(io_errno(&err));
-                    return;
-                }
-                reply.written(data.len() as u32);
-            }
+        if self.write_mode_for_pid(&path, Some(req.pid())) == WriteMode::Forbidden {
+            reply.error(EACCES);
+            return;
         }
+        if offset < 0 {
+            reply.error(EIO);
+            return;
+        }
+        let Some(file) = self.passthrough_file_mut(fh) else {
+            reply.error(ENOENT);
+            return;
+        };
+        if let Err(err) = file.seek(SeekFrom::Start(offset as u64)) {
+            reply.error(io_errno(&err));
+            return;
+        }
+        if let Err(err) = file.write_all(data) {
+            reply.error(io_errno(&err));
+            return;
+        }
+        reply.written(data.len() as u32);
     }
 
     fn flush(
@@ -1591,25 +769,13 @@ impl Filesystem for CowFs {
             reply.error(errno);
             return;
         }
-        match self.write_mode_for_pid(&path, Some(req.pid())) {
-            WriteMode::Forbidden => {
-                reply.error(EACCES);
-                return;
-            }
-            WriteMode::Cow => {
-                self.overlay.insert(path.clone(), OverlayNode::Deleted);
-                self.atime_overrides.remove(&path);
-                if self.record_write_file(path, FileState::Deleted).is_err() {
-                    reply.error(EIO);
-                    return;
-                }
-            }
-            WriteMode::Passthrough => {
-                if let Err(err) = fs::remove_file(&path) {
-                    reply.error(io_errno(&err));
-                    return;
-                }
-            }
+        if self.write_mode_for_pid(&path, Some(req.pid())) == WriteMode::Forbidden {
+            reply.error(EACCES);
+            return;
+        }
+        if let Err(err) = fs::remove_file(&path) {
+            reply.error(io_errno(&err));
+            return;
         }
         reply.ok();
     }
@@ -1632,49 +798,22 @@ impl Filesystem for CowFs {
             reply.error(errno);
             return;
         }
-        match self.write_mode_for_pid(&path, Some(req.pid())) {
-            WriteMode::Forbidden => {
-                reply.error(EACCES);
-            }
-            WriteMode::Cow => {
-                if let Err(code) = self.ensure_path_absent(&path) {
-                    reply.error(code);
-                    return;
-                }
-                let mode = normalize_create_mode(mode, umask);
-                let node = OverlayNode::Dir {
-                    mode,
-                    times: Self::overlay_times_now(),
-                };
-                self.overlay.insert(path.clone(), node.clone());
-                if self
-                    .append_record(&Operation::CreateDir {
-                        path: path.clone(),
-                        mode: mode as u32,
-                    })
-                    .is_err()
-                {
-                    reply.error(EIO);
-                    return;
-                }
-                let attr = self.attr_for_overlay(&path, &node);
-                reply.entry(&TTL, &attr, 0);
-            }
-            WriteMode::Passthrough => {
-                if let Err(err) = create_dir_with_mode(&path, normalize_create_mode(mode, umask)) {
-                    reply.error(io_errno(&err));
-                    return;
-                }
-                let attr = match self.host_attr(&path) {
-                    Ok(attr) => attr,
-                    Err(code) => {
-                        reply.error(code);
-                        return;
-                    }
-                };
-                reply.entry(&TTL, &attr, 0);
-            }
+        if self.write_mode_for_pid(&path, Some(req.pid())) == WriteMode::Forbidden {
+            reply.error(EACCES);
+            return;
         }
+        if let Err(err) = create_dir_with_mode(&path, normalize_create_mode(mode, umask)) {
+            reply.error(io_errno(&err));
+            return;
+        }
+        let attr = match self.host_attr(&path) {
+            Ok(attr) => attr,
+            Err(code) => {
+                reply.error(code);
+                return;
+            }
+        };
+        reply.entry(&TTL, &attr, 0);
     }
 
     fn rmdir(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
@@ -1687,29 +826,13 @@ impl Filesystem for CowFs {
             reply.error(errno);
             return;
         }
-        match self.write_mode_for_pid(&path, Some(req.pid())) {
-            WriteMode::Forbidden => {
-                reply.error(EACCES);
-                return;
-            }
-            WriteMode::Cow => {
-                if let Err(code) = self.ensure_dir_empty(&path) {
-                    reply.error(code);
-                    return;
-                }
-                self.overlay.insert(path.clone(), OverlayNode::Deleted);
-                self.atime_overrides.remove(&path);
-                if self.append_record(&Operation::RemoveDir { path }).is_err() {
-                    reply.error(EIO);
-                    return;
-                }
-            }
-            WriteMode::Passthrough => {
-                if let Err(err) = fs::remove_dir(&path) {
-                    reply.error(io_errno(&err));
-                    return;
-                }
-            }
+        if self.write_mode_for_pid(&path, Some(req.pid())) == WriteMode::Forbidden {
+            reply.error(EACCES);
+            return;
+        }
+        if let Err(err) = fs::remove_dir(&path) {
+            reply.error(io_errno(&err));
+            return;
         }
         reply.ok();
     }
@@ -1731,45 +854,22 @@ impl Filesystem for CowFs {
             reply.error(errno);
             return;
         }
-        match self.write_mode_for_pid(&path, Some(req.pid())) {
-            WriteMode::Forbidden => {
-                reply.error(EACCES);
-            }
-            WriteMode::Cow => {
-                if let Err(code) = self.ensure_path_absent(&path) {
-                    reply.error(code);
-                    return;
-                }
-                let node = OverlayNode::Symlink {
-                    target: link.to_path_buf(),
-                    times: Self::overlay_times_now(),
-                };
-                self.overlay.insert(path.clone(), node.clone());
-                if self
-                    .record_write_file(path.clone(), FileState::Symlink(link.to_path_buf()))
-                    .is_err()
-                {
-                    reply.error(EIO);
-                    return;
-                }
-                let attr = self.attr_for_overlay(&path, &node);
-                reply.entry(&TTL, &attr, 0);
-            }
-            WriteMode::Passthrough => {
-                if let Err(err) = std::os::unix::fs::symlink(link, &path) {
-                    reply.error(io_errno(&err));
-                    return;
-                }
-                let attr = match self.host_attr(&path) {
-                    Ok(attr) => attr,
-                    Err(code) => {
-                        reply.error(code);
-                        return;
-                    }
-                };
-                reply.entry(&TTL, &attr, 0);
-            }
+        if self.write_mode_for_pid(&path, Some(req.pid())) == WriteMode::Forbidden {
+            reply.error(EACCES);
+            return;
         }
+        if let Err(err) = std::os::unix::fs::symlink(link, &path) {
+            reply.error(io_errno(&err));
+            return;
+        }
+        let attr = match self.host_attr(&path) {
+            Ok(attr) => attr,
+            Err(code) => {
+                reply.error(code);
+                return;
+            }
+        };
+        reply.entry(&TTL, &attr, 0);
     }
 
     fn rename(
@@ -1800,32 +900,15 @@ impl Filesystem for CowFs {
             reply.error(errno);
             return;
         }
-        match (
-            self.write_mode_for_pid(&from, Some(req.pid())),
-            self.write_mode_for_pid(&to, Some(req.pid())),
-        ) {
-            (WriteMode::Cow, WriteMode::Cow) => {
-                if let Err(code) = self.apply_rename_paths(&from, &to) {
-                    reply.error(code);
-                    return;
-                }
-                self.remap_known_inos_subtree(&from, &to);
-                if self.append_record(&Operation::Rename { from, to }).is_err() {
-                    reply.error(EIO);
-                    return;
-                }
-            }
-            (WriteMode::Passthrough, WriteMode::Passthrough) => {
-                if let Err(err) = fs::rename(&from, &to) {
-                    reply.error(io_errno(&err));
-                    return;
-                }
-                self.remap_known_inos_subtree(&from, &to);
-            }
-            _ => {
-                reply.error(EACCES);
-                return;
-            }
+        if self.write_mode_for_pid(&from, Some(req.pid())) == WriteMode::Forbidden
+            || self.write_mode_for_pid(&to, Some(req.pid())) == WriteMode::Forbidden
+        {
+            reply.error(EACCES);
+            return;
+        }
+        if let Err(err) = fs::rename(&from, &to) {
+            reply.error(io_errno(&err));
+            return;
         }
         reply.ok();
     }
@@ -1849,7 +932,7 @@ impl Filesystem for CowFs {
         reply: ReplyAttr,
     ) {
         if uid.is_some() || gid.is_some() {
-            reply.error(EOPNOTSUPP);
+            reply.error(libc::EOPNOTSUPP);
             return;
         }
         let Some(path) = self.path_for_ino(ino).map(ToOwned::to_owned) else {
@@ -1860,35 +943,72 @@ impl Filesystem for CowFs {
             reply.error(errno);
             return;
         }
-        match self.write_mode_for_pid(&path, Some(req.pid())) {
-            WriteMode::Forbidden => {
-                reply.error(EACCES);
-            }
-            WriteMode::Cow => match self.apply_cow_setattr(
-                &path,
-                size,
-                mode,
-                to_system_time(atime),
-                to_system_time(mtime),
-            ) {
-                Ok(attr) => reply.attr(&TTL, &attr),
-                Err(code) => reply.error(code),
-            },
-            WriteMode::Passthrough => {
-                match self.apply_passthrough_setattr(&path, size, mode, atime, mtime) {
-                    Ok(attr) => reply.attr(&TTL, &attr),
-                    Err(code) => reply.error(code),
-                }
-            }
+        if self.write_mode_for_pid(&path, Some(req.pid())) == WriteMode::Forbidden {
+            reply.error(EACCES);
+            return;
+        }
+        match self.apply_passthrough_setattr(&path, size, mode, atime, mtime) {
+            Ok(attr) => reply.attr(&TTL, &attr),
+            Err(code) => reply.error(code),
         }
     }
 }
 
-fn to_system_time(value: Option<TimeOrNow>) -> Option<SystemTime> {
-    match value {
-        Some(TimeOrNow::SpecificTime(ts)) => Some(ts),
-        Some(TimeOrNow::Now) => Some(SystemTime::now()),
-        None => None,
+fn filetype_from_metadata(metadata: &Metadata) -> FileType {
+    let ft = metadata.file_type();
+    if ft.is_dir() {
+        FileType::Directory
+    } else if ft.is_symlink() {
+        FileType::Symlink
+    } else if ft.is_file() {
+        FileType::RegularFile
+    } else if ft.is_block_device() {
+        FileType::BlockDevice
+    } else if ft.is_char_device() {
+        FileType::CharDevice
+    } else if ft.is_fifo() {
+        FileType::NamedPipe
+    } else if ft.is_socket() {
+        FileType::Socket
+    } else {
+        FileType::RegularFile
+    }
+}
+
+fn system_time_from_unix(sec: i64, nsec: i64) -> SystemTime {
+    if sec < 0 || nsec < 0 {
+        return SystemTime::UNIX_EPOCH;
+    }
+    SystemTime::UNIX_EPOCH + Duration::new(sec as u64, nsec as u32)
+}
+
+fn io_errno(err: &std::io::Error) -> i32 {
+    err.raw_os_error().unwrap_or(EIO)
+}
+
+fn normalize_create_mode(mode: u32, umask: u32) -> u16 {
+    (mode & !umask & 0o7777) as u16
+}
+
+fn create_dir_with_mode(path: &Path, mode: u16) -> std::io::Result<()> {
+    fs::create_dir(path)?;
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(mode as u32);
+    fs::set_permissions(path, permissions)
+}
+
+fn append_readdir_entries<F>(
+    entries: &[(u64, FileType, std::ffi::OsString)],
+    offset: i64,
+    mut add: F,
+) where
+    F: FnMut(u64, i64, FileType, &OsStr) -> bool,
+{
+    let start = if offset <= 0 { 0 } else { offset as usize };
+    for (i, entry) in entries.iter().enumerate().skip(start) {
+        if add(entry.0, (i + 1) as i64, entry.1, entry.2.as_os_str()) {
+            break;
+        }
     }
 }
 
@@ -1962,84 +1082,6 @@ fn is_proc_exe_path(path: &Path) -> bool {
     )
 }
 
-fn filetype_from_metadata(metadata: &Metadata) -> FileType {
-    let ft = metadata.file_type();
-    if ft.is_dir() {
-        FileType::Directory
-    } else if ft.is_symlink() {
-        FileType::Symlink
-    } else if ft.is_file() {
-        FileType::RegularFile
-    } else if ft.is_block_device() {
-        FileType::BlockDevice
-    } else if ft.is_char_device() {
-        FileType::CharDevice
-    } else if ft.is_fifo() {
-        FileType::NamedPipe
-    } else if ft.is_socket() {
-        FileType::Socket
-    } else {
-        FileType::RegularFile
-    }
-}
-
-fn overlay_filetype(node: &OverlayNode) -> FileType {
-    match node {
-        OverlayNode::Deleted => FileType::RegularFile,
-        OverlayNode::Dir { .. } => FileType::Directory,
-        OverlayNode::Regular { .. } => FileType::RegularFile,
-        OverlayNode::Symlink { .. } => FileType::Symlink,
-    }
-}
-
-fn system_time_from_unix(sec: i64, nsec: i64) -> SystemTime {
-    if sec < 0 || nsec < 0 {
-        return SystemTime::UNIX_EPOCH;
-    }
-    SystemTime::UNIX_EPOCH + Duration::new(sec as u64, nsec as u32)
-}
-
-fn is_strict_descendant(parent: &Path, child: &Path) -> bool {
-    child != parent && child.starts_with(parent)
-}
-
-fn io_errno(err: &std::io::Error) -> i32 {
-    err.raw_os_error().unwrap_or(EIO)
-}
-
-fn normalize_create_mode(mode: u32, umask: u32) -> u16 {
-    (mode & !umask & 0o7777) as u16
-}
-
-fn regular_state(data: Vec<u8>, mode: u16) -> FileState {
-    FileState::Regular {
-        data,
-        mode: mode as u32,
-    }
-}
-
-fn create_dir_with_mode(path: &Path, mode: u16) -> std::io::Result<()> {
-    fs::create_dir(path)?;
-    let mut permissions = fs::metadata(path)?.permissions();
-    permissions.set_mode(mode as u32);
-    fs::set_permissions(path, permissions)
-}
-
-fn append_readdir_entries<F>(
-    entries: &[(u64, FileType, std::ffi::OsString)],
-    offset: i64,
-    mut add: F,
-) where
-    F: FnMut(u64, i64, FileType, &OsStr) -> bool,
-{
-    let start = if offset <= 0 { 0 } else { offset as usize };
-    for (i, entry) in entries.iter().enumerate().skip(start) {
-        if add(entry.0, (i + 1) as i64, entry.1, entry.2.as_os_str()) {
-            break;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2049,191 +1091,13 @@ mod tests {
         Profile::parse(src, Path::new("/")).expect("profile parse")
     }
 
-    fn test_fs(profile_src: &str) -> (tempfile::TempDir, std::path::PathBuf, CowFs) {
-        let dir = tempdir().expect("tempdir");
-        let record_path = dir.path().join("cowjail-cowfs-test.cjr");
-        let writer = record::Writer::open_append(&record_path).expect("open record writer");
-        (
-            dir,
-            record_path,
-            CowFs::new(parse_profile(profile_src), writer),
-        )
-    }
-
-    fn test_times() -> OverlayTimes {
-        OverlayTimes {
-            atime: SystemTime::UNIX_EPOCH + Duration::from_secs(1),
-            mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(2),
-            ctime: SystemTime::UNIX_EPOCH + Duration::from_secs(3),
-        }
-    }
-
-    fn overlay_regular(data: &[u8], mode: u16) -> OverlayNode {
-        OverlayNode::Regular {
-            data: data.to_vec(),
-            mode,
-            times: test_times(),
-        }
-    }
-
-    fn overlay_dir(mode: u16) -> OverlayNode {
-        OverlayNode::Dir {
-            mode,
-            times: test_times(),
-        }
-    }
-
-    fn overlay_symlink(target: &str) -> OverlayNode {
-        OverlayNode::Symlink {
-            target: PathBuf::from(target),
-            times: test_times(),
-        }
-    }
-
-    #[test]
-    fn overlay_deleted_hides_host_file() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
-        let path = PathBuf::from("/tmp/cowjail-overlay-deleted");
-        fs::write(&path, b"host").expect("seed host");
-        fs.overlay_set(path.clone(), OverlayNode::Deleted);
-        let got = fs.effective_node(&path).expect("effective node");
-        assert!(got.is_none());
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn overlay_regular_overrides_host_file() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
-        let path = PathBuf::from("/tmp/cowjail-overlay-regular");
-        fs::write(&path, b"host").expect("seed host");
-        fs.overlay_set(path.clone(), overlay_regular(b"overlay", 0o644));
-        let got = fs.effective_node(&path).expect("effective node");
-        match got {
-            Some(NodeRef::Overlay(OverlayNode::Regular { data, .. })) => {
-                assert_eq!(data, b"overlay")
-            }
-            _ => panic!("expected overlay regular node"),
-        }
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn overlay_readdir_includes_new_children() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
-        let dir = PathBuf::from("/tmp/cowjail-overlay-dir");
-        let _ = fs::create_dir_all(&dir);
-        let new_file = dir.join("from-overlay");
-        let new_dir = dir.join("overlay-subdir");
-        let new_link = dir.join("overlay-link");
-        fs.overlay_set(new_file.clone(), overlay_regular(b"x", 0o644));
-        fs.overlay_set(new_dir, overlay_dir(0o755));
-        fs.overlay_set(new_link, overlay_symlink("/tmp/target"));
-        let entries = fs.list_children(&dir).expect("list children");
-        assert!(
-            entries
-                .iter()
-                .any(|(_, _, name)| name == &std::ffi::OsString::from("from-overlay"))
-        );
-        assert!(
-            entries
-                .iter()
-                .any(|(_, _, name)| name == &std::ffi::OsString::from("overlay-subdir"))
-        );
-        assert!(
-            entries
-                .iter()
-                .any(|(_, _, name)| name == &std::ffi::OsString::from("overlay-link"))
-        );
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn rename_moves_overlay_subtree() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
-        let from = PathBuf::from("/tmp/cowjail-rename-from");
-        let to = PathBuf::from("/tmp/cowjail-rename-to");
-        let child = from.join("child.txt");
-        fs.overlay_set(from.clone(), overlay_dir(0o755));
-        fs.overlay_set(child.clone(), overlay_regular(b"x", 0o644));
-
-        fs.apply_rename_paths(&from, &to)
-            .expect("rename should succeed");
-        assert!(matches!(fs.overlay.get(&from), Some(OverlayNode::Deleted)));
-        assert!(matches!(
-            fs.overlay.get(&to),
-            Some(OverlayNode::Dir { mode: 0o755, .. })
-        ));
-        assert!(matches!(
-            fs.overlay.get(&to.join("child.txt")),
-            Some(OverlayNode::Regular { .. })
-        ));
-    }
-
-    #[test]
-    fn rename_remaps_known_inode_for_file() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** rw");
-        let from = PathBuf::from("/tmp/cowjail-rename-map-from");
-        let to = PathBuf::from("/tmp/cowjail-rename-map-to");
-        fs::write(&from, b"x").expect("seed source");
-
-        let ino = fs.ensure_ino(&from);
-        fs.remap_known_inos_subtree(&from, &to);
-
-        assert_eq!(fs.path_for_ino(ino), Some(to.as_path()));
-        assert_eq!(fs.path_to_ino.get(&to).copied(), Some(ino));
-        assert!(!fs.path_to_ino.contains_key(&from));
-
-        let _ = fs::remove_file(&from);
-        let _ = fs::remove_file(&to);
-    }
-
-    #[test]
-    fn rename_remaps_known_inodes_for_subtree() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** rw");
-        let from = PathBuf::from("/tmp/cowjail-rename-map-dir-from");
-        let child = from.join("child.txt");
-        let to = PathBuf::from("/tmp/cowjail-rename-map-dir-to");
-        let moved_child = to.join("child.txt");
-
-        let dir_ino = fs.ensure_ino(&from);
-        let child_ino = fs.ensure_ino(&child);
-        fs.remap_known_inos_subtree(&from, &to);
-
-        assert_eq!(fs.path_for_ino(dir_ino), Some(to.as_path()));
-        assert_eq!(fs.path_for_ino(child_ino), Some(moved_child.as_path()));
-        assert_eq!(fs.path_to_ino.get(&to).copied(), Some(dir_ino));
-        assert_eq!(fs.path_to_ino.get(&moved_child).copied(), Some(child_ino));
-        assert!(!fs.path_to_ino.contains_key(&from));
-        assert!(!fs.path_to_ino.contains_key(&child));
-    }
-
-    #[test]
-    fn passthrough_handle_getattr_survives_rename() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** rw");
-        let from = PathBuf::from("/tmp/cowjail-handle-rename-from");
-        let to = PathBuf::from("/tmp/cowjail-handle-rename-to");
-        fs::write(&from, b"hello").expect("seed source");
-
-        let ino = fs.ensure_ino(&from);
-        let fh = fs
-            .open_passthrough_handle_for_test(&from, libc::O_RDONLY)
-            .expect("open passthrough handle");
-        fs::rename(&from, &to).expect("rename source");
-        fs.remap_known_inos_subtree(&from, &to);
-
-        let remapped = fs.path_for_ino(ino).expect("remapped path").to_path_buf();
-        let attr = fs
-            .host_attr_for_handle_for_test(&remapped, fh)
-            .expect("attr via handle after rename");
-        assert_eq!(attr.size, 5);
-
-        fs.remove_handle(fh);
-        let _ = fs::remove_file(&to);
+    fn test_fs(profile_src: &str) -> CowFs {
+        CowFs::new(parse_profile(profile_src))
     }
 
     #[test]
     fn runtime_root_is_hard_denied_even_if_profile_allows_it() {
-        let (_dir, _record_path, fs) = test_fs("/run/** rw\n");
+        let fs = test_fs("/run/** rw\n");
         let guarded = fs.with_mount_root(PathBuf::from("/run/user/1000/cowjail/demo/mount"));
         let runtime_root = Path::new("/run/user/1000/cowjail");
         let runtime_child = Path::new("/run/user/1000/cowjail/demo/fuse.pid");
@@ -2246,7 +1110,7 @@ mod tests {
 
     #[test]
     fn arbitrary_mount_root_does_not_hard_block_parent_tree() {
-        let (_dir, _record_path, fs) = test_fs("/var/tmp/** rw\n");
+        let fs = test_fs("/var/tmp/** rw\n");
         let guarded = fs.with_mount_root(PathBuf::from("/var/tmp/demo/mnt"));
         let allowed = Path::new("/var/tmp/demo/file.txt");
 
@@ -2255,310 +1119,21 @@ mod tests {
     }
 
     #[test]
-    fn cow_open_requires_existing_node() {
-        let (_dir, _record_path, fs) = test_fs("/tmp/** cow");
-        let missing = Path::new("/tmp/cowjail-open-missing");
-        assert_eq!(fs.ensure_openable_node_for_test(missing), Err(ENOENT));
-    }
-
-    #[test]
-    fn cow_handle_remains_valid_after_overlay_write() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
-        let path = PathBuf::from("/tmp/cowjail-cow-handle-write");
-        fs::write(&path, b"host").expect("seed host file");
-
-        let ino = fs.ensure_ino(&path);
-        let fh = fs.allocate_cow_handle(ino);
-        fs.set_overlay_regular_and_record(&path, b"overlay".to_vec(), 0o644)
-            .expect("replace with overlay");
-
-        assert_eq!(fs.handle_ino(fh), Some(ino));
-        let current = fs.path_for_ino(ino).expect("path for ino");
-        match fs.effective_node(current) {
-            Ok(Some(NodeRef::Overlay(OverlayNode::Regular { data, .. }))) => {
-                assert_eq!(data, b"overlay")
-            }
-            Ok(_) => panic!("expected overlay regular after write"),
-            Err(code) => panic!("effective node failed: {code}"),
-        }
-
-        fs.remove_handle(fh);
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn cow_handle_uses_remapped_inode_path_after_rename() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
-        let from = PathBuf::from("/tmp/cowjail-cow-handle-from");
-        let to = PathBuf::from("/tmp/cowjail-cow-handle-to");
-        let ino = fs.ensure_ino(&from);
-        fs.overlay_set(from.clone(), overlay_regular(b"hello", 0o644));
-
-        let fh = fs.allocate_cow_handle(ino);
-        fs.apply_rename_paths(&from, &to)
-            .expect("rename overlay path");
-        fs.remap_known_inos_subtree(&from, &to);
-
-        assert_eq!(fs.handle_ino(fh), Some(ino));
-        assert_eq!(fs.path_for_ino(ino), Some(to.as_path()));
-        let current = fs
-            .path_for_ino(fs.handle_ino(fh).expect("handle ino"))
-            .expect("path");
-        match fs.effective_node(current) {
-            Ok(Some(NodeRef::Overlay(OverlayNode::Regular { data, .. }))) => {
-                assert_eq!(data, b"hello")
-            }
-            Ok(_) => panic!("expected overlay regular after rename"),
-            Err(code) => panic!("effective node failed: {code}"),
-        }
-
-        fs.remove_handle(fh);
-    }
-
-    #[test]
-    fn cow_rename_remaps_known_inode_for_open() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
-        let from = PathBuf::from("/tmp/cowjail-cow-rename-open-from");
-        let to = PathBuf::from("/tmp/cowjail-cow-rename-open-to");
-        let ino = fs.ensure_ino(&from);
-        fs.overlay_set(from.clone(), overlay_regular(b"hello", 0o644));
-
-        fs.apply_rename_paths(&from, &to)
-            .expect("rename overlay path");
-        fs.remap_known_inos_subtree(&from, &to);
-
-        assert_eq!(fs.path_for_ino(ino), Some(to.as_path()));
-        assert_eq!(fs.ensure_openable_node_for_test(to.as_path()), Ok(()));
-    }
-
-    #[test]
-    fn rename_dir_into_own_subpath_fails() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
-        let from = PathBuf::from("/tmp/cowjail-self-rename");
-        let to = from.join("sub");
-        fs.overlay_set(from.clone(), overlay_dir(0o755));
-        let err = fs
-            .apply_rename_paths(&from, &to)
-            .expect_err("rename to own subpath should fail");
-        assert_eq!(err, EINVAL);
-    }
-
-    #[test]
-    fn cow_rmdir_rejects_non_empty_directory() {
-        let (dir, _record_path, mut fs) = test_fs("/tmp/** cow");
-        let path = dir.path().join("parent");
-        let child = path.join("child.txt");
-        fs::create_dir_all(&path).expect("mkdir");
-        fs::write(&child, b"x").expect("seed child");
-
-        let err = fs
-            .ensure_dir_empty(&path)
-            .expect_err("non-empty directory should fail");
-        assert_eq!(err, ENOTEMPTY);
-    }
-
-    #[test]
-    fn replay_restores_pending_writes_and_rename() {
-        let dir = tempdir().expect("tempdir");
-        let record_path = dir.path().join("cowjail-replay-test.cjr");
-        let writer = record::Writer::open_append(&record_path).expect("open record writer");
-
-        writer
-            .append_cbor(
-                record::TAG_WRITE_OP,
-                &Operation::WriteFile {
-                    path: PathBuf::from("/tmp/replay-a"),
-                    state: FileState::Regular {
-                        data: b"one".to_vec(),
-                        mode: 0o644,
-                    },
-                },
-            )
-            .expect("append write a");
-        writer
-            .append_cbor(
-                record::TAG_WRITE_OP,
-                &Operation::Rename {
-                    from: PathBuf::from("/tmp/replay-a"),
-                    to: PathBuf::from("/tmp/replay-b"),
-                },
-            )
-            .expect("append rename");
-        writer
-            .append_cbor(
-                record::TAG_WRITE_OP,
-                &Operation::WriteFile {
-                    path: PathBuf::from("/tmp/replay-b"),
-                    state: FileState::Regular {
-                        data: b"two".to_vec(),
-                        mode: 0o755,
-                    },
-                },
-            )
-            .expect("append write b");
-        writer.sync().expect("sync record");
-
-        let frames = record::read_frames(&record_path).expect("read frames");
-        let mut fs = CowFs::new(parse_profile("/tmp/** cow"), writer);
-        let stats = fs.replay_from_record_frames(&frames);
-        assert_eq!(stats.pending_ops, 3);
-        assert_eq!(stats.applied_ops, 3);
-        assert!(matches!(
-            fs.overlay.get(Path::new("/tmp/replay-a")),
-            Some(OverlayNode::Deleted)
-        ));
-        assert!(matches!(
-            fs.overlay.get(Path::new("/tmp/replay-b")),
-            Some(OverlayNode::Regular {
-                data,
-                mode: 0o755,
-                ..
-            }) if data == b"two"
-        ));
-    }
-
-    #[test]
-    fn replay_skips_flushed_frames() {
-        let dir = tempdir().expect("tempdir");
-        let record_path = dir.path().join("cowjail-replay-flushed-test.cjr");
-        let writer = record::Writer::open_append(&record_path).expect("open record writer");
-
-        let flushed_offset = writer
-            .append_cbor(
-                record::TAG_WRITE_OP,
-                &Operation::WriteFile {
-                    path: PathBuf::from("/tmp/replay-flushed"),
-                    state: FileState::Regular {
-                        data: b"old".to_vec(),
-                        mode: 0o644,
-                    },
-                },
-            )
-            .expect("append flushed op");
-        writer
-            .append_cbor(
-                record::TAG_WRITE_OP,
-                &Operation::WriteFile {
-                    path: PathBuf::from("/tmp/replay-flushed"),
-                    state: FileState::Regular {
-                        data: b"new".to_vec(),
-                        mode: 0o644,
-                    },
-                },
-            )
-            .expect("append pending op");
-        writer.sync().expect("sync record");
-        record::mark_flushed(&record_path, flushed_offset).expect("mark flushed");
-
-        let frames = record::read_frames(&record_path).expect("read frames");
-        let mut fs = CowFs::new(parse_profile("/tmp/** cow"), writer);
-        let stats = fs.replay_from_record_frames(&frames);
-        assert_eq!(stats.pending_ops, 1);
-        assert_eq!(stats.applied_ops, 1);
-        assert_eq!(stats.skipped_frames, 1);
-        assert!(matches!(
-            fs.overlay.get(Path::new("/tmp/replay-flushed")),
-            Some(OverlayNode::Regular {
-                data,
-                mode: 0o644,
-                ..
-            }) if data == b"new"
-        ));
-    }
-
-    #[test]
-    fn replay_persists_pending_overlay_across_remount_like_restart() {
-        let dir = tempdir().expect("tempdir");
-        let record_path = dir.path().join("cowjail-replay-restart-test.cjr");
-        let mount1_writer = record::Writer::open_append(&record_path).expect("open first writer");
-
-        mount1_writer
-            .append_cbor(
-                record::TAG_WRITE_OP,
-                &Operation::WriteFile {
-                    path: PathBuf::from("/tmp/reboot-visible-a"),
-                    state: FileState::Regular {
-                        data: b"first".to_vec(),
-                        mode: 0o644,
-                    },
-                },
-            )
-            .expect("append first write");
-        mount1_writer
-            .append_cbor(
-                record::TAG_WRITE_OP,
-                &Operation::Rename {
-                    from: PathBuf::from("/tmp/reboot-visible-a"),
-                    to: PathBuf::from("/tmp/reboot-visible-b"),
-                },
-            )
-            .expect("append rename");
-        mount1_writer
-            .append_cbor(
-                record::TAG_WRITE_OP,
-                &Operation::Truncate {
-                    path: PathBuf::from("/tmp/reboot-visible-b"),
-                    size: 3,
-                },
-            )
-            .expect("append truncate");
-        mount1_writer.sync().expect("sync first writer");
-
-        let mount1_frames = record::read_frames(&record_path).expect("read first mount frames");
-        let mut mount1_fs = CowFs::new(parse_profile("/tmp/** cow"), mount1_writer);
-        let mount1_stats = mount1_fs.replay_from_record_frames(&mount1_frames);
-        assert_eq!(mount1_stats.pending_ops, 3);
-        assert_eq!(mount1_stats.applied_ops, 3);
-        assert!(matches!(
-            mount1_fs.overlay.get(Path::new("/tmp/reboot-visible-a")),
-            Some(OverlayNode::Deleted)
-        ));
-        assert!(matches!(
-            mount1_fs.overlay.get(Path::new("/tmp/reboot-visible-b")),
-            Some(OverlayNode::Regular {
-                data,
-                mode: 0o644,
-                ..
-            }) if data == b"fir"
-        ));
-        drop(mount1_fs);
-
-        let mount2_writer = record::Writer::open_append(&record_path).expect("open second writer");
-        let mount2_frames = record::read_frames(&record_path).expect("read second mount frames");
-        let mut mount2_fs = CowFs::new(parse_profile("/tmp/** cow"), mount2_writer);
-        let mount2_stats = mount2_fs.replay_from_record_frames(&mount2_frames);
-        assert_eq!(mount2_stats.pending_ops, 3);
-        assert_eq!(mount2_stats.applied_ops, 3);
-        assert!(matches!(
-            mount2_fs.overlay.get(Path::new("/tmp/reboot-visible-a")),
-            Some(OverlayNode::Deleted)
-        ));
-        assert!(matches!(
-            mount2_fs.overlay.get(Path::new("/tmp/reboot-visible-b")),
-            Some(OverlayNode::Regular {
-                data,
-                mode: 0o644,
-                ..
-            }) if data == b"fir"
-        ));
-    }
-
-    #[test]
     fn deny_path_returns_eacces() {
-        let (_dir, _record_path, fs) = test_fs("/tmp/deny-me deny");
+        let fs = test_fs("/tmp/deny-me deny");
         assert_eq!(fs.access_errno(Path::new("/tmp/deny-me")), Some(EACCES));
         assert_eq!(fs.mutation_errno(Path::new("/tmp/deny-me")), Some(EACCES));
     }
 
     #[test]
     fn hide_path_returns_enoent() {
-        let (_dir, _record_path, fs) = test_fs("/tmp/hide-me hide");
+        let fs = test_fs("/tmp/hide-me hide");
         assert_eq!(fs.access_errno(Path::new("/tmp/hide-me")), Some(ENOENT));
     }
 
     #[test]
     fn hide_path_returns_eperm_for_mutation() {
-        let (_dir, _record_path, fs) = test_fs("/tmp/hide-me hide");
+        let fs = test_fs("/tmp/hide-me hide");
         assert_eq!(fs.mutation_errno(Path::new("/tmp/hide-me")), Some(EPERM));
     }
 
@@ -2567,7 +1142,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let base = dir.path();
         let profile_src = format!("{}/*/leaf ro\n", base.display());
-        let (_holder, _record_path, fs) = test_fs(&profile_src);
+        let fs = test_fs(&profile_src);
 
         let as_dir = base.join("as-dir");
         let as_file = base.join("as-file");
@@ -2587,7 +1162,7 @@ mod tests {
         fs::write(repo.join(".git/config"), b"[core]\n").expect("write config");
 
         let profile_src = format!("{} git-rw\n", dir.path().display());
-        let (_holder, _record_path, fs) = test_fs(&profile_src);
+        let fs = test_fs(&profile_src);
         assert_eq!(
             fs.write_mode(&repo.join("src/lib.rs")),
             WriteMode::Passthrough
@@ -2605,7 +1180,7 @@ mod tests {
         fs::write(&outside, b"note").expect("write outside file");
 
         let profile_src = format!("{} git-rw\n", dir.path().display());
-        let (_holder, _record_path, fs) = test_fs(&profile_src);
+        let fs = test_fs(&profile_src);
         assert_eq!(fs.access_errno(&outside), None);
         assert_eq!(fs.mutation_errno(&outside), None);
         assert!(fs.is_visible(&outside));
@@ -2620,7 +1195,7 @@ mod tests {
         fs::write(repo.join(".git/config"), b"[core]\n").expect("write config");
 
         let profile_src = format!("{} git-rw\n", dir.path().display());
-        let (_holder, _record_path, fs) = test_fs(&profile_src);
+        let fs = test_fs(&profile_src);
         assert_eq!(fs.access_errno(&repo.join(".git/config")), Some(EACCES));
         assert_eq!(fs.mutation_errno(&repo.join(".git/config")), Some(EACCES));
     }
@@ -2628,9 +1203,7 @@ mod tests {
     #[test]
     fn proc_thread_self_is_hard_blocked() {
         assert!(is_blocked_proc_thread_self(Path::new("/proc/thread-self")));
-        assert!(is_blocked_proc_thread_self(Path::new(
-            "/proc/thread-self/fd/0"
-        )));
+        assert!(is_blocked_proc_thread_self(Path::new("/proc/thread-self/fd/0")));
         assert!(!is_blocked_proc_thread_self(Path::new("/proc/self")));
     }
 
@@ -2669,99 +1242,9 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn cow_setattr_mode_updates_executable_and_records_write() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let (dir, record_path, mut fs) = test_fs("/tmp/** cow");
-        let path = dir.path().join("mode-target");
-        fs::write(&path, b"abc").expect("seed file");
-        let mut perm = fs::metadata(&path).expect("metadata").permissions();
-        perm.set_mode(0o644);
-        fs::set_permissions(&path, perm).expect("set mode");
-
-        fs.apply_cow_setattr_for_test(&path, None, Some(0o755), None, None)
-            .expect("setattr mode");
-        drop(fs);
-
-        let frames = record::read_frames(&record_path).expect("read frames");
-        assert_eq!(frames.len(), 1);
-        let op: Operation = record::decode_cbor(&frames[0]).expect("decode op");
-        assert!(matches!(
-            op,
-            Operation::WriteFile {
-                path: p,
-                state: FileState::Regular {
-                    data: ref contents,
-                    mode: 0o755
-                }
-            } if p == path && contents == b"abc"
-        ));
-    }
-
-    #[test]
-    fn cow_setattr_time_only_stays_in_memory_without_record_frame() {
-        let (dir, record_path, mut fs) = test_fs("/tmp/** cow");
-        let path = dir.path().join("time-target");
-        fs::write(&path, b"x").expect("seed file");
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(12345);
-
-        let attr = fs
-            .apply_cow_setattr_for_test(&path, None, None, Some(now), Some(now))
-            .expect("setattr times");
-        assert_eq!(attr.atime, now);
-        assert_eq!(attr.mtime, now);
-        drop(fs);
-
-        let frames = record::read_frames(&record_path).expect("read frames");
-        assert!(frames.is_empty());
-    }
-
-    #[test]
-    fn overlay_mtime_remains_stable_across_attr_reads() {
-        let (_dir, _record_path, mut fs) = test_fs("/tmp/** cow");
-        let path = PathBuf::from("/tmp/cowjail-stable-mtime");
-        let ts = SystemTime::UNIX_EPOCH + Duration::from_secs(777);
-        fs.overlay_set(
-            path.clone(),
-            OverlayNode::Regular {
-                data: b"x".to_vec(),
-                mode: 0o644,
-                times: OverlayTimes {
-                    atime: ts,
-                    mtime: ts,
-                    ctime: ts,
-                },
-            },
-        );
-
-        let first_node = fs.overlay.get(&path).expect("overlay node").clone();
-        let first = fs.attr_for_overlay(&path, &first_node);
-        std::thread::sleep(Duration::from_millis(20));
-        let second_node = fs.overlay.get(&path).expect("overlay node").clone();
-        let second = fs.attr_for_overlay(&path, &second_node);
-
-        assert_eq!(first.mtime, ts);
-        assert_eq!(second.mtime, ts);
-    }
-
-    #[test]
-    fn cow_setattr_mode_on_directory_is_not_supported() {
-        let (dir, _record_path, mut fs) = test_fs("/tmp/** cow");
-        let path = dir.path().join("d");
-        fs::create_dir_all(&path).expect("mkdir");
-
-        let err = fs
-            .apply_cow_setattr_for_test(&path, None, Some(0o755), None, None)
-            .expect_err("mode on directory should fail");
-        assert_eq!(err, EOPNOTSUPP);
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn passthrough_setattr_mode_updates_host_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let (dir, _record_path, mut fs) = test_fs("/tmp/** rw");
+        let dir = tempdir().expect("tempdir");
+        let mut fs = test_fs("/tmp/** rw");
         let path = dir.path().join("rw-mode-target");
         fs::write(&path, b"abc").expect("seed file");
         fs.apply_passthrough_setattr_for_test(&path, None, Some(0o700), None, None)
@@ -2776,7 +1259,8 @@ mod tests {
     fn passthrough_setattr_time_updates_host_timestamps() {
         use std::os::unix::fs::MetadataExt;
 
-        let (dir, _record_path, mut fs) = test_fs("/tmp/** rw");
+        let dir = tempdir().expect("tempdir");
+        let mut fs = test_fs("/tmp/** rw");
         let path = dir.path().join("rw-time-target");
         fs::write(&path, b"abc").expect("seed file");
         let ts = SystemTime::UNIX_EPOCH + Duration::from_secs(56_789);
@@ -2811,25 +1295,7 @@ mod tests {
             calls >= 2
         });
         assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0], (1, 1, std::ffi::OsString::from(".")));
-        assert_eq!(seen[1], (2, 2, std::ffi::OsString::from("..")));
-    }
-
-    #[test]
-    fn readdir_append_respects_offset() {
-        let entries = vec![
-            (1, FileType::Directory, std::ffi::OsString::from(".")),
-            (2, FileType::Directory, std::ffi::OsString::from("..")),
-            (3, FileType::RegularFile, std::ffi::OsString::from("a")),
-            (4, FileType::RegularFile, std::ffi::OsString::from("b")),
-        ];
-        let mut seen = Vec::new();
-        append_readdir_entries(&entries, 2, |ino, next_offset, _kind, name| {
-            seen.push((ino, next_offset, name.to_os_string()));
-            false
-        });
-        assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0], (3, 3, std::ffi::OsString::from("a")));
-        assert_eq!(seen[1], (4, 4, std::ffi::OsString::from("b")));
+        assert_eq!(seen[0].0, 1);
+        assert_eq!(seen[1].0, 2);
     }
 }

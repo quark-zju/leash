@@ -54,7 +54,6 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         &resolved.paths,
         &runtime.ensured.paths,
         &resolved.paths.profile_path,
-        &resolved.paths.record_path,
         run.verbose,
     )?;
 
@@ -292,7 +291,6 @@ fn ensure_fuse_server(
     jail_paths: &crate::jail::JailPaths,
     runtime_paths: &ns_runtime::NsRuntimePaths,
     profile_path: &Path,
-    record_path: &Path,
     verbose: bool,
 ) -> Result<()> {
     let _lock = ns_runtime::open_lock(jail_paths)?;
@@ -341,8 +339,6 @@ fn ensure_fuse_server(
     cmd.arg("_fuse")
         .arg("--profile")
         .arg(profile_path)
-        .arg("--record")
-        .arg(record_path)
         .arg("--mountpoint")
         .arg(&runtime_paths.mount_dir)
         .arg("--pid-path")

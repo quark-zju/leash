@@ -1,6 +1,5 @@
 mod cli;
 mod cmd_completion;
-mod cmd_flush;
 mod cmd_fuse;
 mod cmd_help;
 mod cmd_jail;
@@ -14,11 +13,9 @@ mod git_rw_filter;
 mod jail;
 mod mount_plan;
 mod ns_runtime;
-mod op;
 mod privileges;
 mod profile;
 mod profile_loader;
-mod record;
 
 use anyhow::{Context, Result};
 use cli::Command;
@@ -94,14 +91,6 @@ fn try_main() -> Result<i32> {
             cmd_mount::mount_command(mount).context("_mount subcommand failed")?;
             Ok(0)
         }
-        Command::Flush(flush) => {
-            cmd_flush::flush_command(flush).context("flush subcommand failed")?;
-            Ok(0)
-        }
-        Command::LowLevelFlush(flush) => {
-            cmd_flush::low_level_flush_command(flush).context("_flush subcommand failed")?;
-            Ok(0)
-        }
         Command::LowLevelFuse(fuse) => {
             env_logger::Builder::from_env(env_logger::Env::default().filter("COWJAIL_FUSE_LOG"))
                 .init();
@@ -124,8 +113,6 @@ fn command_verbose(cmd: &Command) -> bool {
         Command::Rm(rm) => rm.verbose,
         Command::Run(run) => run.verbose,
         Command::LowLevelMount(mount) => mount.verbose,
-        Command::Flush(flush) => flush.verbose,
-        Command::LowLevelFlush(flush) => flush.verbose,
         Command::LowLevelFuse(fuse) => fuse.verbose,
         Command::LowLevelSuid(suid) => suid.verbose,
         Command::Add(_) | Command::List(_) => false,
@@ -144,9 +131,7 @@ fn require_priviledge_reason(cmd: &Command) -> Option<&'static str> {
         | Command::Add(_)
         | Command::List(_)
         | Command::Show(_)
-        | Command::LowLevelMount(_)
-        | Command::Flush(_)
-        | Command::LowLevelFlush(_) => None,
+        | Command::LowLevelMount(_) => None,
     }
 }
 
