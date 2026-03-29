@@ -423,7 +423,7 @@ def main() -> None:
             jail(
                 cowjail_bin,
                 base_env,
-                "rm",
+                "_rm",
                 "--profile",
                 str(profile_path),
                 check=False,
