@@ -102,6 +102,7 @@ cowjail rm 'unnamed-*'                               # remove jails by name glob
 - Runtime layout: [`docs/RUNTIME_LAYOUT.md`](docs/RUNTIME_LAYOUT.md)
 - Privilege model: [`docs/PRIVILEGE_MODEL.md`](docs/PRIVILEGE_MODEL.md)
 - Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
+- Semantic E2E script: [`docs/e2e_semantics.py`](docs/e2e_semantics.py)
 
 ## Known Limitations
 

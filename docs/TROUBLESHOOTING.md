@@ -85,6 +85,19 @@ Expected: owner `root`, and mode containing `s` on user execute bit (for example
 
 If your workspace filesystem is mounted with `nosuid`, place the binary on a mount where setuid is honored.
 
+## Semantic E2E checks
+
+For a quick high-level regression pass over `ro`, `rw`, `hide`, `deny`, and `git-rw`, run:
+
+```bash
+python3 docs/e2e_semantics.py --bin ./target/debug/cowjail
+```
+
+The script expects either:
+
+1. to run as root, or
+2. the target binary to already be setuid-root via `_suid`
+
 ## `rm` fails with mount-related errors
 
 ### `Device or resource busy (os error 16)`
