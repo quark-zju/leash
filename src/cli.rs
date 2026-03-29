@@ -13,6 +13,7 @@ pub enum Command {
     Completion(CompletionCommand),
     Profile(ProfileCommand),
     Run(RunCommand),
+    LowLevelDaemon(LowLevelDaemonCommand),
     LowLevelList(ListCommand),
     LowLevelShow(ShowCommand),
     LowLevelRm(RmCommand),
@@ -27,6 +28,7 @@ pub enum HelpTopic {
     Profile,
     Run,
     Completion,
+    LowLevelDaemon,
     LowLevelList,
     LowLevelShow,
     LowLevelRm,
@@ -92,6 +94,12 @@ pub struct LowLevelSuidCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LowLevelDaemonCommand {
+    pub socket: Option<PathBuf>,
+    pub verbose: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionCommand {
     pub shell: Option<String>,
 }
@@ -119,6 +127,7 @@ where
         "completion" => parse_completion(args)?,
         "profile" => parse_profile(args)?,
         "run" => parse_run(args)?,
+        "_daemon" => parse_low_level_daemon(args)?,
         "_list" => parse_list(args)?,
         "_show" => parse_show(args)?,
         "_rm" => parse_rm(args)?,
@@ -264,6 +273,22 @@ fn parse_list(mut args: Arguments) -> Result<Command> {
         bail!("_list got unexpected trailing arguments");
     }
     Ok(Command::LowLevelList(ListCommand))
+}
+
+fn parse_low_level_daemon(mut args: Arguments) -> Result<Command> {
+    if args.contains(["-h", "--help"]) {
+        return Ok(help_command(HelpTopic::LowLevelDaemon, true));
+    }
+    let verbose = args.contains(["-v", "--verbose"]);
+    let socket = args.opt_value_from_os_str("--socket", parse_pathbuf)?;
+    let extra = args.finish();
+    if !extra.is_empty() {
+        bail!("_daemon got unexpected trailing arguments");
+    }
+    Ok(Command::LowLevelDaemon(LowLevelDaemonCommand {
+        socket,
+        verbose,
+    }))
 }
 
 fn parse_show(mut args: Arguments) -> Result<Command> {
@@ -453,6 +478,19 @@ mod tests {
     fn parse_completion_without_shell() {
         let cmd = parse_from(os(&["completion"])).expect("completion should parse");
         assert_eq!(cmd, Command::Completion(CompletionCommand { shell: None }));
+    }
+
+    #[test]
+    fn parse_daemon_accepts_optional_socket() {
+        let cmd = parse_from(os(&["_daemon", "--socket", "/tmp/leashd.sock", "-v"]))
+            .expect("_daemon should parse");
+        assert_eq!(
+            cmd,
+            Command::LowLevelDaemon(LowLevelDaemonCommand {
+                socket: Some(std::path::PathBuf::from("/tmp/leashd.sock")),
+                verbose: true,
+            })
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 mod cli;
 mod cmd_completion;
+mod cmd_daemon;
 mod cmd_fuse;
 mod cmd_help;
 mod cmd_jail;
@@ -68,6 +69,10 @@ fn try_main() -> Result<i32> {
                 .context("completion subcommand failed")?;
             Ok(0)
         }
+        Command::LowLevelDaemon(daemon) => {
+            cmd_daemon::daemon_command(daemon).context("_daemon subcommand failed")?;
+            Ok(0)
+        }
         Command::Profile(profile) => {
             cmd_profile::profile_command(profile).context("profile subcommand failed")?;
             Ok(0)
@@ -106,6 +111,7 @@ fn command_verbose(cmd: &Command) -> bool {
     match cmd {
         Command::Help { verbose, .. } => *verbose,
         Command::Completion(_) => false,
+        Command::LowLevelDaemon(daemon) => daemon.verbose,
         Command::Profile(_) => false,
         Command::Run(run) => run.verbose,
         Command::LowLevelShow(show) => show.verbose,
@@ -120,6 +126,7 @@ fn command_verbose(cmd: &Command) -> bool {
 fn require_priviledge_reason(cmd: &Command) -> Option<&'static str> {
     match cmd {
         Command::Run(_) => Some("run requires root for pivot_root and runtime setup"),
+        Command::LowLevelDaemon(_) => Some("_daemon keeps root euid for fanotify control plane"),
         Command::LowLevelRm(_) => Some("_rm may need root to clean state/runtime artifacts"),
         Command::LowLevelFuse(_) => Some("_fuse requires root euid to mount FUSE daemon"),
         Command::LowLevelSuid(_) => Some("_suid updates binary ownership/mode"),

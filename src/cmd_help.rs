@@ -5,6 +5,7 @@ const HELP_TOPIC_NAMES: &[(&str, HelpTopic)] = &[
     ("profile", HelpTopic::Profile),
     ("completion", HelpTopic::Completion),
     ("run", HelpTopic::Run),
+    ("_daemon", HelpTopic::LowLevelDaemon),
     ("_list", HelpTopic::LowLevelList),
     ("_show", HelpTopic::LowLevelShow),
     ("_rm", HelpTopic::LowLevelRm),
@@ -69,6 +70,17 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "  If shell is omitted, detect from SHELL.\n\n",
             "EXAMPLE:\n",
             "  source <(leash completion)\n",
+        )
+        .to_string(),
+        HelpTopic::LowLevelDaemon => concat!(
+            "leash _daemon\n\n",
+            "USAGE:\n",
+            "  leash _daemon [--socket <path>] [-v|--verbose]\n\n",
+            "DESCRIPTION:\n",
+            "  Run the privileged leash daemon skeleton over a Unix socket.\n\n",
+            "OPTIONS:\n",
+            "  --socket <path>      Override daemon socket path\n",
+            "  -v, --verbose        Print progress logs"
         )
         .to_string(),
         HelpTopic::LowLevelList => {
@@ -157,6 +169,7 @@ fn root_help_text(verbose: bool) -> String {
         out.push_str(concat!(
             "\n",
             "LOW-LEVEL (DEBUG):\n",
+            "  leash _daemon [--socket <path>] [-v|--verbose]\n",
             "  leash _list\n",
             "  leash _show [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n",
             "  leash _rm [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n",
