@@ -88,7 +88,7 @@ cowjail profile edit default.local
 ~/Downloads rw
 ```
 
-See [`docs/profile.md`](docs/profile.md) for profile syntax and more examples.
+See [`docs/PROFILE.md`](docs/PROFILE.md) for profile syntax and more examples.
 
 ### Named jails
 
@@ -110,7 +110,7 @@ cowjail rm 'unnamed-*'                               # remove jails by name glob
 
 - Agent compatibility notes: [`docs/AGENT_COMPAT.md`](docs/AGENT_COMPAT.md)
 - Technical overview: [`docs/TECHNICAL_OVERVIEW.md`](docs/TECHNICAL_OVERVIEW.md)
-- Profile guide (syntax, size config, default profile): [`docs/profile.md`](docs/profile.md)
+- Profile guide (syntax, size config, default profile): [`docs/PROFILE.md`](docs/PROFILE.md)
 - Runtime layout: [`docs/RUNTIME_LAYOUT.md`](docs/RUNTIME_LAYOUT.md)
 - Privilege model: [`docs/PRIVILEGE_MODEL.md`](docs/PRIVILEGE_MODEL.md)
 - Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)

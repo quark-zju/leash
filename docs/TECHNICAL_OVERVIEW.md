@@ -69,7 +69,7 @@ There are two replay paths:
 ## Profiles
 
 Profile semantics are part of the filesystem policy model (path visibility filtering and write mode decisions).  
-For syntax, action semantics, size configuration, and the built-in default profile, see [`docs/profile.md`](profile.md).
+For syntax, action semantics, size configuration, and the built-in default profile, see [`docs/PROFILE.md`](PROFILE.md).
 
 ## Internal vs Public CLI
 
