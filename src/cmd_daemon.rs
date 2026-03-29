@@ -10,11 +10,19 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::thread;
 
 use crate::cli::LowLevelDaemonCommand;
 use crate::jail;
 use crate::privileges;
 use crate::run_env;
+
+const FAN_MARK_MNTNS: libc::c_uint = 0x0000_0110;
+const OBSERVE_MASK: u64 = libc::FAN_OPEN
+    | libc::FAN_OPEN_EXEC
+    | libc::FAN_ACCESS
+    | libc::FAN_CLOSE_WRITE
+    | libc::FAN_EVENT_ON_CHILD;
 
 pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
     privileges::require_root_euid("leash _daemon")?;
@@ -29,7 +37,9 @@ pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
     fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("failed to chmod daemon socket {}", socket_path.display()))?;
     crate::vlog!("daemon: listening on {}", socket_path.display());
-    let mut state = DaemonState::default();
+    let observer = FanotifyObserver::new()?;
+    observer.spawn_logging_thread()?;
+    let mut state = DaemonState::with_observer(observer);
 
     loop {
         let (mut stream, _addr) = listener
@@ -106,11 +116,71 @@ struct RegisteredSession {
 #[derive(Default)]
 struct DaemonState {
     sessions: HashMap<NamespaceKey, RegisteredSession>,
+    observer: Option<FanotifyObserver>,
 }
 
 struct ReceivedRequest {
     request: String,
     received_fd: Option<File>,
+}
+
+struct FanotifyObserver {
+    fd: File,
+}
+
+impl DaemonState {
+    fn with_observer(observer: FanotifyObserver) -> Self {
+        Self {
+            sessions: HashMap::new(),
+            observer: Some(observer),
+        }
+    }
+}
+
+impl FanotifyObserver {
+    fn new() -> Result<Self> {
+        let fd = unsafe {
+            libc::fanotify_init(
+                (libc::FAN_CLOEXEC | libc::FAN_CLASS_NOTIF) as libc::c_uint,
+                (libc::O_RDONLY | libc::O_LARGEFILE) as libc::c_uint,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error()).context("fanotify_init failed");
+        }
+        Ok(Self {
+            fd: unsafe { File::from_raw_fd(fd) },
+        })
+    }
+
+    fn spawn_logging_thread(&self) -> Result<()> {
+        let file = self
+            .fd
+            .try_clone()
+            .context("failed to clone fanotify fd for logging thread")?;
+        thread::Builder::new()
+            .name("leash-fanotify".to_string())
+            .spawn(move || observe_events(file))
+            .context("failed to spawn fanotify logging thread")?;
+        Ok(())
+    }
+
+    fn mark_namespace(&self, namespace_file: &File) -> Result<()> {
+        let rc = unsafe {
+            libc::fanotify_mark(
+                self.fd.as_raw_fd(),
+                libc::FAN_MARK_ADD | FAN_MARK_MNTNS,
+                OBSERVE_MASK,
+                namespace_file.as_raw_fd(),
+                std::ptr::null(),
+            )
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("fanotify_mark(FAN_MARK_MNTNS) failed");
+        }
+        Ok(())
+    }
 }
 
 fn peer_credentials(stream: &UnixStream) -> Result<PeerCredentials> {
@@ -228,6 +298,9 @@ fn register_session(
         dev: meta.dev(),
         ino: meta.ino(),
     };
+    if let Some(observer) = &state.observer {
+        observer.mark_namespace(&namespace_file)?;
+    }
     state.sessions.insert(
         key,
         RegisteredSession {
@@ -305,6 +378,98 @@ fn namespace_key_for_pid(pid: libc::pid_t) -> Result<Option<NamespaceKey>> {
 
 fn mount_namespace_path_for_pid(pid: libc::pid_t) -> PathBuf {
     PathBuf::from(format!("/proc/{pid}/ns/mnt"))
+}
+
+fn observe_events(file: File) {
+    let fd = file.as_raw_fd();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let rc = unsafe { libc::read(fd, buffer.as_mut_ptr() as *mut libc::c_void, buffer.len()) };
+        if rc < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            crate::vlog!("fanotify: read failed: {}", err);
+            break;
+        }
+        if rc == 0 {
+            crate::vlog!("fanotify: event stream closed");
+            break;
+        }
+
+        let mut offset = 0usize;
+        let total = rc as usize;
+        while offset + std::mem::size_of::<libc::fanotify_event_metadata>() <= total {
+            let meta =
+                unsafe { &*(buffer[offset..].as_ptr() as *const libc::fanotify_event_metadata) };
+            if meta.vers != libc::FANOTIFY_METADATA_VERSION {
+                crate::vlog!(
+                    "fanotify: metadata version mismatch got={} expected={}",
+                    meta.vers,
+                    libc::FANOTIFY_METADATA_VERSION
+                );
+                return;
+            }
+            if meta.event_len < std::mem::size_of::<libc::fanotify_event_metadata>() as u32 {
+                crate::vlog!("fanotify: short event_len={}", meta.event_len);
+                break;
+            }
+
+            let path = if meta.fd >= 0 {
+                describe_event_fd(meta.fd)
+            } else {
+                "<no-fd>".to_string()
+            };
+            crate::vlog!(
+                "fanotify: mask={} pid={} fd={} path={}",
+                describe_mask(meta.mask),
+                meta.pid,
+                meta.fd,
+                path
+            );
+            if meta.fd >= 0 {
+                unsafe {
+                    libc::close(meta.fd);
+                }
+            }
+            offset += meta.event_len as usize;
+        }
+    }
+}
+
+fn describe_event_fd(fd: libc::c_int) -> String {
+    let link = PathBuf::from(format!("/proc/self/fd/{fd}"));
+    match fs::read_link(&link) {
+        Ok(path) => path.display().to_string(),
+        Err(_) => format!("fd:{fd}"),
+    }
+}
+
+fn describe_mask(mask: u64) -> String {
+    let mut parts = Vec::new();
+    if mask & libc::FAN_ACCESS != 0 {
+        parts.push("access");
+    }
+    if mask & libc::FAN_OPEN != 0 {
+        parts.push("open");
+    }
+    if mask & libc::FAN_OPEN_EXEC != 0 {
+        parts.push("open-exec");
+    }
+    if mask & libc::FAN_CLOSE_WRITE != 0 {
+        parts.push("close-write");
+    }
+    if mask & libc::FAN_EVENT_ON_CHILD != 0 {
+        parts.push("child");
+    }
+    if mask & libc::FAN_Q_OVERFLOW != 0 {
+        parts.push("overflow");
+    }
+    if parts.is_empty() {
+        return format!("0x{mask:x}");
+    }
+    parts.join(",")
 }
 
 fn sanitize_error_text(text: &str) -> String {
