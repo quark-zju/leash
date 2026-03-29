@@ -4,11 +4,10 @@ use crate::profile_loader;
 const HELP_TOPIC_NAMES: &[(&str, HelpTopic)] = &[
     ("profile", HelpTopic::Profile),
     ("completion", HelpTopic::Completion),
-    ("add", HelpTopic::Add),
-    ("list", HelpTopic::List),
-    ("show", HelpTopic::Show),
-    ("rm", HelpTopic::Rm),
     ("run", HelpTopic::Run),
+    ("_list", HelpTopic::LowLevelList),
+    ("_show", HelpTopic::LowLevelShow),
+    ("_rm", HelpTopic::LowLevelRm),
     ("_mount", HelpTopic::LowLevelMount),
     ("_fuse", HelpTopic::LowLevelFuse),
     ("_suid", HelpTopic::LowLevelSuid),
@@ -72,36 +71,27 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "  source <(cowjail completion)\n",
         )
         .to_string(),
-        HelpTopic::Add => concat!(
-            "cowjail add\n\n",
+        HelpTopic::LowLevelList => {
+            concat!("cowjail _list\n\n", "USAGE:\n", "  cowjail _list").to_string()
+        }
+        HelpTopic::LowLevelShow => concat!(
+            "cowjail _show\n\n",
             "USAGE:\n",
-            "  cowjail add [<name> | --name <name>] [--profile <profile>]\n\n",
-            "NOTES:\n",
-            "  () means required choice, [] means optional\n\n",
-            "OPTIONS:\n",
-            "  --name <name>         Explicit jail name (same as positional NAME)\n",
-            "  --profile <profile>   Profile path. Default: default",
-        )
-        .to_string(),
-        HelpTopic::List => concat!("cowjail list\n\n", "USAGE:\n", "  cowjail list").to_string(),
-        HelpTopic::Show => concat!(
-            "cowjail show\n\n",
-            "USAGE:\n",
-            "  cowjail show [--name <name> | <name> | --profile <profile>] [-v|--verbose]\n\n",
+            "  cowjail _show [--name <name> | <name> | --profile <profile>] [-v|--verbose]\n\n",
             "NOTES:\n",
             "  () means required choice, [] means optional\n\n",
             "DESCRIPTION:\n",
-            "  Print jail profile.\n\n",
+            "  Print low-level jail profile state.\n\n",
             "OPTIONS:\n",
             "  --name <name>         Show a jail by name (same as positional NAME)\n",
             "  --profile <profile>   Show the jail selected by profile-derived identity\n",
             "  -v, --verbose         Reserved for extra debug output"
         )
         .to_string(),
-        HelpTopic::Rm => concat!(
-            "cowjail rm\n\n",
+        HelpTopic::LowLevelRm => concat!(
+            "cowjail _rm\n\n",
             "USAGE:\n",
-            "  cowjail rm (<name> | --name <name> | --profile <profile>) [-v|--verbose]\n\n",
+            "  cowjail _rm (<name> | --name <name> | --profile <profile>) [-v|--verbose]\n\n",
             "NOTES:\n",
             "  () means required choice, [] means optional\n\n",
             "OPTIONS:\n",
@@ -113,9 +103,8 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
         HelpTopic::Run => concat!(
             "cowjail run\n\n",
             "USAGE:\n",
-            "  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n\n",
+            "  cowjail run [--profile <profile>] [-v|--verbose] command ...\n\n",
             "OPTIONS:\n",
-            "  --name <name>         Reuse or create an explicit jail name\n",
             "  --profile <profile>   Select/create the profile-derived jail identity\n",
             "  -v, --verbose         Print progress logs\n\n",
             "TROUBLESHOOTING:\n",
@@ -163,23 +152,21 @@ fn root_help_text(verbose: bool) -> String {
         "USAGE:\n",
         "  cowjail <subcommand> [options]\n\n",
         "COMMON:\n",
-        "  cowjail run [--name <name> | --profile <profile>] [-v|--verbose] command ...\n",
+        "  cowjail run [--profile <profile>] [-v|--verbose] command ...\n",
         "  cowjail help profile\n\n",
         "PROFILE:\n",
         "  cowjail profile list\n",
         "  cowjail profile show [name]\n",
         "  cowjail profile edit [name]\n",
-        "  cowjail profile rm [name]\n\n",
-        "NAMED JAILS:\n",
-        "  cowjail add [<name> | --name <name>] [--profile <profile>]\n",
-        "  cowjail show <name>\n",
-        "  cowjail rm (<name> | --name <name> | --profile <profile>) [-v|--verbose]\n",
-        "  cowjail list\n",
+        "  cowjail profile rm [name]\n",
     ));
     if verbose {
         out.push_str(concat!(
             "\n",
             "LOW-LEVEL (DEBUG):\n",
+            "  cowjail _list\n",
+            "  cowjail _show [--name <name> | <name> | --profile <profile>] [-v|--verbose]\n",
+            "  cowjail _rm (<name> | --name <name> | --profile <profile>) [-v|--verbose]\n",
             "  cowjail _mount --profile <profile> [-v|--verbose] <path>\n",
             "  cowjail _suid [-v|--verbose]\n\n",
             "  cowjail _fuse --profile <profile> \\\n",

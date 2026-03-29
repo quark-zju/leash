@@ -12,11 +12,10 @@ pub enum Command {
     Help { topic: HelpTopic, verbose: bool },
     Completion(CompletionCommand),
     Profile(ProfileCommand),
-    Add(AddCommand),
-    List(ListCommand),
-    Show(ShowCommand),
-    Rm(RmCommand),
     Run(RunCommand),
+    LowLevelList(ListCommand),
+    LowLevelShow(ShowCommand),
+    LowLevelRm(RmCommand),
     LowLevelMount(MountCommand),
     LowLevelFuse(LowLevelFuseCommand),
     LowLevelSuid(LowLevelSuidCommand),
@@ -26,12 +25,11 @@ pub enum Command {
 pub enum HelpTopic {
     Root,
     Profile,
-    Add,
-    List,
-    Show,
-    Rm,
     Run,
     Completion,
+    LowLevelList,
+    LowLevelShow,
+    LowLevelRm,
     LowLevelMount,
     LowLevelFuse,
     LowLevelSuid,
@@ -48,12 +46,6 @@ pub enum ProfileAction {
     Show { name: String },
     Edit { name: String },
     Rm { name: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AddCommand {
-    pub name: Option<String>,
-    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +67,6 @@ pub struct RmCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCommand {
-    pub name: Option<String>,
     pub profile: Option<String>,
     pub verbose: bool,
     pub program: OsString,
@@ -122,20 +113,17 @@ where
 
     let mut args = Arguments::from_vec(raw);
     let subcmd = args.subcommand()?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "missing subcommand (expected: completion, profile, add, list, show, rm, run)"
-        )
+        anyhow::anyhow!("missing subcommand (expected: completion, profile, run)")
     })?;
 
     let command = match subcmd.as_str() {
         "help" => parse_help(args)?,
         "completion" => parse_completion(args)?,
         "profile" => parse_profile(args)?,
-        "add" => parse_add(args)?,
-        "list" => parse_list(args)?,
-        "show" => parse_show(args)?,
-        "rm" => parse_rm(args)?,
         "run" => parse_run(args)?,
+        "_list" => parse_list(args)?,
+        "_show" => parse_show(args)?,
+        "_rm" => parse_rm(args)?,
         "_mount" => parse_mount(args)?,
         "_fuse" => parse_low_level_fuse(args)?,
         "_suid" => parse_low_level_suid(args)?,
@@ -266,11 +254,10 @@ fn parse_run(mut args: Arguments) -> Result<Command> {
         return Ok(help_command(HelpTopic::Run, false));
     }
     let verbose = args.contains(["-v", "--verbose"]);
-    let name = args.opt_value_from_str("--name")?;
-    let profile = args.opt_value_from_str("--profile")?;
-    if name.is_some() && profile.is_some() {
-        bail!("run accepts only one of --name <name> or --profile <profile>");
+    if args.opt_value_from_str::<_, String>("--name")?.is_some() {
+        bail!("run no longer accepts --name; use --profile <profile>");
     }
+    let profile = args.opt_value_from_str("--profile")?;
 
     let mut trailing = args.finish();
     if trailing.is_empty() {
@@ -285,7 +272,6 @@ fn parse_run(mut args: Arguments) -> Result<Command> {
 
     let program = trailing.remove(0);
     Ok(Command::Run(RunCommand {
-        name,
         profile,
         verbose,
         program,
@@ -293,50 +279,24 @@ fn parse_run(mut args: Arguments) -> Result<Command> {
     }))
 }
 
-fn parse_add(mut args: Arguments) -> Result<Command> {
-    if args.contains(["-h", "--help"]) {
-        return Ok(help_command(HelpTopic::Add, false));
-    }
-    let name_flag = args.opt_value_from_str("--name")?;
-    let profile = args.opt_value_from_str("--profile")?;
-    let extra = args.finish();
-    if extra.len() > 1 {
-        bail!("add got unexpected trailing arguments");
-    }
-    let positional_name = extra.first().map(|raw| {
-        raw.to_str()
-            .ok_or_else(|| anyhow::anyhow!("add NAME must be valid UTF-8"))
-            .map(ToOwned::to_owned)
-    });
-    let positional_name = positional_name.transpose()?;
-    if name_flag.is_some() && positional_name.is_some() {
-        bail!("add accepts only one NAME source: positional NAME or --name <name>");
-    }
-    let name = name_flag.or(positional_name);
-    if name.is_none() && profile.is_none() {
-        bail!("add requires NAME, --name <name>, or --profile <profile>");
-    }
-    Ok(Command::Add(AddCommand { name, profile }))
-}
-
 fn parse_list(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
-        return Ok(help_command(HelpTopic::List, false));
+        return Ok(help_command(HelpTopic::LowLevelList, true));
     }
     let extra = args.finish();
     if !extra.is_empty() {
-        bail!("list got unexpected trailing arguments");
+        bail!("_list got unexpected trailing arguments");
     }
-    Ok(Command::List(ListCommand))
+    Ok(Command::LowLevelList(ListCommand))
 }
 
 fn parse_show(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
-        return Ok(help_command(HelpTopic::Show, false));
+        return Ok(help_command(HelpTopic::LowLevelShow, true));
     }
     let verbose = args.contains(["-v", "--verbose"]);
-    let selector = parse_optional_jail_selector(args, "show")?;
-    Ok(Command::Show(ShowCommand {
+    let selector = parse_optional_jail_selector(args, "_show")?;
+    Ok(Command::LowLevelShow(ShowCommand {
         name: selector.name,
         profile: selector.profile,
         verbose,
@@ -345,16 +305,16 @@ fn parse_show(mut args: Arguments) -> Result<Command> {
 
 fn parse_rm(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
-        return Ok(help_command(HelpTopic::Rm, false));
+        return Ok(help_command(HelpTopic::LowLevelRm, true));
     }
     let verbose = args.contains(["-v", "--verbose"]);
-    let selector = parse_optional_jail_selector(args, "rm")?;
+    let selector = parse_optional_jail_selector(args, "_rm")?;
     let name = selector.name;
     let profile = selector.profile;
     if name.is_none() && profile.is_none() {
-        bail!("rm requires NAME, --name <name>, or --profile <profile>");
+        bail!("_rm requires NAME, --name <name>, or --profile <profile>");
     }
-    Ok(Command::Rm(RmCommand {
+    Ok(Command::LowLevelRm(RmCommand {
         name,
         profile,
         verbose,
@@ -474,7 +434,6 @@ mod tests {
             Command::Run(run) => run,
             other => panic!("expected run, got {other:?}"),
         };
-        assert!(run.name.is_none());
         assert!(run.profile.is_none());
         assert!(!run.verbose);
         assert_eq!(run.program, OsString::from("echo"));
@@ -489,7 +448,6 @@ mod tests {
             Command::Run(run) => run,
             other => panic!("expected run, got {other:?}"),
         };
-        assert!(run.name.is_none());
         assert_eq!(run.profile.as_deref(), Some("dev"));
         assert!(!run.verbose);
         assert_eq!(run.program, OsString::from("echo"));
@@ -678,28 +636,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_add_accepts_positional_name() {
-        let cmd = parse_from(os(&["add", "dev"])).expect("add with positional name should parse");
-        let add = match cmd {
-            Command::Add(add) => add,
-            other => panic!("expected add, got {other:?}"),
-        };
-        assert_eq!(add.name.as_deref(), Some("dev"));
-        assert!(add.profile.is_none());
-    }
-
-    #[test]
     fn parse_list_has_no_args() {
-        let cmd = parse_from(os(&["list"])).expect("list should parse");
-        assert_eq!(cmd, Command::List(ListCommand));
+        let cmd = parse_from(os(&["_list"])).expect("_list should parse");
+        assert_eq!(cmd, Command::LowLevelList(ListCommand));
     }
 
     #[test]
     fn parse_show_accepts_implicit_selector() {
-        let cmd = parse_from(os(&["show"])).expect("show without selector should parse");
+        let cmd = parse_from(os(&["_show"])).expect("_show without selector should parse");
         let show = match cmd {
-            Command::Show(show) => show,
-            other => panic!("expected show, got {other:?}"),
+            Command::LowLevelShow(show) => show,
+            other => panic!("expected _show, got {other:?}"),
         };
         assert!(show.name.is_none());
         assert!(show.profile.is_none());
@@ -708,10 +655,10 @@ mod tests {
 
     #[test]
     fn parse_show_accepts_name() {
-        let cmd = parse_from(os(&["show", "agent"])).expect("show with name should parse");
+        let cmd = parse_from(os(&["_show", "agent"])).expect("_show with name should parse");
         let show = match cmd {
-            Command::Show(show) => show,
-            other => panic!("expected show, got {other:?}"),
+            Command::LowLevelShow(show) => show,
+            other => panic!("expected _show, got {other:?}"),
         };
         assert_eq!(show.name.as_deref(), Some("agent"));
         assert!(show.profile.is_none());
@@ -720,10 +667,10 @@ mod tests {
 
     #[test]
     fn parse_show_verbose_flag() {
-        let cmd = parse_from(os(&["show", "-v", "agent"])).expect("show -v should parse");
+        let cmd = parse_from(os(&["_show", "-v", "agent"])).expect("_show -v should parse");
         let show = match cmd {
-            Command::Show(show) => show,
-            other => panic!("expected show, got {other:?}"),
+            Command::LowLevelShow(show) => show,
+            other => panic!("expected _show, got {other:?}"),
         };
         assert_eq!(show.name.as_deref(), Some("agent"));
         assert!(show.profile.is_none());
@@ -732,10 +679,11 @@ mod tests {
 
     #[test]
     fn parse_show_accepts_profile_selector() {
-        let cmd = parse_from(os(&["show", "--profile", "dev"])).expect("show profile should parse");
+        let cmd =
+            parse_from(os(&["_show", "--profile", "dev"])).expect("_show profile should parse");
         let show = match cmd {
-            Command::Show(show) => show,
-            other => panic!("expected show, got {other:?}"),
+            Command::LowLevelShow(show) => show,
+            other => panic!("expected _show, got {other:?}"),
         };
         assert!(show.name.is_none());
         assert_eq!(show.profile.as_deref(), Some("dev"));
@@ -743,31 +691,31 @@ mod tests {
 
     #[test]
     fn parse_show_requires_exactly_one_selector_source() {
-        let err = parse_from(os(&["show", "--name", "a", "b"]))
-            .expect_err("show with positional and --name should fail");
+        let err = parse_from(os(&["_show", "--name", "a", "b"]))
+            .expect_err("_show with positional and --name should fail");
         assert!(err.to_string().contains("only one NAME source"));
 
-        let err = parse_from(os(&["show", "--name", "a", "--profile", "b"]))
-            .expect_err("show with name and profile should fail");
+        let err = parse_from(os(&["_show", "--name", "a", "--profile", "b"]))
+            .expect_err("_show with name and profile should fail");
         assert!(err.to_string().contains("only one of"));
     }
 
     #[test]
     fn parse_rm_requires_exactly_one_selector() {
-        let err = parse_from(os(&["rm"])).expect_err("rm without selector should fail");
-        assert!(err.to_string().contains("rm requires"));
+        let err = parse_from(os(&["_rm"])).expect_err("_rm without selector should fail");
+        assert!(err.to_string().contains("_rm requires"));
 
-        let err = parse_from(os(&["rm", "--name", "a", "--profile", "b"]))
-            .expect_err("rm with two selectors should fail");
+        let err = parse_from(os(&["_rm", "--name", "a", "--profile", "b"]))
+            .expect_err("_rm with two selectors should fail");
         assert!(err.to_string().contains("only one of"));
     }
 
     #[test]
     fn parse_rm_accepts_positional_name() {
-        let cmd = parse_from(os(&["rm", "agent"])).expect("rm with positional name should parse");
+        let cmd = parse_from(os(&["_rm", "agent"])).expect("_rm with positional name should parse");
         let rm = match cmd {
-            Command::Rm(rm) => rm,
-            other => panic!("expected rm, got {other:?}"),
+            Command::LowLevelRm(rm) => rm,
+            other => panic!("expected _rm, got {other:?}"),
         };
         assert_eq!(rm.name.as_deref(), Some("agent"));
         assert!(rm.profile.is_none());
@@ -776,20 +724,20 @@ mod tests {
 
     #[test]
     fn parse_rm_verbose_flag() {
-        let cmd = parse_from(os(&["rm", "-v", "agent"])).expect("rm with -v should parse");
+        let cmd = parse_from(os(&["_rm", "-v", "agent"])).expect("_rm with -v should parse");
         let rm = match cmd {
-            Command::Rm(rm) => rm,
-            other => panic!("expected rm, got {other:?}"),
+            Command::LowLevelRm(rm) => rm,
+            other => panic!("expected _rm, got {other:?}"),
         };
         assert_eq!(rm.name.as_deref(), Some("agent"));
         assert!(rm.verbose);
     }
 
     #[test]
-    fn parse_run_requires_exactly_one_selector() {
-        let err = parse_from(os(&["run", "--name", "a", "--profile", "b", "echo"]))
-            .expect_err("run with two selectors should fail");
-        assert!(err.to_string().contains("only one of"));
+    fn parse_run_rejects_unknown_name_flag() {
+        let err = parse_from(os(&["run", "--name", "a", "echo"]))
+            .expect_err("run no longer accepts --name");
+        assert!(err.to_string().contains("no longer accepts --name"));
     }
 
     #[test]
@@ -839,6 +787,33 @@ mod tests {
             suid_help,
             Command::Help {
                 topic: HelpTopic::LowLevelSuid,
+                verbose: true,
+            }
+        );
+
+        let list_help = parse_from(os(&["_list", "--help"])).expect("_list help should parse");
+        assert_eq!(
+            list_help,
+            Command::Help {
+                topic: HelpTopic::LowLevelList,
+                verbose: true,
+            }
+        );
+
+        let show_help = parse_from(os(&["_show", "--help"])).expect("_show help should parse");
+        assert_eq!(
+            show_help,
+            Command::Help {
+                topic: HelpTopic::LowLevelShow,
+                verbose: true,
+            }
+        );
+
+        let rm_help = parse_from(os(&["_rm", "--help"])).expect("_rm help should parse");
+        assert_eq!(
+            rm_help,
+            Command::Help {
+                topic: HelpTopic::LowLevelRm,
                 verbose: true,
             }
         );

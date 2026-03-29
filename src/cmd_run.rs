@@ -21,13 +21,7 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         "resolve current working directory".to_string()
     })?;
     let resolved = run_with_log(
-        || {
-            jail::resolve(
-                run.name.as_deref(),
-                run.profile.as_deref(),
-                jail::ResolveMode::EnsureExists,
-            )
-        },
+        || jail::resolve(None, run.profile.as_deref(), jail::ResolveMode::EnsureExists),
         || "resolve run jail".to_string(),
     )?;
     let runtime = run_with_log(

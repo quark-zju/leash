@@ -71,20 +71,16 @@ fn try_main() -> Result<i32> {
             cmd_profile::profile_command(profile).context("profile subcommand failed")?;
             Ok(0)
         }
-        Command::Add(add) => {
-            cmd_jail::add_command(add).context("add subcommand failed")?;
+        Command::LowLevelList(list) => {
+            cmd_jail::list_command(list).context("_list subcommand failed")?;
             Ok(0)
         }
-        Command::List(list) => {
-            cmd_jail::list_command(list).context("list subcommand failed")?;
+        Command::LowLevelShow(show) => {
+            cmd_show::show_command(show).context("_show subcommand failed")?;
             Ok(0)
         }
-        Command::Show(show) => {
-            cmd_show::show_command(show).context("show subcommand failed")?;
-            Ok(0)
-        }
-        Command::Rm(rm) => {
-            cmd_jail::rm_command(rm).context("rm subcommand failed")?;
+        Command::LowLevelRm(rm) => {
+            cmd_jail::rm_command(rm).context("_rm subcommand failed")?;
             Ok(0)
         }
         Command::Run(run) => cmd_run::run_command(run).context("run subcommand failed"),
@@ -110,28 +106,27 @@ fn command_verbose(cmd: &Command) -> bool {
         Command::Help { verbose, .. } => *verbose,
         Command::Completion(_) => false,
         Command::Profile(_) => false,
-        Command::Show(show) => show.verbose,
-        Command::Rm(rm) => rm.verbose,
         Command::Run(run) => run.verbose,
+        Command::LowLevelShow(show) => show.verbose,
+        Command::LowLevelRm(rm) => rm.verbose,
         Command::LowLevelMount(mount) => mount.verbose,
         Command::LowLevelFuse(fuse) => fuse.verbose,
         Command::LowLevelSuid(suid) => suid.verbose,
-        Command::Add(_) | Command::List(_) => false,
+        Command::LowLevelList(_) => false,
     }
 }
 
 fn require_priviledge_reason(cmd: &Command) -> Option<&'static str> {
     match cmd {
         Command::Run(_) => Some("run requires root for pivot_root and runtime setup"),
-        Command::Rm(_) => Some("rm may need root to clean state/runtime artifacts"),
+        Command::LowLevelRm(_) => Some("_rm may need root to clean state/runtime artifacts"),
         Command::LowLevelFuse(_) => Some("_fuse requires root euid to mount FUSE daemon"),
         Command::LowLevelSuid(_) => Some("_suid updates binary ownership/mode"),
         Command::Help { .. }
         | Command::Completion(_)
         | Command::Profile(_)
-        | Command::Add(_)
-        | Command::List(_)
-        | Command::Show(_)
+        | Command::LowLevelList(_)
+        | Command::LowLevelShow(_)
         | Command::LowLevelMount(_) => None,
     }
 }

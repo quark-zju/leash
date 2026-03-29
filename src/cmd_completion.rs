@@ -50,12 +50,12 @@ const BASH_COMPLETION: &str = r#"_cowjail_complete() {
   cmd2="${COMP_WORDS[2]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=( $(compgen -W "completion profile help add list show rm run _mount _fuse _suid" -- "$cur") )
+    COMPREPLY=( $(compgen -W "completion profile help run _list _show _rm _mount _fuse _suid" -- "$cur") )
     return
   fi
 
   if [[ "$cmd1" == "help" && $COMP_CWORD -eq 2 ]]; then
-    COMPREPLY=( $(compgen -W "profile completion add list show rm run _mount _fuse _suid" -- "$cur") )
+    COMPREPLY=( $(compgen -W "profile completion run _list _show _rm _mount _fuse _suid" -- "$cur") )
     return
   fi
 
@@ -79,7 +79,7 @@ const BASH_COMPLETION: &str = r#"_cowjail_complete() {
 
   if [[ "$prev" == "--name" ]]; then
     local names
-    names="$(cowjail list 2>/dev/null)"
+    names="$(cowjail _list 2>/dev/null)"
     COMPREPLY=( $(compgen -W "$names" -- "$cur") )
     return
   fi
@@ -90,20 +90,19 @@ const BASH_COMPLETION: &str = r#"_cowjail_complete() {
     return
   fi
 
-  if [[ "$cmd1" == "show" || "$cmd1" == "rm" ]]; then
+  if [[ "$cmd1" == "_show" || "$cmd1" == "_rm" ]]; then
     if [[ $COMP_CWORD -eq 2 && "${cur#-}" == "$cur" ]]; then
       local names
-      names="$(cowjail list 2>/dev/null)"
+      names="$(cowjail _list 2>/dev/null)"
       COMPREPLY=( $(compgen -W "$names" -- "$cur") )
       return
     fi
   fi
 
   case "$cmd1" in
-    run) COMPREPLY=( $(compgen -W "--name --profile -v --verbose" -- "$cur") ) ;;
-    rm) COMPREPLY=( $(compgen -W "--name --profile -v --verbose" -- "$cur") ) ;;
-    add) COMPREPLY=( $(compgen -W "--name --profile" -- "$cur") ) ;;
-    show) COMPREPLY=( $(compgen -W "-v --verbose" -- "$cur") ) ;;
+    run) COMPREPLY=( $(compgen -W "--profile -v --verbose" -- "$cur") ) ;;
+    _rm) COMPREPLY=( $(compgen -W "--name --profile -v --verbose" -- "$cur") ) ;;
+    _show) COMPREPLY=( $(compgen -W "--name --profile -v --verbose" -- "$cur") ) ;;
     _mount) COMPREPLY=( $(compgen -W "--profile -v --verbose" -- "$cur") ) ;;
     _fuse) COMPREPLY=( $(compgen -W "--profile --mountpoint --pid-path -v --verbose" -- "$cur") ) ;;
     _suid) COMPREPLY=( $(compgen -W "-v --verbose" -- "$cur") ) ;;
@@ -116,8 +115,8 @@ complete -F _cowjail_complete cowjail
 const ZSH_COMPLETION: &str = r#"#compdef cowjail
 _cowjail() {
   local -a subcmds help_topics profile_subcmds shells
-  subcmds=(completion profile help add list show rm run _mount _fuse _suid)
-  help_topics=(profile completion add list show rm run _mount _fuse _suid)
+  subcmds=(completion profile help run _list _show _rm _mount _fuse _suid)
+  help_topics=(profile completion run _list _show _rm _mount _fuse _suid)
   profile_subcmds=(list show edit rm)
   shells=(bash zsh fish)
 
@@ -157,9 +156,9 @@ _cowjail() {
 compdef _cowjail cowjail
 "#;
 
-const FISH_COMPLETION: &str = r#"complete -c cowjail -f -n '__fish_use_subcommand' -a 'completion profile help add list show rm run _mount _fuse _suid'
+const FISH_COMPLETION: &str = r#"complete -c cowjail -f -n '__fish_use_subcommand' -a 'completion profile help run _list _show _rm _mount _fuse _suid'
 complete -c cowjail -f -n '__fish_seen_subcommand_from completion; and not __fish_seen_subcommand_from bash zsh fish' -a 'bash zsh fish'
-complete -c cowjail -f -n '__fish_seen_subcommand_from help; and not __fish_seen_subcommand_from profile completion add list show rm run _mount _fuse _suid' -a 'profile completion add list show rm run _mount _fuse _suid'
+complete -c cowjail -f -n '__fish_seen_subcommand_from help; and not __fish_seen_subcommand_from profile completion run _list _show _rm _mount _fuse _suid' -a 'profile completion run _list _show _rm _mount _fuse _suid'
 complete -c cowjail -f -n '__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from list show edit rm' -a 'list show edit rm'
 complete -c cowjail -f -n '__fish_seen_subcommand_from profile show profile edit profile rm' -a '(cowjail profile list 2>/dev/null)'
 "#;
