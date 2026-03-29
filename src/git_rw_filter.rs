@@ -65,7 +65,10 @@ impl GitRwFilter {
                 return Some(current);
             }
             let Some(parent) = current.parent() else {
-                trace!("git-rw: no repo root found while resolving {}", path.display());
+                trace!(
+                    "git-rw: no repo root found while resolving {}",
+                    path.display()
+                );
                 self.fill_repo_root_cache(&visited, None);
                 return None;
             };

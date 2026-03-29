@@ -94,10 +94,14 @@ fn load_profile_source_with_home(profile_path: &Path, home: &Path) -> Result<(St
             if err.kind() == std::io::ErrorKind::NotFound
                 && profile_path == Path::new(cli::DEFAULT_PROFILE) =>
         {
-            Ok(("builtin:default".to_string(), builtin_default_profile_source().to_string()))
+            Ok((
+                "builtin:default".to_string(),
+                builtin_default_profile_source().to_string(),
+            ))
         }
-        Err(err) => Err(err)
-            .with_context(|| format!("failed to read profile file: {}", resolved.display())),
+        Err(err) => {
+            Err(err).with_context(|| format!("failed to read profile file: {}", resolved.display()))
+        }
     }
 }
 
@@ -467,9 +471,8 @@ mod tests {
             }))
         };
         let mut stack = Vec::new();
-        let expanded =
-            expand_includes_with("%include base\n", "root", &mut stack, &mut resolver)
-                .expect("cyclic include should be ignored");
+        let expanded = expand_includes_with("%include base\n", "root", &mut stack, &mut resolver)
+            .expect("cyclic include should be ignored");
         let joined = super::expanded_to_string(&expanded);
         assert_eq!(joined, "/tmp rw\n/etc ro\n");
     }
@@ -488,5 +491,4 @@ mod tests {
         .expect("cyclic show rendering should succeed");
         assert!(rendered.contains("# skipped cyclic include builtin:default\n"));
     }
-
 }

@@ -295,10 +295,7 @@ fn parse_show(mut args: Arguments) -> Result<Command> {
     }
     let verbose = args.contains(["-v", "--verbose"]);
     let selectors = parse_low_level_name_selectors(args, "_show")?;
-    Ok(Command::LowLevelShow(ShowCommand {
-        selectors,
-        verbose,
-    }))
+    Ok(Command::LowLevelShow(ShowCommand { selectors, verbose }))
 }
 
 fn parse_rm(mut args: Arguments) -> Result<Command> {
@@ -307,10 +304,7 @@ fn parse_rm(mut args: Arguments) -> Result<Command> {
     }
     let verbose = args.contains(["-v", "--verbose"]);
     let selectors = parse_low_level_name_selectors(args, "_rm")?;
-    Ok(Command::LowLevelRm(RmCommand {
-        selectors,
-        verbose,
-    }))
+    Ok(Command::LowLevelRm(RmCommand { selectors, verbose }))
 }
 
 fn parse_mount(mut args: Arguments) -> Result<Command> {
@@ -348,11 +342,12 @@ fn parse_low_level_name_selectors(mut args: Arguments, command: &str) -> Result<
     if extra.is_empty() {
         bail!("{command} requires one or more NAME or GLOB selectors");
     }
-    extra.into_iter()
+    extra
+        .into_iter()
         .map(|raw| {
-        raw.to_str()
-            .ok_or_else(|| anyhow::anyhow!("{command} NAME must be valid UTF-8"))
-            .map(ToOwned::to_owned)
+            raw.to_str()
+                .ok_or_else(|| anyhow::anyhow!("{command} NAME must be valid UTF-8"))
+                .map(ToOwned::to_owned)
         })
         .collect()
 }

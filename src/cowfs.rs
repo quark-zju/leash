@@ -14,9 +14,7 @@ use fuser::{
     self, FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
     ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
-use libc::{
-    EACCES, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR, EPERM,
-};
+use libc::{EACCES, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR, EPERM};
 
 use crate::git_rw_filter::GitRwFilter;
 use crate::profile::{Profile, RuleAction, Visibility};
@@ -389,7 +387,9 @@ impl CowFs {
             let times = [to_timespec_or_omit(atime), to_timespec_or_omit(mtime)];
             let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0) };
             if rc != 0 {
-                return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(EIO));
+                return Err(std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(EIO));
             }
         }
 
@@ -432,7 +432,12 @@ pub(crate) fn allow_other_enabled_in_fuse_conf() -> bool {
 impl Filesystem for CowFs {
     fn lookup(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let Some(parent_path) = self.path_for_ino(parent).map(ToOwned::to_owned) else {
-            debug!("lookup: pid={} parent_ino={} name={:?} -> ENOENT (unknown parent inode)", req.pid(), parent, name);
+            debug!(
+                "lookup: pid={} parent_ino={} name={:?} -> ENOENT (unknown parent inode)",
+                req.pid(),
+                parent,
+                name
+            );
             reply.error(ENOENT);
             return;
         };
@@ -571,7 +576,11 @@ impl Filesystem for CowFs {
         };
         let parent_ino = self.ensure_ino(&parent_path);
         entries.push((self_ino, FileType::Directory, std::ffi::OsString::from(".")));
-        entries.push((parent_ino, FileType::Directory, std::ffi::OsString::from("..")));
+        entries.push((
+            parent_ino,
+            FileType::Directory,
+            std::ffi::OsString::from(".."),
+        ));
         let host_entries = match self.list_children(&path) {
             Ok(entries) => entries,
             Err(code) => {
@@ -1240,7 +1249,10 @@ mod tests {
             fs.write_mode(&repo.join("src/lib.rs")),
             WriteMode::Passthrough
         );
-        assert_eq!(fs.write_mode(&dir.path().join("notes.txt")), WriteMode::Forbidden);
+        assert_eq!(
+            fs.write_mode(&dir.path().join("notes.txt")),
+            WriteMode::Forbidden
+        );
     }
 
     #[test]
@@ -1271,7 +1283,10 @@ mod tests {
         let fs = test_fs(&profile_src);
         assert_eq!(fs.access_errno(&repo.join(".git/config")), None);
         assert_eq!(fs.mutation_errno(&repo.join(".git/config")), Some(EACCES));
-        assert_eq!(fs.write_mode(&repo.join(".git/config")), WriteMode::Forbidden);
+        assert_eq!(
+            fs.write_mode(&repo.join(".git/config")),
+            WriteMode::Forbidden
+        );
     }
 
     #[test]
@@ -1290,7 +1305,9 @@ mod tests {
     #[test]
     fn proc_thread_self_is_hard_blocked() {
         assert!(is_blocked_proc_thread_self(Path::new("/proc/thread-self")));
-        assert!(is_blocked_proc_thread_self(Path::new("/proc/thread-self/fd/0")));
+        assert!(is_blocked_proc_thread_self(Path::new(
+            "/proc/thread-self/fd/0"
+        )));
         assert!(!is_blocked_proc_thread_self(Path::new("/proc/self")));
     }
 

@@ -233,9 +233,7 @@ def main() -> None:
         )
 
         profile_path = tmpdir / "semantics.profile"
-        profile_path.write_text(
-            textwrap.dedent(
-                f"""\
+        profile_path.write_text(textwrap.dedent(f"""\
                 {hidden_dir} hide
                 {deny_dir} deny
                 {rw_dir} rw
@@ -250,9 +248,7 @@ def main() -> None:
                 /proc rw
                 /dev/null rw
                 /dev/urandom ro
-                """
-            )
-        )
+                """))
 
         try:
             print("[1/5] verifying ro and rw")
@@ -341,7 +337,9 @@ def main() -> None:
                 "sh",
                 str(repo_file),
             )
-            assert_eq(repo_file.read_text(), "repo-after", what="host repo file content")
+            assert_eq(
+                repo_file.read_text(), "repo-after", what="host repo file content"
+            )
 
             completed = jail_run(
                 cowjail_bin,
