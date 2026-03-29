@@ -303,6 +303,56 @@ impl CowFs {
         self.handles.remove(&fh);
     }
 
+    fn drop_path_mappings_under(&mut self, root: &Path) {
+        let stale_paths: Vec<PathBuf> = self
+            .path_to_ino
+            .keys()
+            .filter(|path| path.as_path() == root || path.starts_with(root))
+            .cloned()
+            .collect();
+        for stale_path in stale_paths {
+            if let Some(ino) = self.path_to_ino.remove(&stale_path) {
+                self.ino_to_path.remove(&ino);
+            }
+        }
+    }
+
+    fn remap_paths_after_rename(&mut self, from: &Path, to: &Path) {
+        self.drop_path_mappings_under(to);
+
+        let moved_paths: Vec<(u64, PathBuf)> = self
+            .ino_to_path
+            .iter()
+            .filter_map(|(ino, path)| {
+                if path.as_path() == from || path.starts_with(from) {
+                    Some((*ino, path.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (ino, old_path) in moved_paths {
+            let suffix = old_path
+                .strip_prefix(from)
+                .expect("renamed path keeps source prefix");
+            let new_path = if suffix.as_os_str().is_empty() {
+                to.to_path_buf()
+            } else {
+                to.join(suffix)
+            };
+            self.path_to_ino.remove(&old_path);
+            self.path_to_ino.insert(new_path.clone(), ino);
+            self.ino_to_path.insert(ino, new_path);
+        }
+    }
+
+    fn apply_host_rename(&mut self, from: &Path, to: &Path) -> Result<(), i32> {
+        fs::rename(from, to).map_err(|err| io_errno(&err))?;
+        self.remap_paths_after_rename(from, to);
+        Ok(())
+    }
+
     fn ensure_openable_node(&self, path: &Path) -> Result<(), i32> {
         let meta = fs::symlink_metadata(path).map_err(|err| io_errno(&err))?;
         if meta.file_type().is_dir() {
@@ -1015,8 +1065,8 @@ impl Filesystem for CowFs {
             reply.error(EACCES);
             return;
         }
-        if let Err(err) = fs::rename(&from, &to) {
-            reply.error(io_errno(&err));
+        if let Err(code) = self.apply_host_rename(&from, &to) {
+            reply.error(code);
             return;
         }
         reply.ok();
@@ -1432,6 +1482,27 @@ mod tests {
         let meta = fs::metadata(&path).expect("metadata");
         assert_eq!(meta.atime(), 56_789);
         assert_eq!(meta.mtime(), 56_789);
+    }
+
+    #[test]
+    fn host_rename_remaps_cached_inode_path() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let from = root.join("tmp_obj");
+        let to = root.join("final_obj");
+        fs::write(&from, b"object").expect("seed object");
+
+        let profile_src = format!("{} rw\n", root.display());
+        let mut fs = test_fs(&profile_src);
+        let ino = fs.ensure_ino(&from);
+
+        fs.apply_host_rename(&from, &to).expect("rename file");
+
+        assert_eq!(fs.path_to_ino.get(&to), Some(&ino));
+        assert_eq!(fs.path_for_ino(ino), Some(to.as_path()));
+        assert!(!fs.path_to_ino.contains_key(&from));
+        assert!(!from.exists());
+        assert!(to.exists());
     }
 
     #[test]

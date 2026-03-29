@@ -15,7 +15,6 @@ Out of scope:
 
 `leash` 是一个 Linux 文件系统防护层，主要面向 AI 编码工具。
 
-
 包含：
 
 - 配置文件控制读写策略（`ro` / `rw` / `git-rw` / `deny` / `hide`）
