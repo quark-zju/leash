@@ -192,7 +192,10 @@ impl CowFs {
         }
         if self.git_rw_filter.is_git_metadata_path(path)
             && !requester_pid
-                .is_some_and(|pid| self.git_rw_filter.allow_git_metadata_for_pid(pid))
+                .is_some_and(|pid| {
+                    self.git_rw_filter
+                        .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
+                })
         {
             return Some(EACCES);
         }
@@ -217,7 +220,10 @@ impl CowFs {
         }
         if self.git_rw_filter.is_git_metadata_path(path)
             && !requester_pid
-                .is_some_and(|pid| self.git_rw_filter.allow_git_metadata_for_pid(pid))
+                .is_some_and(|pid| {
+                    self.git_rw_filter
+                        .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
+                })
         {
             return Some(EACCES);
         }
@@ -266,7 +272,10 @@ impl CowFs {
     fn write_mode_for_pid(&self, path: &Path, requester_pid: Option<u32>) -> WriteMode {
         if self.git_rw_filter.is_git_metadata_path(path) {
             return if requester_pid
-                .is_some_and(|pid| self.git_rw_filter.allow_git_metadata_for_pid(pid))
+                .is_some_and(|pid| {
+                    self.git_rw_filter
+                        .allow_git_metadata_for_pid(pid, self.mount_root.as_deref())
+                })
             {
                 WriteMode::Passthrough
             } else {

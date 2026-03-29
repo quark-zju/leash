@@ -19,15 +19,9 @@ struct CachedDecision {
     allowed: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SystemGit {
-    dev: u64,
-    ino: u64,
-}
-
 #[derive(Debug)]
 pub(crate) struct GitRwFilter {
-    system_git: Option<SystemGit>,
+    system_git: Option<PathBuf>,
     proc_cache: Mutex<HashMap<u32, CachedDecision>>,
     repo_root_cache: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
 }
@@ -83,7 +77,7 @@ impl GitRwFilter {
         self.repo_root_for(path).is_some()
     }
 
-    pub(crate) fn allow_git_metadata_for_pid(&self, pid: u32) -> bool {
+    pub(crate) fn allow_git_metadata_for_pid(&self, pid: u32, mount_root: Option<&Path>) -> bool {
         let proc_dir = PathBuf::from(format!("/proc/{pid}"));
         let meta = match fs::metadata(&proc_dir) {
             Ok(meta) => meta,
@@ -101,23 +95,24 @@ impl GitRwFilter {
             return entry.allowed;
         }
 
-        let allowed = self.inspect_process(pid);
+        let allowed = self.inspect_process(pid, mount_root);
         if let Ok(mut cache) = self.proc_cache.lock() {
             cache.insert(pid, CachedDecision { identity, allowed });
         }
         allowed
     }
 
-    fn inspect_process(&self, pid: u32) -> bool {
+    fn inspect_process(&self, pid: u32, mount_root: Option<&Path>) -> bool {
         let Some(system_git) = self.system_git.as_ref() else {
             return false;
         };
 
-        let exe_meta = match fs::metadata(format!("/proc/{pid}/exe")) {
-            Ok(meta) => meta,
+        let exe_path = match fs::read_link(format!("/proc/{pid}/exe")) {
+            Ok(path) => strip_mount_root_prefix(path, mount_root),
             Err(_) => return false,
         };
-        if exe_meta.dev() != system_git.dev || exe_meta.ino() != system_git.ino {
+        let exe_path = normalize_git_exe_path(&exe_path);
+        if exe_path.as_ref() != Some(system_git) {
             return false;
         }
 
@@ -152,7 +147,7 @@ impl GitRwFilter {
     }
 }
 
-fn resolve_system_git() -> Option<SystemGit> {
+fn resolve_system_git() -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join("git");
@@ -163,12 +158,33 @@ fn resolve_system_git() -> Option<SystemGit> {
         if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
             continue;
         }
-        return Some(SystemGit {
-            dev: meta.dev(),
-            ino: meta.ino(),
-        });
+        return normalize_git_exe_path(&candidate);
     }
     None
+}
+
+fn normalize_git_exe_path(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path).ok().or_else(|| {
+        if path.is_absolute() {
+            Some(path.to_path_buf())
+        } else {
+            None
+        }
+    })
+}
+
+fn strip_mount_root_prefix(path: PathBuf, mount_root: Option<&Path>) -> PathBuf {
+    let Some(root) = mount_root else {
+        return path;
+    };
+    let Ok(suffix) = path.strip_prefix(root) else {
+        return path;
+    };
+    if suffix.as_os_str().is_empty() {
+        PathBuf::from("/")
+    } else {
+        Path::new("/").join(suffix)
+    }
 }
 
 fn first_git_subcommand(cmdline: &[u8]) -> Option<&str> {
@@ -264,5 +280,14 @@ mod tests {
         assert!(filter.is_git_metadata_path(Path::new("/tmp/repo/.git")));
         assert!(filter.is_git_metadata_path(Path::new("/tmp/repo/.git/config")));
         assert!(!filter.is_git_metadata_path(Path::new("/tmp/repo/src/main.rs")));
+    }
+
+    #[test]
+    fn strip_mount_root_prefix_rewrites_fuse_backed_exe_path() {
+        let stripped = strip_mount_root_prefix(
+            PathBuf::from("/run/user/1000/cowjail/demo/mount/usr/bin/git"),
+            Some(Path::new("/run/user/1000/cowjail/demo/mount")),
+        );
+        assert_eq!(stripped, PathBuf::from("/usr/bin/git"));
     }
 }
