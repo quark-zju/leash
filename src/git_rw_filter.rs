@@ -86,12 +86,15 @@ impl GitRwFilter {
 
     pub(crate) fn path_is_git_repo_member(&self, path: &Path) -> bool {
         if self.is_git_metadata_path(path) {
-            trace!("git-rw: metadata path {} is not a repo member", path.display());
+            trace!(
+                "git-rw: path={} is inside git metadata, not part of the working copy",
+                path.display()
+            );
             return false;
         }
         let is_member = self.repo_root_for(path).is_some();
         trace!(
-            "git-rw: repo membership path={} member={}",
+            "git-rw: working copy membership path={} member={}",
             path.display(),
             is_member
         );
