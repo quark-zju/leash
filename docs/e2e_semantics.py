@@ -363,6 +363,7 @@ def main() -> None:
             )
 
             print("[5/5] verifying .git read-only protection and trusted git access")
+            expected_head = (repo / ".git" / "HEAD").read_text()
             completed = jail_run(
                 cowjail_bin,
                 base_env,
@@ -372,8 +373,9 @@ def main() -> None:
                 'cat "$1"',
                 "sh",
                 str(repo / ".git" / "HEAD"),
+                capture_stdout=True,
             )
-            assert_eq(completed.stdout, "ref: refs/heads/master\n", what=".git HEAD content")
+            assert_eq(completed.stdout, expected_head, what=".git HEAD content")
 
             completed = jail_run(
                 cowjail_bin,
