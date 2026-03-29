@@ -1,8 +1,11 @@
 use anyhow::{Context, Result, bail};
 use fs_err as fs;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
@@ -24,6 +27,7 @@ pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
     fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("failed to chmod daemon socket {}", socket_path.display()))?;
     crate::vlog!("daemon: listening on {}", socket_path.display());
+    let mut state = DaemonState::default();
 
     loop {
         let (mut stream, _addr) = listener
@@ -31,7 +35,7 @@ pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
             .context("failed to accept daemon connection")?;
         let peer = peer_credentials(&stream)?;
         authorize_peer(&peer)?;
-        handle_client(&mut stream, peer)?;
+        handle_client(&mut state, &mut stream, peer)?;
     }
 }
 
@@ -83,6 +87,25 @@ struct PeerCredentials {
     gid: libc::gid_t,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct NamespaceKey {
+    dev: u64,
+    ino: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegisteredSession {
+    key: NamespaceKey,
+    owner_uid: libc::uid_t,
+    owner_gid: libc::gid_t,
+    namespace_path: PathBuf,
+}
+
+#[derive(Debug, Default)]
+struct DaemonState {
+    sessions: HashMap<NamespaceKey, RegisteredSession>,
+}
+
 fn peer_credentials(stream: &UnixStream) -> Result<PeerCredentials> {
     let fd = stream.as_raw_fd();
     let mut creds = libc::ucred {
@@ -124,7 +147,11 @@ fn authorize_peer(peer: &PeerCredentials) -> Result<()> {
     )
 }
 
-fn handle_client(stream: &mut UnixStream, peer: PeerCredentials) -> Result<()> {
+fn handle_client(
+    state: &mut DaemonState,
+    stream: &mut UnixStream,
+    peer: PeerCredentials,
+) -> Result<()> {
     let mut request = String::new();
     {
         let mut reader = BufReader::new(
@@ -144,27 +171,93 @@ fn handle_client(stream: &mut UnixStream, peer: PeerCredentials) -> Result<()> {
         peer.pid,
         peer.uid
     );
-    match request {
-        "ping" => stream
-            .write_all(b"pong\n")
-            .context("failed to write daemon response"),
-        "stop" => stream
-            .write_all(b"unsupported\n")
-            .context("failed to write daemon response"),
-        "" => stream
-            .write_all(b"error empty-request\n")
-            .context("failed to write daemon response"),
-        _ => stream
-            .write_all(b"error unknown-command\n")
-            .context("failed to write daemon response"),
+    let response = handle_request_line(state, request, peer);
+    stream
+        .write_all(response.as_bytes())
+        .context("failed to write daemon response")
+}
+
+fn handle_request_line(state: &mut DaemonState, request: &str, peer: PeerCredentials) -> String {
+    let trimmed = request.trim();
+    if trimmed.is_empty() {
+        return "error empty-request\n".to_string();
+    }
+
+    let mut parts = trimmed.split_whitespace();
+    let command = parts.next().unwrap_or_default();
+    match command {
+        "ping" => "pong\n".to_string(),
+        "register-session" => {
+            let Some(namespace_path) = parts.next() else {
+                return "error missing-namespace-path\n".to_string();
+            };
+            if parts.next().is_some() {
+                return "error unexpected-arguments\n".to_string();
+            }
+            match register_session(state, Path::new(namespace_path), &peer) {
+                Ok(key) => format!("ok registered {}:{}\n", key.dev, key.ino),
+                Err(err) => format!("error {}\n", sanitize_error_text(&err.to_string())),
+            }
+        }
+        "query-session" => {
+            let Some(namespace_path) = parts.next() else {
+                return "error missing-namespace-path\n".to_string();
+            };
+            if parts.next().is_some() {
+                return "error unexpected-arguments\n".to_string();
+            }
+            match namespace_key_for_path(Path::new(namespace_path)) {
+                Ok(key) => {
+                    if state.sessions.contains_key(&key) {
+                        format!("ok session {}:{}\n", key.dev, key.ino)
+                    } else {
+                        "ok missing\n".to_string()
+                    }
+                }
+                Err(err) => format!("error {}\n", sanitize_error_text(&err.to_string())),
+            }
+        }
+        _ => "error unknown-command\n".to_string(),
     }
 }
 
-use std::os::unix::fs::PermissionsExt;
+fn register_session(
+    state: &mut DaemonState,
+    namespace_path: &Path,
+    peer: &PeerCredentials,
+) -> Result<NamespaceKey> {
+    let key = namespace_key_for_path(namespace_path)?;
+    state.sessions.insert(
+        key,
+        RegisteredSession {
+            key,
+            owner_uid: peer.uid,
+            owner_gid: peer.gid,
+            namespace_path: namespace_path.to_path_buf(),
+        },
+    );
+    Ok(key)
+}
+
+fn namespace_key_for_path(path: &Path) -> Result<NamespaceKey> {
+    let meta = fs::metadata(path)
+        .with_context(|| format!("failed to stat namespace handle {}", path.display()))?;
+    Ok(NamespaceKey {
+        dev: meta.dev(),
+        ino: meta.ino(),
+    })
+}
+
+fn sanitize_error_text(text: &str) -> String {
+    text.chars()
+        .map(|ch| if ch.is_ascii_whitespace() { '-' } else { ch })
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn default_socket_lives_under_runtime_root() {
@@ -179,5 +272,41 @@ mod tests {
             gid: unsafe { libc::getgid() },
         };
         authorize_peer(&peer).expect("real uid should be accepted");
+    }
+
+    #[test]
+    fn request_handler_registers_and_queries_session() {
+        let mut state = DaemonState::default();
+        let peer = PeerCredentials {
+            pid: 123,
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+        };
+        let namespace_path = unique_test_path();
+        fs::write(&namespace_path, b"placeholder").expect("write namespace placeholder");
+
+        let register = handle_request_line(
+            &mut state,
+            &format!("register-session {}", namespace_path.display()),
+            peer,
+        );
+        assert!(register.starts_with("ok registered "));
+
+        let query = handle_request_line(
+            &mut state,
+            &format!("query-session {}", namespace_path.display()),
+            peer,
+        );
+        assert!(query.starts_with("ok session "));
+
+        fs::remove_file(&namespace_path).expect("remove namespace placeholder");
+    }
+
+    fn unique_test_path() -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should advance")
+            .as_nanos();
+        std::env::temp_dir().join(format!("leash-daemon-test-{stamp}"))
     }
 }
