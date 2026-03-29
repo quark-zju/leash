@@ -61,7 +61,7 @@ cowjail run -- codex      # or opencode, bash, ...
 
 Changes by the command won't affect the real filesystem directly. Use `cowjail flush` to view and apply changes:
 
-```
+```bash
 cowjail flush -n                       # review pending changes
 cowjail flush                          # apply pending changes to host
 ```
@@ -78,12 +78,6 @@ cowjail profile edit default.local
 ```
 
 See [`docs/profile.md`](docs/profile.md) for profile syntax and more examples.
-
-```bash
-cowjail run --profile ~/my-profile -- your-command   # select jail by profile
-cowjail flush --profile ~/my-profile -n              # review pending changes
-cowjail flush --profile ~/my-profile                 # apply pending changes
-```
 
 ### Named jails
 
