@@ -19,6 +19,12 @@ pub(crate) fn default_profile_source_for_help() -> String {
     }
 }
 
+pub(crate) fn render_profile_source_for_show(profile_path: &Path, home: &Path) -> Result<String> {
+    let (source_name, source) = load_profile_source_with_home(profile_path, home)?;
+    let mut stack = Vec::new();
+    render_profile_source_for_show_with(&source, &source_name, home, &mut stack, 0)
+}
+
 #[derive(Debug)]
 pub(crate) struct LoadedProfile {
     pub(crate) profile: profile::Profile,
@@ -124,6 +130,82 @@ fn expand_includes(source: &str, source_name: &str, home: &Path) -> Result<Vec<E
     let mut stack = Vec::new();
     let mut resolver = |name: &str| read_named_profile_source_with_home(name, home);
     expand_includes_with(source, source_name, &mut stack, &mut resolver)
+}
+
+fn render_profile_source_for_show_with(
+    source: &str,
+    source_name: &str,
+    home: &Path,
+    stack: &mut Vec<String>,
+    depth: usize,
+) -> Result<String> {
+    let mut out = String::new();
+    let indent = "  ".repeat(depth + 1);
+    for (idx, line) in source.lines().enumerate() {
+        out.push_str(line);
+        out.push('\n');
+
+        let trimmed = line.trim();
+        let Some(body) = trimmed.strip_prefix('%') else {
+            continue;
+        };
+        let directive = body.trim();
+        if !directive.starts_with("include") {
+            continue;
+        }
+        let mut parts = directive.split_whitespace();
+        let Some(keyword) = parts.next() else {
+            anyhow::bail!("line {} has empty profile directive", idx + 1);
+        };
+        if keyword != "include" {
+            anyhow::bail!("line {} has unknown profile directive", idx + 1);
+        }
+        let Some(name) = parts.next() else {
+            anyhow::bail!("line {} has invalid include directive", idx + 1);
+        };
+        if parts.next().is_some() {
+            anyhow::bail!("line {} has invalid include directive", idx + 1);
+        }
+        if !crate::profile_builtin::is_builtin_name(name) {
+            jail::validate_explicit_name(name).context("invalid include profile name")?;
+        }
+        if stack.iter().any(|in_stack| in_stack == name) {
+            anyhow::bail!("cyclic profile include detected for '{name}'");
+        }
+        let Some(included) = read_named_profile_source_with_home(name, home)? else {
+            continue;
+        };
+        out.push_str(&indent);
+        out.push_str("# begin include ");
+        out.push_str(name);
+        if included.source_name != name {
+            out.push_str(" (");
+            out.push_str(&included.source_name);
+            out.push(')');
+        }
+        out.push('\n');
+        stack.push(name.to_string());
+        let rendered = render_profile_source_for_show_with(
+            &included.content,
+            &included.source_name,
+            home,
+            stack,
+            depth + 1,
+        )
+        .with_context(|| format!("failed to render include '{name}' from {source_name}"))?;
+        stack.pop();
+        for rendered_line in rendered.lines() {
+            out.push_str(&indent);
+            out.push_str("# ");
+            out.push_str(rendered_line);
+            out.push('\n');
+        }
+        out.push_str(&indent);
+        out.push_str("# end include ");
+        out.push_str(name);
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 fn expand_includes_with<F>(
@@ -252,7 +334,10 @@ fn strip_directive_lines(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{IncludedSource, expand_includes_with, load_profile_source_with_home, strip_directive_lines};
+    use super::{
+        IncludedSource, expand_includes_with, load_profile_source_with_home,
+        render_profile_source_for_show_with, strip_directive_lines,
+    };
     use std::collections::BTreeMap;
     use std::path::Path;
 
@@ -361,6 +446,23 @@ mod tests {
             .expect("builtin profile should load");
         assert_eq!(source_name, "builtin:basic");
         assert!(source.contains("/bin ro"));
+    }
+
+    #[test]
+    fn render_show_comments_expanded_include_body() {
+        let home = Path::new("/home/tester");
+        let rendered = render_profile_source_for_show_with(
+            "%include builtin:basic\n~ git-rw\n",
+            "builtin:default",
+            home,
+            &mut Vec::new(),
+            0,
+        )
+        .expect("show rendering should succeed");
+        assert!(rendered.contains("%include builtin:basic\n"));
+        assert!(rendered.contains("  # begin include builtin:basic\n"));
+        assert!(rendered.contains("  # /bin ro\n"));
+        assert!(rendered.contains("~ git-rw\n"));
     }
 
 }

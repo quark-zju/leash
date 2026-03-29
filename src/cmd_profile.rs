@@ -75,7 +75,9 @@ fn edit_profile(name: &str) -> Result<()> {
 }
 
 fn show_profile(name: &str) -> Result<()> {
-    let text = read_profile_source_for_show(name)?;
+    let home = jail::home_dir()?;
+    let text = profile_loader::render_profile_source_for_show(Path::new(name), &home)
+        .or_else(|_| read_profile_source_for_show(name))?;
     print!("{text}");
     if !text.ends_with('\n') {
         println!();
