@@ -19,33 +19,33 @@ pub(crate) fn profile_command(cmd: ProfileCommand) -> Result<()> {
 fn list_profiles() -> Result<()> {
     let layout = jail::layout()?;
     let profiles_dir = layout.config_root.join("profiles");
-    if !profiles_dir.exists() {
-        return Ok(());
-    }
-
     let mut names = Vec::new();
-    for entry in fs::read_dir(&profiles_dir)
-        .with_context(|| format!("failed to read profiles dir {}", profiles_dir.display()))?
-    {
-        let entry = entry.with_context(|| {
-            format!(
-                "failed to read entry in profiles dir {}",
-                profiles_dir.display()
-            )
-        })?;
-        let meta = entry
-            .metadata()
-            .with_context(|| format!("failed to stat profile {}", entry.path().display()))?;
-        if !meta.is_file() {
-            continue;
+    if profiles_dir.exists() {
+        for entry in fs::read_dir(&profiles_dir)
+            .with_context(|| format!("failed to read profiles dir {}", profiles_dir.display()))?
+        {
+            let entry = entry.with_context(|| {
+                format!(
+                    "failed to read entry in profiles dir {}",
+                    profiles_dir.display()
+                )
+            })?;
+            let meta = entry
+                .metadata()
+                .with_context(|| format!("failed to stat profile {}", entry.path().display()))?;
+            if !meta.is_file() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+                continue;
+            };
+            names.push(name);
         }
-        let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
-            continue;
-        };
-        names.push(name);
     }
+    names.extend(crate::profile_builtin::builtin_names().map(ToOwned::to_owned));
 
     names.sort();
+    names.dedup();
     for name in names {
         println!("{name}");
     }
@@ -53,6 +53,9 @@ fn list_profiles() -> Result<()> {
 }
 
 fn edit_profile(name: &str) -> Result<()> {
+    if crate::profile_builtin::is_builtin_name(name) {
+        bail!("builtin profile is read-only: {name}");
+    }
     let path = editable_profile_path(name)?;
 
     if std::env::var_os("EDITOR").is_none() {
@@ -101,6 +104,9 @@ fn editable_profile_path(name: &str) -> Result<std::path::PathBuf> {
 }
 
 fn rm_profile(name: &str) -> Result<()> {
+    if crate::profile_builtin::is_builtin_name(name) {
+        bail!("builtin profile is read-only: {name}");
+    }
     jail::validate_explicit_name(name).context("invalid profile name")?;
     let path = jail::profile_definition_path(name)?;
     if !path.exists() {
@@ -112,6 +118,9 @@ fn rm_profile(name: &str) -> Result<()> {
 }
 
 fn read_profile_source_for_show(name: &str) -> Result<String> {
+    if let Some(source) = crate::profile_builtin::source_for_name(name) {
+        return Ok(source.to_string());
+    }
     jail::validate_explicit_name(name).context("invalid profile name")?;
     let path = jail::profile_definition_path(name)?;
     read_profile_source_for_show_from_path(name, &path)
@@ -154,5 +163,23 @@ mod tests {
         let err = read_profile_source_for_show_from_path("demo", &path)
             .expect_err("missing non-default should fail");
         assert!(err.to_string().contains("profile does not exist: demo"));
+    }
+
+    #[test]
+    fn show_supports_builtin_profile_name() {
+        let text = read_profile_source_for_show("builtin:basic").expect("builtin show");
+        assert!(text.contains("/bin ro"));
+    }
+
+    #[test]
+    fn edit_rejects_builtin_profile_name() {
+        let err = edit_profile("builtin:basic").expect_err("builtin edit should fail");
+        assert!(err.to_string().contains("read-only"));
+    }
+
+    #[test]
+    fn rm_rejects_builtin_profile_name() {
+        let err = rm_profile("builtin:basic").expect_err("builtin rm should fail");
+        assert!(err.to_string().contains("read-only"));
     }
 }
