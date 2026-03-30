@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::AsRawFd;
+#[cfg(not(test))]
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
@@ -43,7 +44,8 @@ pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
     mark_common_filesystems(&observer)?;
     observer.spawn_thread(host_pidns)?;
     let mut state = DaemonState {
-        sessions: HashSet::new(),
+        active_profile_source: None,
+        host_pidns,
         _observer: observer,
     };
 
@@ -52,7 +54,7 @@ pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
             .accept()
             .context("failed to accept daemon connection")?;
         let peer = peer_credentials(&stream)?;
-        authorize_peer(&peer)?;
+        authorize_peer(&peer, state.host_pidns)?;
         handle_client(&mut state, &mut stream, peer)?;
     }
 }
@@ -135,7 +137,8 @@ struct NamespaceKey {
 }
 
 struct DaemonState {
-    sessions: HashSet<NamespaceKey>,
+    active_profile_source: Option<String>,
+    host_pidns: NamespaceKey,
     _observer: FilesystemObserver,
 }
 
@@ -143,7 +146,8 @@ struct DaemonState {
 impl Default for DaemonState {
     fn default() -> Self {
         Self {
-            sessions: HashSet::new(),
+            active_profile_source: None,
+            host_pidns: NamespaceKey { dev: 1, ino: 1 },
             _observer: FilesystemObserver::new().expect("test observer should initialize"),
         }
     }
@@ -151,7 +155,6 @@ impl Default for DaemonState {
 
 struct ReceivedRequest {
     request: String,
-    received_fd: Option<File>,
 }
 
 struct FilesystemObserver {
@@ -258,18 +261,29 @@ fn peer_credentials(stream: &UnixStream) -> Result<PeerCredentials> {
     })
 }
 
-fn authorize_peer(peer: &PeerCredentials) -> Result<()> {
+fn authorize_peer(peer: &PeerCredentials, host_pidns: NamespaceKey) -> Result<()> {
     let allowed_uid = unsafe { libc::getuid() };
-    if peer.uid == allowed_uid || peer.uid == 0 {
-        return Ok(());
+    if peer.uid != allowed_uid && peer.uid != 0 {
+        bail!(
+            "daemon connection rejected: peer pid={} uid={} gid={} does not match session uid {}",
+            peer.pid,
+            peer.uid,
+            peer.gid,
+            allowed_uid
+        )
     }
-    bail!(
-        "daemon connection rejected: peer pid={} uid={} gid={} does not match session uid {}",
-        peer.pid,
-        peer.uid,
-        peer.gid,
-        allowed_uid
-    )
+    let peer_pidns = pid_namespace_key_for_pid(peer.pid)?.ok_or_else(|| {
+        anyhow::anyhow!("failed to resolve pid namespace for peer pid={}", peer.pid)
+    })?;
+    if peer_pidns != host_pidns {
+        bail!(
+            "daemon connection rejected: peer pid={} is outside host pid namespace {}:{}",
+            peer.pid,
+            host_pidns.dev,
+            host_pidns.ino
+        )
+    }
+    Ok(())
 }
 
 fn handle_client(
@@ -285,65 +299,33 @@ fn handle_client(
         peer.pid,
         peer.uid
     );
-    let response = handle_request(state, request, peer, received.received_fd);
+    let response = handle_request(state, request, peer);
     stream
         .write_all(response.as_bytes())
         .context("failed to write daemon response")
 }
 
-fn handle_request(
-    state: &mut DaemonState,
-    request: &str,
-    peer: PeerCredentials,
-    received_fd: Option<File>,
-) -> String {
+fn handle_request(state: &mut DaemonState, request: &str, _peer: PeerCredentials) -> String {
     let mut lines = request.lines();
     let Some(command) = lines.next().map(str::trim) else {
         return "error empty-request\n".to_string();
     };
     match command {
         "ping" => "pong\n".to_string(),
-        "register-session" => {
-            let Some(_profile_path) = lines.next() else {
-                return "error missing-profile-path\n".to_string();
-            };
-            let Some(namespace_file) = received_fd else {
-                return "error missing-mntns-fd\n".to_string();
-            };
-            if lines.next().is_some() {
-                return "error unexpected-arguments\n".to_string();
+        "set-profile" => {
+            let profile_source = lines.collect::<Vec<_>>().join("\n");
+            if profile_source.trim().is_empty() {
+                return "error missing-profile-source\n".to_string();
             }
-            match register_session(state, namespace_file) {
-                Ok(key) => format!("ok registered {}:{}\n", key.dev, key.ino),
-                Err(err) => format!("error {}\n", sanitize_error_text(&err.to_string())),
-            }
+            state.active_profile_source = Some(profile_source);
+            "ok profile-updated\n".to_string()
         }
-        "query-session" => {
-            if lines.next().is_some() {
-                return "error unexpected-arguments\n".to_string();
-            }
-            match namespace_key_for_pid(peer.pid) {
-                Ok(Some(key)) if state.sessions.contains(&key) => {
-                    format!("ok session {}:{}\n", key.dev, key.ino)
-                }
-                Ok(Some(_)) | Ok(None) => "ok missing\n".to_string(),
-                Err(err) => format!("error {}\n", sanitize_error_text(&err.to_string())),
-            }
-        }
+        "get-profile" => match &state.active_profile_source {
+            Some(profile) => format!("ok\n{profile}\n"),
+            None => "ok\n".to_string(),
+        },
         _ => "error unknown-command\n".to_string(),
     }
-}
-
-fn register_session(state: &mut DaemonState, namespace_file: File) -> Result<NamespaceKey> {
-    let meta = namespace_file
-        .metadata()
-        .context("failed to stat received mount namespace fd")?;
-    let key = NamespaceKey {
-        dev: meta.dev(),
-        ino: meta.ino(),
-    };
-    state.sessions.insert(key);
-    Ok(key)
 }
 
 fn recv_request(stream: &UnixStream) -> Result<ReceivedRequest> {
@@ -371,30 +353,7 @@ fn recv_request(stream: &UnixStream) -> Result<ReceivedRequest> {
     let request = std::str::from_utf8(&data[..received as usize])
         .context("daemon request was not valid UTF-8")?
         .to_string();
-    let received_fd = extract_received_fd(&msg);
-    Ok(ReceivedRequest {
-        request,
-        received_fd,
-    })
-}
-
-fn extract_received_fd(msg: &libc::msghdr) -> Option<File> {
-    let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(msg as *const libc::msghdr as *mut libc::msghdr) };
-    while !cmsg.is_null() {
-        let header = unsafe { &*cmsg };
-        if header.cmsg_level == libc::SOL_SOCKET && header.cmsg_type == libc::SCM_RIGHTS {
-            let data_ptr = unsafe { libc::CMSG_DATA(cmsg) as *const libc::c_int };
-            let raw_fd = unsafe { *data_ptr };
-            return Some(unsafe { File::from_raw_fd(raw_fd) });
-        }
-        cmsg = unsafe { libc::CMSG_NXTHDR(msg as *const libc::msghdr as *mut libc::msghdr, cmsg) };
-    }
-    None
-}
-
-fn namespace_key_for_pid(pid: libc::pid_t) -> Result<Option<NamespaceKey>> {
-    let path = mount_namespace_path_for_pid(pid);
-    namespace_key_for_path(&path)
+    Ok(ReceivedRequest { request })
 }
 
 fn pid_namespace_key_for_pid(pid: libc::pid_t) -> Result<Option<NamespaceKey>> {
@@ -415,10 +374,6 @@ fn namespace_key_for_path(path: &Path) -> Result<Option<NamespaceKey>> {
         dev: meta.dev(),
         ino: meta.ino(),
     }))
-}
-
-fn mount_namespace_path_for_pid(pid: libc::pid_t) -> PathBuf {
-    PathBuf::from(format!("/proc/{pid}/ns/mnt"))
 }
 
 fn pid_namespace_path_for_pid(pid: libc::pid_t) -> PathBuf {
@@ -501,11 +456,6 @@ fn observe_events(file: File, host_pidns: NamespaceKey) {
     }
 }
 
-#[cfg(test)]
-fn test_register_request(profile_path: &Path) -> String {
-    format!("register-session\n{}", profile_path.display())
-}
-
 #[cfg(not(test))]
 fn describe_event_fd(fd: libc::c_int) -> String {
     let link = PathBuf::from(format!("/proc/self/fd/{fd}"));
@@ -542,16 +492,9 @@ fn describe_mask(mask: u64) -> String {
     parts.join(",")
 }
 
-fn sanitize_error_text(text: &str) -> String {
-    text.chars()
-        .map(|ch| if ch.is_ascii_whitespace() { '-' } else { ch })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn default_socket_lives_under_runtime_root() {
@@ -561,70 +504,53 @@ mod tests {
     #[test]
     fn authorize_peer_accepts_real_uid() {
         let peer = PeerCredentials {
-            pid: 1,
+            pid: unsafe { libc::getpid() },
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
         };
-        authorize_peer(&peer).expect("real uid should be accepted");
+        let host_pidns = pid_namespace_key_for_pid(peer.pid)
+            .expect("peer pidns lookup")
+            .expect("peer pidns");
+        authorize_peer(&peer, host_pidns).expect("real uid should be accepted");
     }
 
     #[test]
-    fn request_handler_registers_and_queries_session() {
+    fn request_handler_sets_and_reads_global_profile() {
         let mut state = DaemonState::default();
         let peer = PeerCredentials {
             pid: unsafe { libc::getpid() },
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
         };
-        let temp = tempdir().expect("tempdir");
-        let profile_path = temp.path().join("profile");
-        fs::write(&profile_path, "/workspace rw\n").expect("write profile");
-        let namespace_file = File::open("/proc/self/ns/mnt").expect("open current mntns");
-        let register = handle_request(
-            &mut state,
-            &test_register_request(&profile_path),
-            peer,
-            Some(namespace_file),
-        );
-        assert!(register.starts_with("ok registered "));
+        let update = handle_request(&mut state, "set-profile\n/work rw\n/etc ro", peer);
+        assert_eq!(update, "ok profile-updated\n");
 
-        let query = handle_request(&mut state, "query-session", peer, None);
-        assert!(query.starts_with("ok session "));
+        let query = handle_request(&mut state, "get-profile", peer);
+        assert_eq!(query, "ok\n/work rw\n/etc ro\n");
     }
 
     #[test]
-    fn query_session_reports_missing_for_unknown_pid_namespace() {
-        let mut state = DaemonState::default();
-        let peer = PeerCredentials {
-            pid: 999_999,
-            uid: unsafe { libc::getuid() },
-            gid: unsafe { libc::getgid() },
-        };
-        assert_eq!(
-            handle_request(&mut state, "query-session", peer, None),
-            "ok missing\n"
-        );
-    }
-
-    #[test]
-    fn register_session_requires_mntns_fd() {
+    fn get_profile_reports_empty_before_initialization() {
         let mut state = DaemonState::default();
         let peer = PeerCredentials {
             pid: unsafe { libc::getpid() },
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
         };
-        let temp = tempdir().expect("tempdir");
-        let profile_path = temp.path().join("profile");
-        fs::write(&profile_path, "/workspace rw\n").expect("write profile");
+        assert_eq!(handle_request(&mut state, "get-profile", peer), "ok\n");
+    }
+
+    #[test]
+    fn set_profile_requires_content() {
+        let mut state = DaemonState::default();
+        let peer = PeerCredentials {
+            pid: unsafe { libc::getpid() },
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+        };
         assert_eq!(
-            handle_request(
-                &mut state,
-                &test_register_request(&profile_path),
-                peer,
-                None,
-            ),
-            "error missing-mntns-fd\n"
+            handle_request(&mut state, "set-profile", peer),
+            "error missing-profile-source\n"
         );
     }
 }
