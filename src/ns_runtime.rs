@@ -89,7 +89,11 @@ pub(crate) fn ensure_runtime_dir(jail: &JailPaths) -> Result<NsRuntimePaths> {
             paths.runtime_dir.display()
         )
     })?;
-    ensure_runtime_dirs_private(&root, &paths.runtime_dir, !crate::jail::has_configured_xdg_runtime_dir())?;
+    ensure_runtime_dirs_private(
+        &root,
+        &paths.runtime_dir,
+        !crate::jail::has_configured_xdg_runtime_dir(),
+    )?;
     crate::privileges::ensure_owned_by_real_user(&root)?;
     crate::privileges::ensure_owned_by_real_user(&paths.runtime_dir)?;
     Ok(paths)
@@ -101,7 +105,11 @@ fn open_root_lock(root: &Path) -> Result<RuntimeLock> {
     open_lock_file(root.join(ROOT_LOCK_FILE_NAME))
 }
 
-fn ensure_runtime_dirs_private(root: &Path, runtime_dir: &Path, enforce_private: bool) -> Result<()> {
+fn ensure_runtime_dirs_private(
+    root: &Path,
+    runtime_dir: &Path,
+    enforce_private: bool,
+) -> Result<()> {
     if !enforce_private {
         return Ok(());
     }
@@ -236,7 +244,10 @@ pub(crate) fn ensure_runtime_for_exec(jail: &JailPaths) -> Result<ExecRuntime> {
 pub(crate) fn cleanup_before_fuse_start(paths: &NsRuntimePaths) -> Result<()> {
     terminate_recorded_fuse_server(paths)?;
     unmount_runtime_mount_dir(paths)?;
-    crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.fuse_pid_path)?;
+    crate::privileges::remove_file_if_exists_with_owner_fix(
+        &paths.runtime_dir,
+        &paths.fuse_pid_path,
+    )?;
     fs::create_dir_all(&paths.mount_dir).with_context(|| {
         format!(
             "failed to ensure runtime mount directory {}",
@@ -353,8 +364,14 @@ fn remove_known_runtime_artifacts(paths: &NsRuntimePaths) -> Result<()> {
         );
     }
 
-    crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.fuse_pid_path)?;
-    crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.fuse_log_path)?;
+    crate::privileges::remove_file_if_exists_with_owner_fix(
+        &paths.runtime_dir,
+        &paths.fuse_pid_path,
+    )?;
+    crate::privileges::remove_file_if_exists_with_owner_fix(
+        &paths.runtime_dir,
+        &paths.fuse_log_path,
+    )?;
     crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.lock_path)?;
     crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.mntns_path)?;
     crate::privileges::remove_file_if_exists_with_owner_fix(&paths.runtime_dir, &paths.ipcns_path)?;
@@ -627,7 +644,11 @@ mod tests {
 
         ensure_runtime_dirs_private(&root, &runtime, true).expect("enforce private runtime dirs");
 
-        let root_mode = fs::metadata(&root).expect("root metadata").permissions().mode() & 0o777;
+        let root_mode = fs::metadata(&root)
+            .expect("root metadata")
+            .permissions()
+            .mode()
+            & 0o777;
         let runtime_mode = fs::metadata(&runtime)
             .expect("runtime metadata")
             .permissions()
@@ -649,7 +670,11 @@ mod tests {
 
         ensure_runtime_dirs_private(&root, &runtime, false).expect("skip private runtime dirs");
 
-        let root_mode = fs::metadata(&root).expect("root metadata").permissions().mode() & 0o777;
+        let root_mode = fs::metadata(&root)
+            .expect("root metadata")
+            .permissions()
+            .mode()
+            & 0o777;
         let runtime_mode = fs::metadata(&runtime)
             .expect("runtime metadata")
             .permissions()

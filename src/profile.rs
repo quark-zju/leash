@@ -90,7 +90,13 @@ impl<F> CachingFsCheck<F> {
 
 impl<F: FsCheck> FsCheck for CachingFsCheck<F> {
     fn exists(&self, path: &Path) -> bool {
-        if let Some(cached) = self.cache.lock().expect("fs cache poisoned").get(path).copied() {
+        if let Some(cached) = self
+            .cache
+            .lock()
+            .expect("fs cache poisoned")
+            .get(path)
+            .copied()
+        {
             return cached;
         }
         let exists = self.inner.exists(path);
@@ -300,7 +306,10 @@ pub(crate) fn parse_normalized_rule_lines(profile_src: &str) -> Result<Vec<Norma
     let mut out = Vec::with_capacity(parsed.len());
     for line in parsed {
         if !line.normalized_conditions.is_empty() {
-            bail!("line {} conditional rules are not supported here", line.line_no);
+            bail!(
+                "line {} conditional rules are not supported here",
+                line.line_no
+            );
         }
         let path = PathBuf::from(&line.pattern);
         if !path.is_absolute() {
@@ -456,7 +465,12 @@ fn normalize_pattern(token: &str, cwd: &Path, home: &Path) -> Result<String> {
 }
 
 impl Rule {
-    fn conditions_match(&self, path: &Path, exe_path: Option<&Path>, fs_check: &dyn FsCheck) -> bool {
+    fn conditions_match(
+        &self,
+        path: &Path,
+        exe_path: Option<&Path>,
+        fs_check: &dyn FsCheck,
+    ) -> bool {
         self.conditions
             .iter()
             .all(|cond| cond.matches(path, exe_path, fs_check))
@@ -955,21 +969,24 @@ mod tests {
             &[("git", "/usr/bin/git")],
         );
         assert_eq!(
-            profile.first_match_action_for_exe(Path::new("/tmp/file"), Some(Path::new("/usr/bin/git"))),
+            profile.first_match_action_for_exe(
+                Path::new("/tmp/file"),
+                Some(Path::new("/usr/bin/git"))
+            ),
             Some(RuleAction::Passthrough)
         );
         assert_eq!(
-            profile.first_match_action_for_exe(Path::new("/tmp/file"), Some(Path::new("/usr/bin/vim"))),
+            profile.first_match_action_for_exe(
+                Path::new("/tmp/file"),
+                Some(Path::new("/usr/bin/vim"))
+            ),
             Some(RuleAction::ReadOnly)
         );
     }
 
     #[test]
     fn conditional_rule_does_not_make_ancestor_visible_without_matching_exe() {
-        let profile = parse_with_exe(
-            "/foo/bar rw when exe=git\n",
-            &[("git", "/usr/bin/git")],
-        );
+        let profile = parse_with_exe("/foo/bar rw when exe=git\n", &[("git", "/usr/bin/git")]);
         assert_eq!(
             profile.visibility_for_exe(Path::new("/foo"), Some(Path::new("/usr/bin/vim"))),
             Visibility::Hidden

@@ -252,7 +252,8 @@ impl LeashFs {
     }
 
     fn dynamic_visibility_for_exe(&self, path: &Path, exe_path: Option<&Path>) -> Visibility {
-        self.profile.visibility_with_checks(path, exe_path, &self.fs_check)
+        self.profile
+            .visibility_with_checks(path, exe_path, &self.fs_check)
     }
 
     fn write_mode_for_pid(&self, path: &Path, requester_pid: Option<u32>) -> WriteMode {

@@ -139,7 +139,8 @@ impl<R: RepoPolicy> AccessPolicy<R> {
     }
 
     fn dynamic_visibility(&self, path: &Path, exe_path: Option<&Path>) -> Visibility {
-        self.profile.visibility_with_checks(path, exe_path, &self.fs_check)
+        self.profile
+            .visibility_with_checks(path, exe_path, &self.fs_check)
     }
 }
 
@@ -223,7 +224,11 @@ mod tests {
         std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir src");
         std::fs::write(&file, b"fn main() {}\n").expect("write file");
         let profile = Profile::parse(
-            &format!("{} rw when ancestor-has=.git\n{} ro\n", temp.path().display(), temp.path().display()),
+            &format!(
+                "{} rw when ancestor-has=.git\n{} ro\n",
+                temp.path().display(),
+                temp.path().display()
+            ),
             Path::new("/"),
         )
         .expect("profile should parse");
@@ -236,11 +241,8 @@ mod tests {
 
     #[test]
     fn fallback_ro_rule_is_read_only() {
-        let profile = Profile::parse(
-            "/src rw when ancestor-has=.git\n/src ro\n",
-            Path::new("/"),
-        )
-        .expect("profile should parse");
+        let profile = Profile::parse("/src rw when ancestor-has=.git\n/src ro\n", Path::new("/"))
+            .expect("profile should parse");
         let policy = AccessPolicy::with_repo_policy(profile, MockRepoPolicy::default());
         assert_eq!(
             policy.check_permission(Path::new("/src/random.txt"), None, RequestedAccess::Write),

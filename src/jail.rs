@@ -198,10 +198,7 @@ fn resolve_named(
     validate_explicit_name(name)?;
     let profile_name = profile.unwrap_or(cli::DEFAULT_PROFILE);
     let loaded = profile_loader::load_profile(std::path::Path::new(profile_name))?;
-    materialize_jail(
-        &paths,
-        &loaded.normalized_source,
-    )?;
+    materialize_jail(&paths, &loaded.normalized_source)?;
     Ok(ResolvedJail {
         name: name.to_string(),
         generated: false,
@@ -223,10 +220,7 @@ fn resolve_generated(
         if mode == ResolveMode::MustExist {
             bail!("jail does not exist: {name}");
         }
-        materialize_jail(
-            &paths,
-            &loaded.normalized_source,
-        )?;
+        materialize_jail(&paths, &loaded.normalized_source)?;
     }
     Ok(ResolvedJail {
         name,
@@ -236,10 +230,7 @@ fn resolve_generated(
     })
 }
 
-pub(crate) fn materialize_jail(
-    paths: &JailPaths,
-    normalized_profile: &str,
-) -> Result<()> {
+pub(crate) fn materialize_jail(paths: &JailPaths, normalized_profile: &str) -> Result<()> {
     fs::create_dir_all(&paths.state_dir).map_err(|err| {
         anyhow::anyhow!(
             "failed to create jail state directory {}: {err}",
@@ -342,5 +333,3 @@ fn list_unknown_state_entries(paths: &JailPaths) -> Result<Vec<String>> {
     unknown.sort();
     Ok(unknown)
 }
-
-

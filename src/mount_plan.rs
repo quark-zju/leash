@@ -18,9 +18,7 @@ struct RuleLine {
     line_no: usize,
 }
 
-pub(crate) fn build_mount_plan(
-    normalized_profile: &str,
-) -> Result<Vec<MountPlanEntry>> {
+pub(crate) fn build_mount_plan(normalized_profile: &str) -> Result<Vec<MountPlanEntry>> {
     let parsed = profile::parse_normalized_rule_lines(normalized_profile)?;
     let rules: Vec<RuleLine> = parsed
         .into_iter()
@@ -112,10 +110,7 @@ pub(crate) fn build_mount_plan(
     Ok(plan)
 }
 
-fn validate_bind_conflicts(
-    rules: &[RuleLine],
-    plan: &[MountPlanEntry],
-) -> Result<()> {
+fn validate_bind_conflicts(rules: &[RuleLine], plan: &[MountPlanEntry]) -> Result<()> {
     for entry in plan {
         let bind_root = match entry {
             MountPlanEntry::Bind { path, .. }
@@ -140,10 +135,7 @@ fn validate_bind_conflicts(
     Ok(())
 }
 
-fn validate_exact_tmp_bind_rule(
-    current: &RuleLine,
-    rules: &[RuleLine],
-) -> Result<()> {
+fn validate_exact_tmp_bind_rule(current: &RuleLine, rules: &[RuleLine]) -> Result<()> {
     for rule in rules {
         if std::ptr::eq(rule, current) {
             continue;
@@ -200,8 +192,7 @@ mod tests {
 
     #[test]
     fn proc_subrule_conflicts_with_proc_mount_root() {
-        let err =
-            build_mount_plan("/proc ro\n/proc/sys ro\n").expect_err("must fail");
+        let err = build_mount_plan("/proc ro\n/proc/sys ro\n").expect_err("must fail");
         assert!(err.to_string().contains("exact path /proc"));
     }
 
@@ -227,8 +218,7 @@ mod tests {
 
     #[test]
     fn dev_bind_root_rejects_descendant_rules() {
-        let err = build_mount_plan("/dev/pts rw\n/dev/pts/0 ro\n")
-            .expect_err("must fail");
+        let err = build_mount_plan("/dev/pts rw\n/dev/pts/0 ro\n").expect_err("must fail");
         assert!(
             err.to_string()
                 .contains("conflicts with mounted root /dev/pts")
@@ -261,8 +251,7 @@ mod tests {
 
     #[test]
     fn tmp_bind_root_rejects_descendant_rules() {
-        let err =
-            build_mount_plan("/tmp rw\n/tmp/cache ro\n").expect_err("must fail");
+        let err = build_mount_plan("/tmp rw\n/tmp/cache ro\n").expect_err("must fail");
         assert!(err.to_string().contains("mentioned only once"));
     }
 
@@ -280,8 +269,7 @@ mod tests {
 
     #[test]
     fn sys_root_rejects_descendant_rules() {
-        let err =
-            build_mount_plan("/sys ro\n/sys/fs ro\n").expect_err("must fail");
+        let err = build_mount_plan("/sys ro\n/sys/fs ro\n").expect_err("must fail");
         assert!(err.to_string().contains("exact path /sys"));
     }
 }
