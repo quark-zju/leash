@@ -57,8 +57,6 @@ pub(crate) fn load_profile_with_context(
     let parse_source = strip_directive_lines(&expanded_source);
 
     let parse_label = format!("profile source: {source_name}");
-    profile::Profile::parse_with_home(&parse_source, cwd, home)
-        .with_context(|| format!("failed to parse {parse_label}"))?;
     let normalized_source = profile::normalize_source_with_home(&parse_source, cwd, home)
         .with_context(|| format!("failed to normalize {parse_label}"))?;
     Ok(LoadedProfile { normalized_source })

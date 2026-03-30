@@ -1,10 +1,16 @@
+#[cfg(test)]
 use std::collections::BTreeSet;
+#[cfg(test)]
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+#[cfg(test)]
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+#[cfg(test)]
+use globset::GlobBuilder;
+#[cfg(test)]
+use globset::{GlobSet, GlobSetBuilder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleAction {
@@ -14,7 +20,7 @@ pub enum RuleAction {
     Hide,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct Rule {
     action: RuleAction,
@@ -28,10 +34,11 @@ struct ParsedRuleLine {
     pattern: String,
     action: RuleAction,
     normalized_conditions: Vec<String>,
+    #[cfg_attr(not(test), allow(dead_code))]
     line_no: usize,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 #[derive(Debug)]
 pub struct Profile {
     rules: Vec<Rule>,
@@ -43,7 +50,7 @@ pub trait ExeResolver {
     fn resolve(&self, name: &str) -> Option<PathBuf>;
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub trait FsCheck {
     fn exists(&self, path: &Path) -> bool;
 }
@@ -63,28 +70,30 @@ impl ExeResolver for PathExeResolver {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub struct RealFsCheck;
 
+#[cfg(test)]
 impl FsCheck for RealFsCheck {
     fn exists(&self, path: &Path) -> bool {
         path.exists()
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub struct CachingFsCheck<F = RealFsCheck> {
     inner: F,
     cache: Mutex<HashMap<PathBuf, bool>>,
 }
 
+#[cfg(test)]
 impl Default for CachingFsCheck<RealFsCheck> {
     fn default() -> Self {
         Self::new(RealFsCheck)
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 impl<F> CachingFsCheck<F> {
     pub fn new(inner: F) -> Self {
         Self {
@@ -94,6 +103,7 @@ impl<F> CachingFsCheck<F> {
     }
 }
 
+#[cfg(test)]
 impl<F: FsCheck> FsCheck for CachingFsCheck<F> {
     fn exists(&self, path: &Path) -> bool {
         if let Some(cached) = self
@@ -114,14 +124,14 @@ impl<F: FsCheck> FsCheck for CachingFsCheck<F> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 #[derive(Debug, Clone)]
 enum Condition {
     Exe(Option<PathBuf>),
     AncestorHas(String),
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
     Action(RuleAction),
@@ -129,7 +139,7 @@ pub enum Visibility {
     Hidden,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 impl Profile {
     #[cfg(test)]
     pub fn parse(profile_src: &str, launch_cwd: &Path) -> Result<Self> {
@@ -271,7 +281,7 @@ impl Profile {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn normalize_source(profile_src: &str, launch_cwd: &Path) -> Result<String> {
     let home = home_dir_from_env()?;
     normalize_source_with_home(profile_src, launch_cwd, &home)
@@ -302,7 +312,7 @@ pub fn normalize_source_with_home(
     Ok(out)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct NormalizedRuleLine {
     pub(crate) path: PathBuf,
@@ -310,7 +320,7 @@ pub(crate) struct NormalizedRuleLine {
     pub(crate) line_no: usize,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn parse_normalized_rule_lines(profile_src: &str) -> Result<Vec<NormalizedRuleLine>> {
     let exe_resolver = PathExeResolver;
     let parsed = parse_lines(profile_src, Path::new("/"), Path::new("/"), &exe_resolver)?;
@@ -357,10 +367,12 @@ fn action_to_str(action: RuleAction) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn action_requires_visible_ancestors(action: RuleAction) -> bool {
     matches!(action, RuleAction::ReadOnly | RuleAction::Passthrough)
 }
 
+#[cfg(test)]
 fn compile_conditions(tokens: &[String], exe_resolver: &dyn ExeResolver) -> Result<Vec<Condition>> {
     let mut out = Vec::with_capacity(tokens.len());
     for token in tokens {
@@ -475,7 +487,7 @@ fn normalize_pattern(token: &str, cwd: &Path, home: &Path) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("path pattern is not valid UTF-8"))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 impl Rule {
     fn conditions_match(
         &self,
@@ -489,7 +501,7 @@ impl Rule {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 impl Condition {
     fn matches(&self, path: &Path, exe_path: Option<&Path>, fs_check: &dyn FsCheck) -> bool {
         match self {
@@ -500,7 +512,7 @@ impl Condition {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn ancestor_has(path: &Path, name: &str, fs_check: &dyn FsCheck) -> bool {
     let mut dir = match path.parent() {
         Some(parent) => parent.to_path_buf(),
@@ -517,6 +529,7 @@ fn ancestor_has(path: &Path, name: &str, fs_check: &dyn FsCheck) -> bool {
     }
 }
 
+#[cfg(test)]
 fn build_implicit_ancestor_sets(
     pattern: &str,
     action: RuleAction,
@@ -539,12 +552,14 @@ fn build_implicit_ancestor_sets(
     Ok((implicit_visible_ancestors, implicit_ancestor_globset))
 }
 
+#[cfg(test)]
 fn home_dir_from_env() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("HOME is not set for '~' expansion"))
 }
 
+#[cfg(test)]
 fn glob_patterns_for_rule(pattern: &str) -> Vec<String> {
     let base = normalized_base_pattern(pattern);
     let mut out = vec![base.to_string()];
@@ -558,6 +573,7 @@ fn glob_patterns_for_rule(pattern: &str) -> Vec<String> {
     out
 }
 
+#[cfg(test)]
 fn normalized_base_pattern(pattern: &str) -> &str {
     if pattern == "/" {
         "/"
@@ -566,6 +582,7 @@ fn normalized_base_pattern(pattern: &str) -> &str {
     }
 }
 
+#[cfg(test)]
 fn descendant_glob(base: &str) -> Option<String> {
     if base == "/**" || base.ends_with("/**") {
         return None;
@@ -576,6 +593,7 @@ fn descendant_glob(base: &str) -> Option<String> {
     Some(format!("{base}/**"))
 }
 
+#[cfg(test)]
 fn gather_implicit_ancestors(pattern: &str, output: &mut BTreeSet<PathBuf>) {
     let mut fixed_path = if has_glob_syntax(pattern) {
         fixed_prefix(pattern)
@@ -595,6 +613,7 @@ fn gather_implicit_ancestors(pattern: &str, output: &mut BTreeSet<PathBuf>) {
     }
 }
 
+#[cfg(test)]
 fn implicit_ancestor_globs_for_rule(pattern: &str) -> Vec<String> {
     let base = normalized_base_pattern(pattern);
     let path = Path::new(base);
@@ -625,6 +644,7 @@ fn implicit_ancestor_globs_for_rule(pattern: &str) -> Vec<String> {
     out
 }
 
+#[cfg(test)]
 fn fixed_prefix(pattern: &str) -> PathBuf {
     let wildcard_idx = pattern.find(['*', '?', '[']).unwrap_or(pattern.len());
     let prefix = &pattern[..wildcard_idx];
@@ -636,6 +656,7 @@ fn fixed_prefix(pattern: &str) -> PathBuf {
     }
 }
 
+#[cfg(test)]
 fn has_glob_syntax(value: &str) -> bool {
     value.contains('*') || value.contains('?') || value.contains('[')
 }
