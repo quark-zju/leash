@@ -451,6 +451,56 @@ class RuntimeSemanticsTests(LeashIntegrationTestCase):
         )
         self.assertEqual(with_proc.returncode, 0, with_proc.stderr)
 
+        proc_rw_profile = self.tmpdir / "proc-rw.profile"
+        proc_rw_profile.write_text(
+            textwrap.dedent(
+                f"""\
+                /proc rw
+                {self.fixture} ro
+                /bin ro
+                /usr ro
+                """
+            )
+        )
+        proc_rw = run_cmd(
+            [
+                str(self.leash_bin),
+                "run",
+                "--profile",
+                str(proc_rw_profile),
+                "--",
+                "/usr/bin/python3",
+                "-c",
+                "from pathlib import Path; Path('/proc/self/comm').write_text('leash-rw\\n')",
+            ],
+            env=self.env,
+            check=False,
+        )
+        self.assertEqual(proc_rw.returncode, 0, proc_rw.stderr)
+
+        proc_ro = run_cmd(
+            [
+                str(self.leash_bin),
+                "run",
+                "--profile",
+                str(proc_ro_profile),
+                "--",
+                "/usr/bin/python3",
+                "-c",
+                "from pathlib import Path\n"
+                "import sys\n"
+                "try:\n"
+                "    Path('/proc/self/comm').write_text('leash-ro\\n')\n"
+                "except OSError:\n"
+                "    sys.exit(0)\n"
+                "else:\n"
+                "    sys.exit(1)\n",
+            ],
+            env=self.env,
+            check=False,
+        )
+        self.assertEqual(proc_ro.returncode, 0, proc_ro.stderr)
+
 
 class ProfileCommandTests(LeashIntegrationTestCase):
     def test_profile_show_reports_match_and_difference(self) -> None:
