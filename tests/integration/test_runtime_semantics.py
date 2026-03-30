@@ -397,6 +397,60 @@ class RuntimeSemanticsTests(LeashIntegrationTestCase):
             ]
         )
 
+    def test_proc_mount_requires_explicit_profile_rule(self) -> None:
+        no_proc_profile = self.tmpdir / "no-proc.profile"
+        no_proc_profile.write_text(
+            textwrap.dedent(
+                f"""\
+                {self.fixture} ro
+                /bin ro
+                /usr ro
+                """
+            )
+        )
+        without_proc = run_cmd(
+            [
+                str(self.leash_bin),
+                "run",
+                "--profile",
+                str(no_proc_profile),
+                "--",
+                "/bin/sh",
+                "-lc",
+                'test ! -e /proc/self/status',
+            ],
+            env=self.env,
+            check=False,
+        )
+        self.assertEqual(without_proc.returncode, 0, without_proc.stderr)
+
+        proc_ro_profile = self.tmpdir / "proc-ro.profile"
+        proc_ro_profile.write_text(
+            textwrap.dedent(
+                f"""\
+                /proc ro
+                {self.fixture} ro
+                /bin ro
+                /usr ro
+                """
+            )
+        )
+        with_proc = run_cmd(
+            [
+                str(self.leash_bin),
+                "run",
+                "--profile",
+                str(proc_ro_profile),
+                "--",
+                "/bin/sh",
+                "-lc",
+                'test -r /proc/self/status',
+            ],
+            env=self.env,
+            check=False,
+        )
+        self.assertEqual(with_proc.returncode, 0, with_proc.stderr)
+
 
 class ProfileCommandTests(LeashIntegrationTestCase):
     def test_profile_show_reports_match_and_difference(self) -> None:
