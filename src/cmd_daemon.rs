@@ -33,6 +33,7 @@ const OBSERVE_MASK: u64 =
 
 pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
     privileges::require_root_euid("leash _daemon")?;
+    ensure_running_in_root_pid_namespace()?;
     run_env::set_process_name(c"leashd")?;
 
     let socket_path = cmd.socket.unwrap_or_else(default_socket_path);
@@ -492,6 +493,41 @@ fn pid_namespace_key_for_pid(pid: libc::pid_t) -> Result<Option<NamespaceKey>> {
     namespace_key_for_path(&path)
 }
 
+fn ensure_running_in_root_pid_namespace() -> Result<()> {
+    let status = fs::read_to_string("/proc/self/status")
+        .context("failed to read /proc/self/status for daemon pid namespace check")?;
+    if !is_root_pid_namespace_status(&status)? {
+        bail!(
+            "refusing to start daemon outside the root pid namespace; start leashd from the host pid namespace"
+        );
+    }
+    Ok(())
+}
+
+fn is_root_pid_namespace_status(status: &str) -> Result<bool> {
+    let nspid = parse_nspid_fields(status)?
+        .ok_or_else(|| anyhow::anyhow!("missing NSpid field in /proc/self/status"))?;
+    Ok(nspid.len() == 1)
+}
+
+fn parse_nspid_fields(status: &str) -> Result<Option<Vec<u32>>> {
+    let Some(line) = status.lines().find(|line| line.starts_with("NSpid:")) else {
+        return Ok(None);
+    };
+    let fields = line["NSpid:".len()..]
+        .split_whitespace()
+        .map(|field| {
+            field.parse::<u32>().with_context(|| {
+                format!("invalid NSpid value '{field}' in /proc/self/status")
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if fields.is_empty() {
+        bail!("empty NSpid field in /proc/self/status");
+    }
+    Ok(Some(fields))
+}
+
 fn namespace_key_for_path(path: &Path) -> Result<Option<NamespaceKey>> {
     let meta = match fs::metadata(&path) {
         Ok(meta) => meta,
@@ -773,5 +809,30 @@ mod tests {
         let response = handle_request(&mut state, "shutdown", peer);
         assert_eq!(response.body, "ok shutting-down\n");
         assert!(response.shutdown);
+    }
+
+    #[test]
+    fn root_pid_namespace_status_has_single_nspid() {
+        let status = "Name:\tleashd\nNSpid:\t4242\n";
+        assert!(is_root_pid_namespace_status(status).expect("single NSpid should parse"));
+    }
+
+    #[test]
+    fn nested_pid_namespace_status_has_multiple_nspids() {
+        let status = "Name:\tleashd\nNSpid:\t1\t4242\n";
+        assert!(!is_root_pid_namespace_status(status).expect("nested NSpid should parse"));
+    }
+
+    #[test]
+    fn pid_namespace_status_requires_nspid_field() {
+        let err = is_root_pid_namespace_status("Name:\tleashd\n").expect_err("missing NSpid must fail");
+        assert!(err.to_string().contains("missing NSpid field"));
+    }
+
+    #[test]
+    fn pid_namespace_status_rejects_invalid_nspid_value() {
+        let err = is_root_pid_namespace_status("NSpid:\t1\tabs\n")
+            .expect_err("invalid NSpid must fail");
+        assert!(err.to_string().contains("invalid NSpid value"));
     }
 }
