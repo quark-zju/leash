@@ -118,6 +118,7 @@ fn mark_mount_points(observer: &FilesystemObserver, mount_points: &[PathBuf]) ->
 fn monitor_mount_points_for_profile(profile_source: &str) -> Result<Vec<PathBuf>> {
     let mounts = proc_mounts::read_mount_table()?;
     let mut patterns = crate::profile::monitor_glob_patterns_for_normalized_source(profile_source)?;
+    patterns.retain(|pattern| pattern != "/proc" && !pattern.starts_with("/proc/"));
     for path in baseline_monitor_paths() {
         patterns.extend(crate::profile::monitor_glob_patterns_for_path(&path)?);
     }

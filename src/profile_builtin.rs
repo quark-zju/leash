@@ -36,7 +36,6 @@ const BASIC_PROFILE_SOURCE: &str = "\
 /dev/tty rw
 /dev/urandom ro
 /dev/zero rw
-/proc rw
 ";
 
 const AGENTS_PROFILE_SOURCE: &str = "\

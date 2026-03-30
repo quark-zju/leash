@@ -8,6 +8,7 @@ use crate::cli::RunCommand;
 use crate::cmd_daemon;
 use crate::privileges;
 use crate::proc_mounts;
+use crate::profile::ProcMountPolicy;
 
 pub(crate) fn set_process_name(name: &CStr) -> Result<()> {
     let rc = unsafe { libc::prctl(libc::PR_SET_NAME, name.as_ptr() as libc::c_ulong, 0, 0, 0) };
@@ -36,7 +37,7 @@ pub(crate) fn run_child_in_jail(
             if let Err(err) = unmount_uncovered_mounts(&profile_source) {
                 return Err(std::io::Error::other(err.to_string()));
             }
-            if let Err(err) = remount_procfs() {
+            if let Err(err) = configure_procfs(&profile_source) {
                 return Err(std::io::Error::other(err.to_string()));
             }
             if libc::chdir(cwd_c.as_ptr()) != 0 {
@@ -157,10 +158,16 @@ fn make_mounts_private() -> Result<()> {
     Ok(())
 }
 
-fn remount_procfs() -> Result<()> {
+fn configure_procfs(profile_source: &str) -> Result<()> {
+    match crate::profile::proc_mount_policy_for_normalized_source(profile_source)? {
+        ProcMountPolicy::Unmounted => unmount_procfs(),
+        ProcMountPolicy::ReadWrite => mount_procfs(false),
+        ProcMountPolicy::ReadOnly => mount_procfs(true),
+    }
+}
+
+fn unmount_procfs() -> Result<()> {
     let proc_path = CString::new("/proc").expect("literal '/proc' cannot contain NUL");
-    let proc_source = CString::new("proc").expect("literal 'proc' cannot contain NUL");
-    let proc_fstype = CString::new("proc").expect("literal 'proc' cannot contain NUL");
 
     let umount_rc = unsafe { libc::umount2(proc_path.as_ptr(), libc::MNT_DETACH) };
     if umount_rc != 0 {
@@ -170,7 +177,15 @@ fn remount_procfs() -> Result<()> {
             _ => return Err(err).context("umount2('/proc', MNT_DETACH) failed"),
         }
     }
+    Ok(())
+}
 
+fn mount_procfs(read_only: bool) -> Result<()> {
+    unmount_procfs()?;
+
+    let proc_path = CString::new("/proc").expect("literal '/proc' cannot contain NUL");
+    let proc_source = CString::new("proc").expect("literal 'proc' cannot contain NUL");
+    let proc_fstype = CString::new("proc").expect("literal 'proc' cannot contain NUL");
     let mount_rc = unsafe {
         libc::mount(
             proc_source.as_ptr(),
@@ -183,13 +198,27 @@ fn remount_procfs() -> Result<()> {
     if mount_rc != 0 {
         return Err(std::io::Error::last_os_error()).context("mount procfs at /proc failed");
     }
+    if read_only {
+        let remount_rc = unsafe {
+            libc::mount(
+                std::ptr::null(),
+                proc_path.as_ptr(),
+                std::ptr::null(),
+                (libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY) as libc::c_ulong,
+                std::ptr::null(),
+            )
+        };
+        if remount_rc != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("remount procfs read-only at /proc failed");
+        }
+    }
     Ok(())
 }
 
 fn unmount_uncovered_mounts(profile_source: &str) -> Result<()> {
     let mounts = proc_mounts::read_mount_table()?;
     let mut patterns = crate::profile::monitor_glob_patterns_for_normalized_source(profile_source)?;
-    patterns.extend(crate::profile::monitor_glob_patterns_for_path(Path::new("/proc"))?);
     for path in cmd_daemon::baseline_monitor_paths() {
         patterns.extend(crate::profile::monitor_glob_patterns_for_path(&path)?);
     }

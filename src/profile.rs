@@ -107,6 +107,19 @@ pub(crate) fn monitor_glob_patterns_for_path(path: &Path) -> Result<Vec<String>>
     Ok(monitor_glob_patterns_for_pattern(pattern))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcMountPolicy {
+    Unmounted,
+    ReadOnly,
+    ReadWrite,
+}
+
+pub(crate) fn proc_mount_policy_for_normalized_source(profile_src: &str) -> Result<ProcMountPolicy> {
+    let exe_resolver = PathExeResolver;
+    let parsed = parse_lines(profile_src, Path::new("/"), Path::new("/"), &exe_resolver)?;
+    Ok(proc_mount_policy_for_parsed_lines(&parsed))
+}
+
 #[cfg(test)]
 pub trait FsCheck {
     fn exists(&self, path: &Path) -> bool;
@@ -708,6 +721,7 @@ fn parse_lines(
             .with_context(|| format!("line {} has invalid action", idx + 1))?;
         let pattern = normalize_pattern(pattern_token, cwd, home)
             .with_context(|| format!("line {} has invalid pattern", idx + 1))?;
+        validate_special_rule(&pattern, action, &normalized_conditions, idx + 1)?;
         out.push(ParsedRuleLine {
             pattern,
             action,
@@ -730,6 +744,38 @@ fn normalize_condition(raw: &str, exe_resolver: &dyn ExeResolver) -> Result<Stri
         return Ok(format!("ancestor-has={rest}"));
     }
     bail!("unknown condition '{raw}'")
+}
+
+fn validate_special_rule(
+    pattern: &str,
+    action: RuleAction,
+    normalized_conditions: &[String],
+    line_no: usize,
+) -> Result<()> {
+    if pattern == "/proc" {
+        if !normalized_conditions.is_empty() {
+            bail!("line {line_no} /proc rule does not support conditions");
+        }
+        if !matches!(action, RuleAction::ReadOnly | RuleAction::Passthrough) {
+            bail!("line {line_no} /proc rule must use ro or rw");
+        }
+        return Ok(());
+    }
+    if pattern.starts_with("/proc/") || fixed_prefix(pattern) == PathBuf::from("/proc") {
+        bail!("line {line_no} /proc subpath rules are not supported");
+    }
+    Ok(())
+}
+
+fn proc_mount_policy_for_parsed_lines(lines: &[ParsedRuleLine]) -> ProcMountPolicy {
+    lines.iter()
+        .find(|line| line.pattern == "/proc")
+        .map(|line| match line.action {
+            RuleAction::ReadOnly => ProcMountPolicy::ReadOnly,
+            RuleAction::Passthrough => ProcMountPolicy::ReadWrite,
+            RuleAction::Deny | RuleAction::Hide => ProcMountPolicy::Unmounted,
+        })
+        .unwrap_or(ProcMountPolicy::Unmounted)
 }
 
 fn normalize_pattern(token: &str, cwd: &Path, home: &Path) -> Result<String> {
@@ -1159,15 +1205,15 @@ mod tests {
     fn glob_rule_makes_wildcard_ancestors_traversable() {
         let profile = parse(
             r#"
-            /proc/*/exe ro
+            /run/*/exe ro
             "#,
         );
         assert_eq!(
-            profile.visibility(Path::new("/proc/1234")),
+            profile.visibility(Path::new("/run/1234")),
             Visibility::ImplicitAncestor
         );
         assert_eq!(
-            profile.first_match_action(Path::new("/proc/1234/exe")),
+            profile.first_match_action(Path::new("/run/1234/exe")),
             Some(RuleAction::ReadOnly)
         );
     }
@@ -1458,5 +1504,42 @@ mod tests {
         assert!(patterns.contains(&"/".to_string()));
         assert!(patterns.contains(&"/work".to_string()));
         assert!(patterns.contains(&"/work/**".to_string()));
+    }
+
+    #[test]
+    fn proc_rule_defaults_to_unmounted_when_absent() {
+        assert_eq!(
+            proc_mount_policy_for_normalized_source("/tmp rw\n").expect("proc policy"),
+            ProcMountPolicy::Unmounted
+        );
+    }
+
+    #[test]
+    fn proc_rule_accepts_ro_and_rw_only() {
+        assert_eq!(
+            proc_mount_policy_for_normalized_source("/proc ro\n").expect("proc policy"),
+            ProcMountPolicy::ReadOnly
+        );
+        assert_eq!(
+            proc_mount_policy_for_normalized_source("/proc rw\n").expect("proc policy"),
+            ProcMountPolicy::ReadWrite
+        );
+        let err = proc_mount_policy_for_normalized_source("/proc deny\n")
+            .expect_err("deny proc rule should fail");
+        assert!(err.to_string().contains("/proc rule must use ro or rw"));
+    }
+
+    #[test]
+    fn proc_subpath_rules_are_rejected() {
+        let err = proc_mount_policy_for_normalized_source("/proc/self ro\n")
+            .expect_err("proc subpath should fail");
+        assert!(err.to_string().contains("/proc subpath rules are not supported"));
+    }
+
+    #[test]
+    fn proc_rule_does_not_allow_conditions() {
+        let err = proc_mount_policy_for_normalized_source("/proc rw when exe=/usr/bin/git\n")
+            .expect_err("conditional proc rule should fail");
+        assert!(err.to_string().contains("/proc rule does not support conditions"));
     }
 }

@@ -270,6 +270,27 @@ fn proc_mount_coverage_matches_profile_monitor_patterns() {
 }
 
 #[test]
+fn proc_mount_coverage_does_not_require_proc_when_profile_omits_it() {
+    let mounts = vec![
+        proc_mounts::MountEntry {
+            mount_point: Path::new("/").to_path_buf(),
+            fs_type: "ext4".to_string(),
+            source: "/dev/root".to_string(),
+        },
+        proc_mounts::MountEntry {
+            mount_point: Path::new("/proc").to_path_buf(),
+            fs_type: "proc".to_string(),
+            source: "proc".to_string(),
+        },
+    ];
+    let patterns = profile::monitor_glob_patterns_for_normalized_source("/work rw\n")
+        .expect("monitor patterns");
+    let uncovered =
+        proc_mounts::uncovered_mount_points(&mounts, &patterns).expect("uncovered mounts");
+    assert_eq!(uncovered, vec![Path::new("/proc").to_path_buf()]);
+}
+
+#[test]
 fn ns_runtime_ensure_skeleton_creates_runtime_dir_and_lock() {
     let temp = tempdir().expect("tempdir");
     let mut layout = jail::layout_from_home(temp.path());
