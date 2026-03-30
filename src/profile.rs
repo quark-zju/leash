@@ -1,4 +1,3 @@
-#[cfg(test)]
 use std::collections::BTreeSet;
 #[cfg(test)]
 use std::collections::HashMap;
@@ -43,6 +42,8 @@ pub struct CompiledRule {
     action: RuleAction,
     conditions: Vec<CompiledCondition>,
     rule_text: String,
+    implicit_visible_ancestors: BTreeSet<PathBuf>,
+    implicit_ancestor_globset: GlobSet,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +123,8 @@ impl CompiledProfile {
                 action: line.action,
                 conditions: compile_runtime_conditions(&line.normalized_conditions)?,
                 rule_text: render_normalized_rule_text(line),
+                implicit_visible_ancestors: build_implicit_ancestor_set(&line.pattern, line.action),
+                implicit_ancestor_globset: build_implicit_ancestor_globset(&line.pattern, line.action)?,
             });
 
             for glob_pattern in glob_patterns_for_runtime_rule(&line.pattern) {
@@ -152,22 +155,60 @@ impl CompiledProfile {
         requested_access: RequestedAccess,
     ) -> Option<MatchDecision> {
         let normalized = normalize_abs(abs_path).ok()?;
-        let matched = self.globset.matches(&normalized);
+        let first_rule_idx = self.first_matching_rule_idx(&normalized, exe_path);
+        let implicit_rule_idx = self.first_implicit_ancestor_rule_idx(&normalized, exe_path);
 
+        if let Some(rule_idx) = first_rule_idx {
+            let rule = &self.rules[rule_idx];
+            if rule.action == RuleAction::Hide && implicit_rule_idx.is_some() {
+                let implicit_idx = implicit_rule_idx.expect("checked is_some above");
+                return Some(MatchDecision {
+                    decision: implicit_ancestor_decision_for(requested_access),
+                    rule_text: self.rules[implicit_idx].rule_text.clone(),
+                });
+            }
+            return Some(MatchDecision {
+                decision: access_decision_for(rule.action, requested_access),
+                rule_text: rule.rule_text.clone(),
+            });
+        }
+
+        implicit_rule_idx.map(|rule_idx| MatchDecision {
+            decision: implicit_ancestor_decision_for(requested_access),
+            rule_text: self.rules[rule_idx].rule_text.clone(),
+        })
+    }
+
+    fn first_matching_rule_idx(
+        &self,
+        normalized: &Path,
+        exe_path: Option<&Path>,
+    ) -> Option<usize> {
         let mut first_rule_idx: Option<usize> = None;
+        let matched = self.globset.matches(normalized);
         for glob_idx in &matched {
             let rule_idx = self.glob_to_rule[*glob_idx];
-            if !self.rules[rule_idx].conditions_match(&normalized, exe_path) {
+            if !self.rules[rule_idx].conditions_match(normalized, exe_path) {
                 continue;
             }
             if first_rule_idx.is_none_or(|existing| rule_idx < existing) {
                 first_rule_idx = Some(rule_idx);
             }
         }
+        first_rule_idx
+    }
 
-        first_rule_idx.map(|rule_idx| MatchDecision {
-            decision: access_decision_for(self.rules[rule_idx].action, requested_access),
-            rule_text: self.rules[rule_idx].rule_text.clone(),
+    fn first_implicit_ancestor_rule_idx(
+        &self,
+        normalized: &Path,
+        exe_path: Option<&Path>,
+    ) -> Option<usize> {
+        self.rules.iter().enumerate().find_map(|(rule_idx, rule)| {
+            (action_requires_visible_ancestors(rule.action)
+                && rule.conditions_match(normalized, exe_path)
+                && (rule.implicit_visible_ancestors.contains(normalized)
+                    || rule.implicit_ancestor_globset.is_match(normalized)))
+            .then_some(rule_idx)
         })
     }
 }
@@ -495,6 +536,13 @@ fn access_decision_for(action: RuleAction, requested_access: RequestedAccess) ->
     }
 }
 
+fn implicit_ancestor_decision_for(requested_access: RequestedAccess) -> AccessDecision {
+    match requested_access {
+        RequestedAccess::Write => AccessDecision::Deny,
+        RequestedAccess::Read | RequestedAccess::Execute => AccessDecision::AllowReadOnly,
+    }
+}
+
 fn compile_runtime_conditions(tokens: &[String]) -> Result<Vec<CompiledCondition>> {
     let mut out = Vec::with_capacity(tokens.len());
     for token in tokens {
@@ -564,7 +612,6 @@ fn runtime_ancestor_has(path: &Path, name: &str) -> bool {
     }
 }
 
-#[cfg(test)]
 fn action_requires_visible_ancestors(action: RuleAction) -> bool {
     matches!(action, RuleAction::ReadOnly | RuleAction::Passthrough)
 }
@@ -726,15 +773,17 @@ fn ancestor_has(path: &Path, name: &str, fs_check: &dyn FsCheck) -> bool {
     }
 }
 
-#[cfg(test)]
-fn build_implicit_ancestor_sets(
-    pattern: &str,
-    action: RuleAction,
-) -> Result<(BTreeSet<PathBuf>, GlobSet)> {
+fn build_implicit_ancestor_set(pattern: &str, action: RuleAction) -> BTreeSet<PathBuf> {
     let mut implicit_visible_ancestors = BTreeSet::new();
-    let mut implicit_ancestor_globset_builder = GlobSetBuilder::new();
     if action_requires_visible_ancestors(action) {
         gather_implicit_ancestors(pattern, &mut implicit_visible_ancestors);
+    }
+    implicit_visible_ancestors
+}
+
+fn build_implicit_ancestor_globset(pattern: &str, action: RuleAction) -> Result<GlobSet> {
+    let mut implicit_ancestor_globset_builder = GlobSetBuilder::new();
+    if action_requires_visible_ancestors(action) {
         for ancestor_glob in implicit_ancestor_globs_for_rule(pattern) {
             let glob = GlobBuilder::new(&ancestor_glob)
                 .literal_separator(true)
@@ -743,10 +792,20 @@ fn build_implicit_ancestor_sets(
             implicit_ancestor_globset_builder.add(glob);
         }
     }
-    let implicit_ancestor_globset = implicit_ancestor_globset_builder
+    implicit_ancestor_globset_builder
         .build()
-        .context("failed to build implicit ancestor globset for profile")?;
-    Ok((implicit_visible_ancestors, implicit_ancestor_globset))
+        .context("failed to build implicit ancestor globset for profile")
+}
+
+#[cfg(test)]
+fn build_implicit_ancestor_sets(
+    pattern: &str,
+    action: RuleAction,
+) -> Result<(BTreeSet<PathBuf>, GlobSet)> {
+    Ok((
+        build_implicit_ancestor_set(pattern, action),
+        build_implicit_ancestor_globset(pattern, action)?,
+    ))
 }
 
 #[cfg(test)]
@@ -763,7 +822,6 @@ fn glob_patterns_for_rule(pattern: &str) -> Vec<String> {
     out
 }
 
-#[cfg(test)]
 fn normalized_base_pattern(pattern: &str) -> &str {
     if pattern == "/" {
         "/"
@@ -772,7 +830,6 @@ fn normalized_base_pattern(pattern: &str) -> &str {
     }
 }
 
-#[cfg(test)]
 fn descendant_glob(base: &str) -> Option<String> {
     if base == "/**" || base.ends_with("/**") {
         return None;
@@ -783,7 +840,6 @@ fn descendant_glob(base: &str) -> Option<String> {
     Some(format!("{base}/**"))
 }
 
-#[cfg(test)]
 fn gather_implicit_ancestors(pattern: &str, output: &mut BTreeSet<PathBuf>) {
     let mut fixed_path = if has_glob_syntax(pattern) {
         fixed_prefix(pattern)
@@ -803,7 +859,6 @@ fn gather_implicit_ancestors(pattern: &str, output: &mut BTreeSet<PathBuf>) {
     }
 }
 
-#[cfg(test)]
 fn implicit_ancestor_globs_for_rule(pattern: &str) -> Vec<String> {
     let base = normalized_base_pattern(pattern);
     let path = Path::new(base);
@@ -834,7 +889,6 @@ fn implicit_ancestor_globs_for_rule(pattern: &str) -> Vec<String> {
     out
 }
 
-#[cfg(test)]
 fn fixed_prefix(pattern: &str) -> PathBuf {
     let wildcard_idx = pattern.find(['*', '?', '[']).unwrap_or(pattern.len());
     let prefix = &pattern[..wildcard_idx];
@@ -846,7 +900,6 @@ fn fixed_prefix(pattern: &str) -> PathBuf {
     }
 }
 
-#[cfg(test)]
 fn has_glob_syntax(value: &str) -> bool {
     value.contains('*') || value.contains('?') || value.contains('[')
 }
@@ -1318,6 +1371,55 @@ mod tests {
             Some(MatchDecision {
                 decision: AccessDecision::AllowReadWrite,
                 rule_text: format!("{} rw when ancestor-has=.git", repo.display()),
+            })
+        );
+    }
+
+    #[test]
+    fn compiled_profile_allows_implicit_ancestor_read_only_traversal() {
+        let compiled = CompiledProfile::compile_normalized_source("/foo/bar rw\n")
+            .expect("compile profile");
+
+        assert_eq!(
+            compiled.evaluate(Path::new("/foo"), None, RequestedAccess::Read),
+            Some(MatchDecision {
+                decision: AccessDecision::AllowReadOnly,
+                rule_text: "/foo/bar rw".to_string(),
+            })
+        );
+        assert_eq!(
+            compiled.evaluate(Path::new("/foo"), None, RequestedAccess::Write),
+            Some(MatchDecision {
+                decision: AccessDecision::Deny,
+                rule_text: "/foo/bar rw".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn compiled_profile_hide_yields_to_explicit_child_ancestor_visibility() {
+        let compiled = CompiledProfile::compile_normalized_source("/foo/bar rw\n/foo hide\n")
+            .expect("compile profile");
+
+        assert_eq!(
+            compiled.evaluate(Path::new("/foo"), None, RequestedAccess::Read),
+            Some(MatchDecision {
+                decision: AccessDecision::AllowReadOnly,
+                rule_text: "/foo/bar rw".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn compiled_profile_glob_rule_makes_wildcard_ancestor_traversable() {
+        let compiled = CompiledProfile::compile_normalized_source("/work/**/.git rw\n")
+            .expect("compile profile");
+
+        assert_eq!(
+            compiled.evaluate(Path::new("/work/foo"), None, RequestedAccess::Read),
+            Some(MatchDecision {
+                decision: AccessDecision::AllowReadOnly,
+                rule_text: "/work/**/.git rw".to_string(),
             })
         );
     }
