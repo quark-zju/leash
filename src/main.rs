@@ -11,6 +11,7 @@ mod daemon_client;
 mod jail;
 mod ns_runtime;
 mod privileges;
+mod proc_mounts;
 mod profile;
 mod profile_builtin;
 mod profile_loader;

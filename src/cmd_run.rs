@@ -50,7 +50,7 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         "unshare run namespaces".to_string()
     })?;
     let status = run_with_log(
-        || run_env::run_child_in_jail(&run, &cwd),
+        || run_env::run_child_in_jail(&run, &cwd, &resolved.normalized_profile),
         || format!("execute jailed command {:?}", run.program),
     )?;
 

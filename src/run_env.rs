@@ -1,11 +1,13 @@
 use anyhow::{Context, Result};
 use std::ffi::{CStr, CString};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use crate::cli::RunCommand;
+use crate::cmd_daemon;
 use crate::privileges;
+use crate::proc_mounts;
 
 pub(crate) fn set_process_name(name: &CStr) -> Result<()> {
     let rc = unsafe { libc::prctl(libc::PR_SET_NAME, name.as_ptr() as libc::c_ulong, 0, 0, 0) };
@@ -18,15 +20,20 @@ pub(crate) fn set_process_name(name: &CStr) -> Result<()> {
 pub(crate) fn run_child_in_jail(
     run: &RunCommand,
     old_cwd: &Path,
+    profile_source: &str,
 ) -> Result<std::process::ExitStatus> {
     let cwd_c = CString::new(old_cwd.as_os_str().as_encoded_bytes())
         .context("cwd contains interior NUL byte")?;
+    let profile_source = profile_source.to_string();
 
     let mut cmd = ProcessCommand::new(&run.program);
     cmd.args(&run.args);
     unsafe {
         cmd.pre_exec(move || {
             if let Err(err) = make_mounts_private() {
+                return Err(std::io::Error::other(err.to_string()));
+            }
+            if let Err(err) = unmount_uncovered_mounts(&profile_source) {
                 return Err(std::io::Error::other(err.to_string()));
             }
             if let Err(err) = remount_procfs() {
@@ -175,6 +182,38 @@ fn remount_procfs() -> Result<()> {
     };
     if mount_rc != 0 {
         return Err(std::io::Error::last_os_error()).context("mount procfs at /proc failed");
+    }
+    Ok(())
+}
+
+fn unmount_uncovered_mounts(profile_source: &str) -> Result<()> {
+    let mounts = proc_mounts::read_mount_table()?;
+    let mut patterns = crate::profile::monitor_glob_patterns_for_normalized_source(profile_source)?;
+    patterns.extend(crate::profile::monitor_glob_patterns_for_path(Path::new("/proc"))?);
+    for path in cmd_daemon::baseline_monitor_paths() {
+        patterns.extend(crate::profile::monitor_glob_patterns_for_path(&path)?);
+    }
+    let uncovered = proc_mounts::uncovered_mount_points(&mounts, &patterns)?;
+    let mut sorted = uncovered;
+    sorted.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for mount_point in sorted {
+        if mount_point == PathBuf::from("/") {
+            continue;
+        }
+        let mount_point_c = CString::new(mount_point.as_os_str().as_encoded_bytes())
+            .context("mount point contains interior NUL byte")?;
+        let rc = unsafe { libc::umount2(mount_point_c.as_ptr(), libc::MNT_DETACH) };
+        if rc != 0 {
+            let err = std::io::Error::last_os_error();
+            match err.raw_os_error() {
+                Some(libc::EINVAL) | Some(libc::ENOENT) => {}
+                _ => {
+                    return Err(err).with_context(|| {
+                        format!("umount2('{}', MNT_DETACH) failed", mount_point.display())
+                    });
+                }
+            }
+        }
     }
     Ok(())
 }

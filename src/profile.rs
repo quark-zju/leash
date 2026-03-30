@@ -89,6 +89,24 @@ pub trait ExeResolver {
     fn resolve(&self, name: &str) -> Option<PathBuf>;
 }
 
+pub(crate) fn monitor_glob_patterns_for_normalized_source(profile_src: &str) -> Result<Vec<String>> {
+    let exe_resolver = PathExeResolver;
+    let parsed = parse_lines(profile_src, Path::new("/"), Path::new("/"), &exe_resolver)?;
+    let mut patterns = BTreeSet::new();
+    for line in parsed {
+        patterns.extend(monitor_glob_patterns_for_pattern(&line.pattern));
+    }
+    Ok(patterns.into_iter().collect())
+}
+
+pub(crate) fn monitor_glob_patterns_for_path(path: &Path) -> Result<Vec<String>> {
+    let normalized = normalize_abs(path)?;
+    let Some(pattern) = normalized.to_str() else {
+        bail!("path pattern is not valid UTF-8")
+    };
+    Ok(monitor_glob_patterns_for_pattern(pattern))
+}
+
 #[cfg(test)]
 pub trait FsCheck {
     fn exists(&self, path: &Path) -> bool;
@@ -576,6 +594,13 @@ fn glob_patterns_for_runtime_rule(pattern: &str) -> Vec<String> {
         out.push(descendant);
     }
     out
+}
+
+fn monitor_glob_patterns_for_pattern(pattern: &str) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    out.extend(glob_patterns_for_runtime_rule(pattern));
+    out.extend(implicit_ancestor_globs_for_rule(pattern));
+    out.into_iter().collect()
 }
 
 fn normalized_base_pattern_runtime(pattern: &str) -> &str {
@@ -1422,5 +1447,16 @@ mod tests {
                 rule_text: "/work/**/.git rw".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn monitor_glob_patterns_include_implicit_ancestor_globs() {
+        let patterns = monitor_glob_patterns_for_normalized_source("/work/**/.git rw\n")
+            .expect("monitor patterns");
+        assert!(patterns.contains(&"/work/**/.git".to_string()));
+        assert!(patterns.contains(&"/work/**/.git/**".to_string()));
+        assert!(patterns.contains(&"/".to_string()));
+        assert!(patterns.contains(&"/work".to_string()));
+        assert!(patterns.contains(&"/work/**".to_string()));
     }
 }

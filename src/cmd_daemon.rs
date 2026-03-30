@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use fs_err as fs;
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::AsRawFd;
@@ -18,6 +18,7 @@ use std::thread;
 use crate::cli::LowLevelDaemonCommand;
 use crate::jail;
 use crate::privileges;
+use crate::proc_mounts;
 #[cfg(test)]
 use crate::profile::CompiledProfile;
 #[cfg(not(test))]
@@ -48,12 +49,13 @@ pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
     let host_pidns = pid_namespace_key_for_pid(1)?
         .ok_or_else(|| anyhow::anyhow!("failed to resolve host pid namespace for pid 1"))?;
     let active_profile = Arc::new(RwLock::new(None));
-    mark_common_filesystems(&observer)?;
+    let observed_mount_points = mark_initial_filesystems(&observer)?;
     observer.spawn_thread(host_pidns, active_profile.clone())?;
     let mut state = DaemonState {
         active_profile,
         host_pidns,
-        _observer: observer,
+        observer,
+        observed_mount_points,
     };
 
     loop {
@@ -89,27 +91,45 @@ fn prepare_socket_parent(socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn mark_common_filesystems(observer: &FilesystemObserver) -> Result<()> {
-    let mut seen_devices = HashSet::new();
-    for path in observed_filesystem_roots() {
-        let meta = fs::metadata(&path).with_context(|| {
-            format!("failed to stat observed filesystem root {}", path.display())
+fn mark_initial_filesystems(observer: &FilesystemObserver) -> Result<BTreeSet<PathBuf>> {
+    let mounts = proc_mounts::read_mount_table()?;
+    let roots = default_monitor_mount_points(&mounts)?;
+    mark_mount_points(observer, &roots)?;
+    Ok(roots.into_iter().collect())
+}
+
+fn default_monitor_mount_points(mounts: &[proc_mounts::MountEntry]) -> Result<Vec<PathBuf>> {
+    Ok(proc_mounts::mount_points_for_paths(
+        mounts,
+        &baseline_monitor_paths(),
+    ))
+}
+
+fn mark_mount_points(observer: &FilesystemObserver, mount_points: &[PathBuf]) -> Result<()> {
+    for path in mount_points {
+        observer.mark_filesystem(path).with_context(|| {
+            format!("failed to start fanotify monitoring for mount {}", path.display())
         })?;
-        if !seen_devices.insert(meta.dev()) {
-            continue;
-        }
-        observer.mark_filesystem(&path)?;
         crate::vlog!("daemon: observing filesystem rooted at {}", path.display());
     }
     Ok(())
 }
 
-fn observed_filesystem_roots() -> Vec<PathBuf> {
-    let mut roots = vec![PathBuf::from("/"), std::env::temp_dir()];
-    if let Some(runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        roots.push(PathBuf::from(runtime_dir));
+fn monitor_mount_points_for_profile(profile_source: &str) -> Result<Vec<PathBuf>> {
+    let mounts = proc_mounts::read_mount_table()?;
+    let mut patterns = crate::profile::monitor_glob_patterns_for_normalized_source(profile_source)?;
+    for path in baseline_monitor_paths() {
+        patterns.extend(crate::profile::monitor_glob_patterns_for_path(&path)?);
     }
-    roots
+    proc_mounts::covered_mount_points(&mounts, &patterns)
+}
+
+pub(crate) fn baseline_monitor_paths() -> Vec<PathBuf> {
+    let mut paths = vec![PathBuf::from("/"), std::env::temp_dir()];
+    if let Some(runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        paths.push(PathBuf::from(runtime_dir));
+    }
+    paths
 }
 
 fn remove_stale_socket(socket_path: &Path) -> Result<()> {
@@ -161,7 +181,8 @@ struct NamespaceKey {
 struct DaemonState {
     active_profile: Arc<RwLock<Option<ActiveProfile>>>,
     host_pidns: NamespaceKey,
-    _observer: FilesystemObserver,
+    observer: FilesystemObserver,
+    observed_mount_points: BTreeSet<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -177,7 +198,8 @@ impl Default for DaemonState {
         Self {
             active_profile: Arc::new(RwLock::new(None)),
             host_pidns: NamespaceKey { dev: 1, ino: 1 },
-            _observer: FilesystemObserver::new().expect("test observer should initialize"),
+            observer: FilesystemObserver::new().expect("test observer should initialize"),
+            observed_mount_points: BTreeSet::new(),
         }
     }
 }
@@ -372,6 +394,24 @@ fn handle_request(state: &mut DaemonState, request: &str, _peer: PeerCredentials
             }
             match CompiledProfile::compile_normalized_source(&profile_source) {
                 Ok(compiled) => {
+                    if let Ok(mount_points) = monitor_mount_points_for_profile(&profile_source) {
+                        for mount_point in mount_points {
+                            if state.observed_mount_points.insert(mount_point.clone()) {
+                                if let Err(err) = state.observer.mark_filesystem(&mount_point) {
+                                    crate::vlog!(
+                                        "daemon: failed to add monitor for {}: {}",
+                                        mount_point.display(),
+                                        err
+                                    );
+                                } else {
+                                    crate::vlog!(
+                                        "daemon: added monitor for {} after profile update",
+                                        mount_point.display()
+                                    );
+                                }
+                            }
+                        }
+                    }
                     let mut guard = state
                         .active_profile
                         .write()

@@ -1,4 +1,4 @@
-use crate::{jail, ns_runtime};
+use crate::{jail, ns_runtime, proc_mounts, profile};
 use fs_err as fs;
 use std::path::Path;
 use tempfile::tempdir;
@@ -225,6 +225,48 @@ fn ns_runtime_lock_is_exclusive() {
 
     let third = ns_runtime::try_open_lock(&jail_paths).expect("third open");
     assert!(third.is_some());
+}
+
+#[test]
+fn proc_mount_coverage_matches_profile_monitor_patterns() {
+    let mounts = vec![
+        proc_mounts::MountEntry {
+            mount_point: Path::new("/").to_path_buf(),
+            fs_type: "ext4".to_string(),
+            source: "/dev/root".to_string(),
+        },
+        proc_mounts::MountEntry {
+            mount_point: Path::new("/work").to_path_buf(),
+            fs_type: "ext4".to_string(),
+            source: "/dev/root".to_string(),
+        },
+        proc_mounts::MountEntry {
+            mount_point: Path::new("/work/foo").to_path_buf(),
+            fs_type: "bind".to_string(),
+            source: "/dev/root".to_string(),
+        },
+        proc_mounts::MountEntry {
+            mount_point: Path::new("/tmp").to_path_buf(),
+            fs_type: "tmpfs".to_string(),
+            source: "tmpfs".to_string(),
+        },
+    ];
+    let patterns = profile::monitor_glob_patterns_for_normalized_source("/work/**/.git rw\n")
+        .expect("monitor patterns");
+
+    let covered = proc_mounts::covered_mount_points(&mounts, &patterns).expect("covered mounts");
+    assert_eq!(
+        covered,
+        vec![
+            Path::new("/").to_path_buf(),
+            Path::new("/work").to_path_buf(),
+            Path::new("/work/foo").to_path_buf(),
+        ]
+    );
+
+    let uncovered =
+        proc_mounts::uncovered_mount_points(&mounts, &patterns).expect("uncovered mounts");
+    assert_eq!(uncovered, vec![Path::new("/tmp").to_path_buf()]);
 }
 
 #[test]
