@@ -1,4 +1,3 @@
-mod access_policy;
 mod cli;
 mod cmd_completion;
 mod cmd_daemon;
@@ -9,9 +8,7 @@ mod cmd_run;
 mod cmd_show;
 mod cmd_suid;
 mod daemon_client;
-mod git_rw_filter;
 mod jail;
-mod mount_plan;
 mod ns_runtime;
 mod privileges;
 mod profile;
