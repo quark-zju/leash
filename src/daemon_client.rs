@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -43,13 +43,40 @@ pub(crate) fn shutdown_daemon() -> Result<()> {
     bail!("daemon refused shutdown request: {}", response.trim())
 }
 
+pub(crate) fn get_profile_if_running() -> Result<Option<String>> {
+    let Some(response) = try_send_request(&cmd_daemon::default_socket_path(), "get-profile")?
+    else {
+        return Ok(None);
+    };
+    let Some(body) = response.strip_prefix("ok\n") else {
+        bail!("daemon returned unexpected get-profile response: {}", response.trim());
+    };
+    Ok(Some(body.trim_end_matches('\n').to_string()))
+}
+
 fn send_request(socket_path: &std::path::Path, request: &str) -> Result<String> {
-    let mut stream = UnixStream::connect(socket_path).with_context(|| {
-        format!(
+    let Some(response) = try_send_request(socket_path, request)? else {
+        bail!(
             "failed to connect to daemon socket {}",
             socket_path.display()
         )
-    })?;
+    };
+    Ok(response)
+}
+
+fn try_send_request(socket_path: &std::path::Path, request: &str) -> Result<Option<String>> {
+    let mut stream = match UnixStream::connect(socket_path) {
+        Ok(stream) => stream,
+        Err(err) if daemon_not_running_error(&err) => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to connect to daemon socket {}",
+                    socket_path.display()
+                )
+            });
+        }
+    };
     stream.write_all(request.as_bytes()).with_context(|| {
         format!(
             "failed to write daemon request to {}",
@@ -64,14 +91,20 @@ fn send_request(socket_path: &std::path::Path, request: &str) -> Result<String> 
     })?;
 
     let mut response = String::new();
-    let mut reader = BufReader::new(stream);
-    reader.read_line(&mut response).with_context(|| {
+    stream.read_to_string(&mut response).with_context(|| {
         format!(
             "failed to read daemon response from {}",
             socket_path.display()
         )
     })?;
-    Ok(response)
+    Ok(Some(response))
+}
+
+fn daemon_not_running_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(libc::ENOENT | libc::ECONNREFUSED)
+    )
 }
 
 fn spawn_daemon_process(verbose: bool) -> Result<()> {

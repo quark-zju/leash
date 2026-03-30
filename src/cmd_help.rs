@@ -51,7 +51,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "  - Empty lines are ignored\n",
             "  - Lines starting with # are comments\n",
             "  - Directive: %include <name> (named profile or builtin:name; missing file ignored)\n",
-            "  - builtin:name profiles are read-only; use profile show, not profile edit\n",
+            "  - default profile is edited via leash profile edit\n",
             "  - Globs are supported; `*` does not cross `/`, use `**` for any depth (including 0)\n",
             "  - Rules are first-match wins\n",
             "  - `.` expands to launch cwd\n\n",
@@ -157,10 +157,8 @@ fn root_help_text(verbose: bool) -> String {
         "  leash run [--profile <profile>] [-v|--verbose] command ...\n",
         "\n",
         "PROFILE:\n",
-        "  leash profile edit [name]\n",
-        "  leash profile show [name]\n",
-        "  leash profile list\n",
-        "  leash profile rm [name]\n",
+        "  leash profile edit\n",
+        "  leash profile show\n",
         "  leash help profile\n",
     ));
     if verbose {
@@ -195,6 +193,5 @@ fn profile_help_text() -> String {
         out.push_str(line);
         out.push('\n');
     }
-    out.push_str("\nTo reset to built-in default, run: leash profile rm default\n");
     out
 }

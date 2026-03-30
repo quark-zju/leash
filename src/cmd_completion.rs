@@ -64,23 +64,13 @@ const BASH_COMPLETION: &str = r#"_leash_complete() {
     return
   fi
 
-  if [[ "$cmd1" == "profile" ]]; then
-    if [[ $COMP_CWORD -eq 2 ]]; then
-      COMPREPLY=( $(compgen -W "list show edit rm" -- "$cur") )
-      return
-    fi
-    if [[ $COMP_CWORD -eq 3 && ( "$cmd2" == "show" || "$cmd2" == "edit" || "$cmd2" == "rm" ) ]]; then
-      local profiles
-      profiles="$(leash profile list 2>/dev/null)"
-      COMPREPLY=( $(compgen -W "$profiles" -- "$cur") )
-      return
-    fi
+  if [[ "$cmd1" == "profile" && $COMP_CWORD -eq 2 ]]; then
+    COMPREPLY=( $(compgen -W "show edit" -- "$cur") )
+    return
   fi
 
   if [[ "$prev" == "--profile" ]]; then
-    local profiles
-    profiles="$(leash profile list 2>/dev/null)"
-    COMPREPLY=( $(compgen -W "default $profiles" -- "$cur") )
+    COMPREPLY=( $(compgen -W "default" -- "$cur") )
     return
   fi
 
@@ -109,7 +99,7 @@ _leash() {
   local -a subcmds help_topics profile_subcmds shells
   subcmds=(completion profile help run _list _show _rm _suid)
   help_topics=(profile completion run _list _show _rm _suid)
-  profile_subcmds=(list show edit rm)
+  profile_subcmds=(show edit)
   shells=(bash zsh fish)
 
   if (( CURRENT == 2 )); then
@@ -135,12 +125,6 @@ _leash() {
         _describe 'profile action' profile_subcmds
         return
       fi
-      if (( CURRENT == 4 )) && [[ "$words[3]" == "show" || "$words[3]" == "edit" || "$words[3]" == "rm" ]]; then
-        local -a profiles
-        profiles=(${(f)"$(leash profile list 2>/dev/null)"})
-        _describe 'profile name' profiles
-        return
-      fi
       return
       ;;
   esac
@@ -151,6 +135,5 @@ compdef _leash leash
 const FISH_COMPLETION: &str = r#"complete -c leash -f -n '__fish_use_subcommand' -a 'completion profile help run _list _show _rm _suid'
 complete -c leash -f -n '__fish_seen_subcommand_from completion; and not __fish_seen_subcommand_from bash zsh fish' -a 'bash zsh fish'
 complete -c leash -f -n '__fish_seen_subcommand_from help; and not __fish_seen_subcommand_from profile completion run _list _show _rm _suid' -a 'profile completion run _list _show _rm _suid'
-complete -c leash -f -n '__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from list show edit rm' -a 'list show edit rm'
-complete -c leash -f -n '__fish_seen_subcommand_from profile show profile edit profile rm' -a '(leash profile list 2>/dev/null)'
+complete -c leash -f -n '__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from show edit' -a 'show edit'
 "#;

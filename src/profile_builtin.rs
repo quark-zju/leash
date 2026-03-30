@@ -78,7 +78,3 @@ pub(crate) fn source_for_name(name: &str) -> Option<&'static str> {
 pub(crate) fn is_builtin_name(name: &str) -> bool {
     source_for_name(name).is_some()
 }
-
-pub(crate) fn builtin_names() -> impl Iterator<Item = &'static str> {
-    BUILTINS.iter().map(|(name, _)| *name)
-}

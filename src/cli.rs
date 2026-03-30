@@ -44,10 +44,8 @@ pub struct ProfileCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileAction {
-    List,
-    Show { name: String },
-    Edit { name: String },
-    Rm { name: String },
+    Show,
+    Edit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,46 +170,23 @@ fn parse_profile(mut args: Arguments) -> Result<Command> {
     }
     let extra = args.finish();
     if extra.is_empty() {
-        bail!("profile requires subcommand: list, show, edit or rm");
+        bail!("profile requires subcommand: show or edit");
     }
     let subcmd = extra[0]
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("profile subcommand must be valid UTF-8"))?;
     match subcmd {
-        "list" => {
+        "show" | "edit" => {
             if extra.len() != 1 {
-                bail!("profile list got unexpected trailing arguments");
-            }
-            Ok(Command::Profile(ProfileCommand {
-                action: ProfileAction::List,
-            }))
-        }
-        "show" | "edit" | "rm" => {
-            if extra.len() > 2 {
                 bail!("profile {subcmd} got unexpected trailing arguments");
             }
-            let name = parse_optional_profile_name(&extra, 1)?;
             let action = match subcmd {
-                "show" => ProfileAction::Show { name },
-                "edit" => ProfileAction::Edit { name },
-                _ => ProfileAction::Rm { name },
+                "show" => ProfileAction::Show,
+                _ => ProfileAction::Edit,
             };
             Ok(Command::Profile(ProfileCommand { action }))
         }
         other => bail!("unknown profile subcommand: {other}"),
-    }
-}
-
-/// Extract an optional profile name from positional arguments.
-/// Returns `DEFAULT_PROFILE` if the argument at `pos` is absent.
-fn parse_optional_profile_name(extra: &[std::ffi::OsString], pos: usize) -> Result<String> {
-    if extra.len() > pos {
-        extra[pos]
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("profile NAME must be valid UTF-8"))
-            .map(ToOwned::to_owned)
-    } else {
-        Ok(DEFAULT_PROFILE.to_string())
     }
 }
 
@@ -413,14 +388,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_profile_list_subcommand() {
-        let cmd = parse_from(os(&["profile", "list"])).expect("profile list should parse");
-        assert_eq!(
-            cmd,
-            Command::Profile(ProfileCommand {
-                action: ProfileAction::List
-            })
-        );
+    fn parse_profile_rejects_removed_list_subcommand() {
+        let err = parse_from(os(&["profile", "list"])).expect_err("profile list should fail");
+        assert!(err.to_string().contains("unknown profile subcommand"));
     }
 
     #[test]
@@ -461,82 +431,41 @@ mod tests {
 
     #[test]
     fn parse_profile_edit_subcommand() {
-        let cmd =
-            parse_from(os(&["profile", "edit", "default"])).expect("profile edit should parse");
+        let cmd = parse_from(os(&["profile", "edit"])).expect("profile edit should parse");
         assert_eq!(
             cmd,
             Command::Profile(ProfileCommand {
-                action: ProfileAction::Edit {
-                    name: "default".to_string()
-                }
+                action: ProfileAction::Edit
             })
         );
     }
 
     #[test]
     fn parse_profile_show_subcommand() {
-        let cmd =
-            parse_from(os(&["profile", "show", "default"])).expect("profile show should parse");
+        let cmd = parse_from(os(&["profile", "show"])).expect("profile show should parse");
         assert_eq!(
             cmd,
             Command::Profile(ProfileCommand {
-                action: ProfileAction::Show {
-                    name: "default".to_string()
-                }
+                action: ProfileAction::Show
             })
         );
     }
 
     #[test]
-    fn parse_profile_rm_subcommand() {
-        let cmd = parse_from(os(&["profile", "rm", "default"])).expect("profile rm should parse");
-        assert_eq!(
-            cmd,
-            Command::Profile(ProfileCommand {
-                action: ProfileAction::Rm {
-                    name: "default".to_string()
-                }
-            })
-        );
+    fn parse_profile_rejects_extra_name_argument() {
+        let err = parse_from(os(&["profile", "show", "foo"]))
+            .expect_err("profile show foo should fail");
+        assert!(err.to_string().contains("unexpected trailing arguments"));
+
+        let err = parse_from(os(&["profile", "edit", "foo"]))
+            .expect_err("profile edit foo should fail");
+        assert!(err.to_string().contains("unexpected trailing arguments"));
     }
 
     #[test]
-    fn parse_profile_show_defaults_to_default_name() {
-        let cmd = parse_from(os(&["profile", "show"])).expect("profile show should default name");
-        assert_eq!(
-            cmd,
-            Command::Profile(ProfileCommand {
-                action: ProfileAction::Show {
-                    name: DEFAULT_PROFILE.to_string()
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn parse_profile_edit_defaults_to_default_name() {
-        let cmd = parse_from(os(&["profile", "edit"])).expect("profile edit should default name");
-        assert_eq!(
-            cmd,
-            Command::Profile(ProfileCommand {
-                action: ProfileAction::Edit {
-                    name: DEFAULT_PROFILE.to_string()
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn parse_profile_rm_defaults_to_default_name() {
-        let cmd = parse_from(os(&["profile", "rm"])).expect("profile rm should default name");
-        assert_eq!(
-            cmd,
-            Command::Profile(ProfileCommand {
-                action: ProfileAction::Rm {
-                    name: DEFAULT_PROFILE.to_string()
-                }
-            })
-        );
+    fn parse_profile_rejects_removed_subcommands() {
+        let err = parse_from(os(&["profile", "rm"])).expect_err("profile rm should fail");
+        assert!(err.to_string().contains("unknown profile subcommand"));
     }
 
     #[test]
