@@ -9,8 +9,9 @@
 //! **action**: `ro` | `rw` | `deny`
 //!
 //! **conditions** (all must be true — AND semantics):
-//! - `exe=glob`            — calling process's executable matches glob
-//!                           (absolute, or resolved via PATH at parse time)
+//! - `exe=name`            — calling process's executable matches: bare name
+//!                           is resolved via PATH at parse time; absolute path
+//!                           is used as-is.  Globs are not supported.
 //! - `ancestor-has=name`   — some ancestor directory of the accessed path
 //!                           contains an entry named `name`
 //! - `env=VAR`             — environment variable `VAR` is set in the caller
@@ -108,14 +109,13 @@ impl FsCheck for RealFsCheck {
 /// A single compiled condition in a `when` clause.
 #[derive(Debug, Clone)]
 pub enum Condition {
-    /// Calling process executable matches a glob.
+    /// Calling process executable equals this absolute path.
     ///
-    /// The glob was built at parse time from the raw pattern:
-    /// - Patterns containing `/` are used verbatim as globs.
-    /// - Bare names (no `/`) are looked up via the injected [`ExeResolver`]:
-    ///   - Found → compiled as the resolved absolute path.
-    ///   - Not found → compiled as `**/name` (matches anywhere in the path).
-    Exe(GlobSet),
+    /// Resolved at parse time:
+    /// - Bare name (no `/`) → looked up via [`ExeResolver`]; `None` means the
+    ///   name was not found in PATH and this condition will never match.
+    /// - Absolute path → used as-is.
+    Exe(Option<PathBuf>),
 
     /// An ancestor directory of the accessed path contains an entry named
     /// `name` (file or directory).  Checked at eval time via [`FsCheck`].
@@ -149,15 +149,9 @@ impl RawCondition {
 
     fn compile(&self, exe_resolver: &dyn ExeResolver) -> Result<Condition, ParseError> {
         match self {
-            RawCondition::Exe(pattern) => {
-                let resolved = resolve_exe_pattern(pattern, exe_resolver);
-                let glob = Glob::new(&resolved)
-                    .map_err(|e| ParseError::BadGlob(resolved.clone(), e.to_string()))?;
-                let globset = GlobSetBuilder::new()
-                    .add(glob)
-                    .build()
-                    .map_err(|e| ParseError::BadGlob(resolved.clone(), e.to_string()))?;
-                Ok(Condition::Exe(globset))
+            RawCondition::Exe(value) => {
+                let resolved = resolve_exe(value, exe_resolver)?;
+                Ok(Condition::Exe(resolved))
             }
             RawCondition::AncestorHas(name) => Ok(Condition::AncestorHas(name.clone())),
             RawCondition::Env(var) => Ok(Condition::Env(var.clone())),
@@ -165,20 +159,24 @@ impl RawCondition {
     }
 }
 
-/// Resolve an `exe=` pattern using the injected [`ExeResolver`].
+/// Resolve an `exe=` value at parse time.
 ///
-/// - Pattern contains `/` → path glob, used verbatim.
-/// - Bare name, resolver finds it → use the resolved absolute path.
-/// - Bare name, resolver returns `None` → use `**/name` (matches the binary
-///   at any install location).
-fn resolve_exe_pattern(pattern: &str, resolver: &dyn ExeResolver) -> String {
-    if pattern.contains('/') {
-        return pattern.to_owned();
+/// Accepted forms:
+/// - Absolute path (starts with `/`) — used as-is.
+/// - Bare name (no `/`) — looked up via `resolver`; `None` if not found
+///   (condition will never match at eval time).
+///
+/// Any other form (relative path, glob metacharacters) is a parse error.
+fn resolve_exe(value: &str, resolver: &dyn ExeResolver) -> Result<Option<PathBuf>, ParseError> {
+    if value.starts_with('/') {
+        return Ok(Some(PathBuf::from(value)));
     }
-    match resolver.resolve(pattern) {
-        Some(abs) => abs.to_string_lossy().into_owned(),
-        None => format!("**/{pattern}"),
+    if value.contains('/') {
+        // Relative path or glob — not supported.
+        return Err(ParseError::InvalidExe(value.to_owned()));
     }
+    // Bare name: look up in PATH.
+    Ok(resolver.resolve(value))
 }
 
 // ── Rule ──────────────────────────────────────────────────────────────────────
@@ -253,9 +251,11 @@ impl Rule {
 impl Condition {
     pub fn matches(&self, path: &Path, ctx: &EvalContext<'_>) -> bool {
         match self {
-            Condition::Exe(glob) => match ctx.exe {
-                None => false,
-                Some(exe) => glob.is_match(exe),
+            Condition::Exe(resolved) => match (resolved.as_deref(), ctx.exe) {
+                // Name not found in PATH at parse time → never matches.
+                (None, _) => false,
+                (_, None) => false,
+                (Some(expected), Some(exe)) => exe == expected,
             },
 
             Condition::AncestorHas(name) => ancestor_has(path, name, ctx.fs),
@@ -296,6 +296,9 @@ pub enum ParseError {
 
     #[error("bad glob '{0}': {1}")]
     BadGlob(String, String),
+
+    #[error("invalid exe= value '{0}': must be a bare name or an absolute path")]
+    InvalidExe(String),
 
     #[error("%include cycle: {0}")]
     IncludeCycle(String),
@@ -665,38 +668,47 @@ mod tests {
     }
 
     #[test]
-    fn exe_bare_name_not_in_path_becomes_double_star_glob() {
-        // `myapp` not found in resolver → compiled as `**/myapp`.
-        // Any absolute path whose last component is `myapp` should match.
+    fn exe_bare_name_not_in_path_never_matches() {
+        // `myapp` not found in resolver → condition is always false.
         let resolver = MockExeResolver::empty();
         let p = parse_with_exe("/data rw when exe=myapp\n/data ro\n", &resolver);
 
+        // No matter what exe is provided, the `rw` rule never fires.
         assert_eq!(
             eval(&p, "/data/file", Some("/usr/local/bin/myapp"), &[]),
-            Some(Action::ReadWrite)
+            Some(Action::ReadOnly)
         );
         assert_eq!(
             eval(&p, "/data/file", Some("/opt/myapp"), &[]),
-            Some(Action::ReadWrite)
-        );
-        assert_eq!(
-            eval(&p, "/data/file", Some("/usr/bin/other"), &[]),
             Some(Action::ReadOnly)
         );
     }
 
     #[test]
-    fn exe_glob_double_star_pattern() {
-        // Explicit `**/git` pattern: matches any path ending in `/git`.
-        let p = parse_simple("**/.git rw when exe=**/git\n**/.git ro\n");
-        assert_eq!(
-            eval(&p, "/workspace/project/.git/COMMIT_EDITMSG", Some("/usr/bin/git"), &[]),
-            Some(Action::ReadWrite)
-        );
-        assert_eq!(
-            eval(&p, "/workspace/project/.git/config", Some("/usr/bin/vim"), &[]),
-            Some(Action::ReadOnly)
-        );
+    fn exe_glob_pattern_is_parse_error() {
+        // Glob metacharacters in exe= are not supported.
+        let err = parse(
+            "**/.git rw when exe=**/git\n",
+            &home(),
+            &cwd(),
+            &NoIncludes,
+            &MockExeResolver::empty(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ParseError::InvalidExe(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn exe_relative_path_is_parse_error() {
+        let err = parse(
+            "/foo rw when exe=../bin/sh\n",
+            &home(),
+            &cwd(),
+            &NoIncludes,
+            &MockExeResolver::empty(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ParseError::InvalidExe(_)), "got: {err:?}");
     }
 
     #[test]
