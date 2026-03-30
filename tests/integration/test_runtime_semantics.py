@@ -463,6 +463,58 @@ class ProfileCommandTests(LeashIntegrationTestCase):
         self.assertIn(updated, shown.stdout)
         self.assertIn("# daemon profile matches default profile", shown.stdout)
 
+    def test_profile_edit_invalid_source_does_not_write_default_profile(self) -> None:
+        original = f"{self.rw_dir} rw\n{self.fixture} ro\n/bin ro\n/usr ro\n"
+        self.default_profile_path.write_text(original)
+        run_cmd(
+            [str(self.leash_bin), "_set-profile", str(self.default_profile_path)],
+            env=self.env,
+            capture_stdout=False,
+        )
+
+        editor_script = self.tmpdir / "write-invalid-profile.py"
+        editor_script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib\n"
+            "import sys\n\n"
+            "pathlib.Path(sys.argv[1]).write_text(\"/tmp maybe\\n\")\n"
+        )
+        editor_script.chmod(0o755)
+        self.env["EDITOR"] = f"python3 {editor_script}"
+
+        edited = run_cmd(
+            [str(self.leash_bin), "profile", "edit"],
+            env=self.env,
+            check=False,
+        )
+        self.assertNotEqual(edited.returncode, 0)
+        self.assertIn("edited profile is invalid", edited.stderr)
+        self.assertEqual(self.default_profile_path.read_text(), original)
+
+        shown = run_cmd(
+            [str(self.leash_bin), "profile", "show"],
+            env=self.env,
+        )
+        self.assertIn(original, shown.stdout)
+        self.assertIn("# daemon profile matches default profile", shown.stdout)
+
+    def test_profile_show_without_daemon_omits_match_status(self) -> None:
+        self.default_profile_path.write_text(f"{self.fixture} ro\n/bin ro\n/usr ro\n")
+        run_cmd(
+            [str(self.leash_bin), "_shutdown-daemon"],
+            env=self.env,
+            capture_stdout=False,
+        )
+        self.daemon.wait(timeout=5)
+
+        shown = run_cmd(
+            [str(self.leash_bin), "profile", "show"],
+            env=self.env,
+        )
+        self.assertIn(f"{self.fixture} ro\n/bin ro\n/usr ro\n", shown.stdout)
+        self.assertNotIn("# daemon profile matches default profile", shown.stdout)
+        self.assertNotIn("# daemon profile differs from default profile", shown.stdout)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
