@@ -26,7 +26,6 @@ pub(crate) fn render_profile_source_for_show(profile_path: &Path, home: &Path) -
 
 #[derive(Debug)]
 pub(crate) struct LoadedProfile {
-    pub(crate) profile: profile::Profile,
     pub(crate) normalized_source: String,
 }
 
@@ -58,14 +57,11 @@ pub(crate) fn load_profile_with_context(
     let parse_source = strip_directive_lines(&expanded_source);
 
     let parse_label = format!("profile source: {source_name}");
-    let profile = profile::Profile::parse_with_home(&parse_source, cwd, home)
+    profile::Profile::parse_with_home(&parse_source, cwd, home)
         .with_context(|| format!("failed to parse {parse_label}"))?;
     let normalized_source = profile::normalize_source_with_home(&parse_source, cwd, home)
         .with_context(|| format!("failed to normalize {parse_label}"))?;
-    Ok(LoadedProfile {
-        profile,
-        normalized_source,
-    })
+    Ok(LoadedProfile { normalized_source })
 }
 
 fn load_profile_source_with_home(profile_path: &Path, home: &Path) -> Result<(String, String)> {

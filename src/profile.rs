@@ -14,6 +14,7 @@ pub enum RuleAction {
     Hide,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 struct Rule {
     action: RuleAction,
@@ -30,6 +31,7 @@ struct ParsedRuleLine {
     line_no: usize,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 pub struct Profile {
     rules: Vec<Rule>,
@@ -41,6 +43,7 @@ pub trait ExeResolver {
     fn resolve(&self, name: &str) -> Option<PathBuf>;
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub trait FsCheck {
     fn exists(&self, path: &Path) -> bool;
 }
@@ -60,6 +63,7 @@ impl ExeResolver for PathExeResolver {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct RealFsCheck;
 
 impl FsCheck for RealFsCheck {
@@ -68,6 +72,7 @@ impl FsCheck for RealFsCheck {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct CachingFsCheck<F = RealFsCheck> {
     inner: F,
     cache: Mutex<HashMap<PathBuf, bool>>,
@@ -79,6 +84,7 @@ impl Default for CachingFsCheck<RealFsCheck> {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl<F> CachingFsCheck<F> {
     pub fn new(inner: F) -> Self {
         Self {
@@ -108,12 +114,14 @@ impl<F: FsCheck> FsCheck for CachingFsCheck<F> {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 enum Condition {
     Exe(Option<PathBuf>),
     AncestorHas(String),
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
     Action(RuleAction),
@@ -121,6 +129,7 @@ pub enum Visibility {
     Hidden,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl Profile {
     #[cfg(test)]
     pub fn parse(profile_src: &str, launch_cwd: &Path) -> Result<Self> {
@@ -293,6 +302,7 @@ pub fn normalize_source_with_home(
     Ok(out)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub(crate) struct NormalizedRuleLine {
     pub(crate) path: PathBuf,
@@ -300,6 +310,7 @@ pub(crate) struct NormalizedRuleLine {
     pub(crate) line_no: usize,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn parse_normalized_rule_lines(profile_src: &str) -> Result<Vec<NormalizedRuleLine>> {
     let exe_resolver = PathExeResolver;
     let parsed = parse_lines(profile_src, Path::new("/"), Path::new("/"), &exe_resolver)?;
@@ -464,6 +475,7 @@ fn normalize_pattern(token: &str, cwd: &Path, home: &Path) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("path pattern is not valid UTF-8"))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl Rule {
     fn conditions_match(
         &self,
@@ -477,6 +489,7 @@ impl Rule {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl Condition {
     fn matches(&self, path: &Path, exe_path: Option<&Path>, fs_check: &dyn FsCheck) -> bool {
         match self {
@@ -487,6 +500,7 @@ impl Condition {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn ancestor_has(path: &Path, name: &str, fs_check: &dyn FsCheck) -> bool {
     let mut dir = match path.parent() {
         Some(parent) => parent.to_path_buf(),

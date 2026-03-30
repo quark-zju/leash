@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, bail};
 use fs_err as fs;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
@@ -41,7 +40,7 @@ pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
     mark_common_filesystems(&observer)?;
     observer.spawn_thread(host_pidns)?;
     let mut state = DaemonState {
-        sessions: HashMap::new(),
+        sessions: HashSet::new(),
         _observer: observer,
     };
 
@@ -132,17 +131,8 @@ struct NamespaceKey {
     ino: u64,
 }
 
-struct RegisteredSession {
-    key: NamespaceKey,
-    owner_uid: libc::uid_t,
-    owner_gid: libc::gid_t,
-    source_pid: libc::pid_t,
-    profile_path: PathBuf,
-    namespace_file: File,
-}
-
 struct DaemonState {
-    sessions: HashMap<NamespaceKey, RegisteredSession>,
+    sessions: HashSet<NamespaceKey>,
     _observer: FilesystemObserver,
 }
 
@@ -150,7 +140,7 @@ struct DaemonState {
 impl Default for DaemonState {
     fn default() -> Self {
         Self {
-            sessions: HashMap::new(),
+            sessions: HashSet::new(),
             _observer: FilesystemObserver::new().expect("test observer should initialize"),
         }
     }
@@ -310,7 +300,7 @@ fn handle_request(
     match command {
         "ping" => "pong\n".to_string(),
         "register-session" => {
-            let Some(profile_path) = lines.next().map(PathBuf::from) else {
+            let Some(_profile_path) = lines.next() else {
                 return "error missing-profile-path\n".to_string();
             };
             let Some(namespace_file) = received_fd else {
@@ -319,7 +309,7 @@ fn handle_request(
             if lines.next().is_some() {
                 return "error unexpected-arguments\n".to_string();
             }
-            match register_session(state, &peer, profile_path, namespace_file) {
+            match register_session(state, namespace_file) {
                 Ok(key) => format!("ok registered {}:{}\n", key.dev, key.ino),
                 Err(err) => format!("error {}\n", sanitize_error_text(&err.to_string())),
             }
@@ -329,7 +319,7 @@ fn handle_request(
                 return "error unexpected-arguments\n".to_string();
             }
             match namespace_key_for_pid(peer.pid) {
-                Ok(Some(key)) if state.sessions.contains_key(&key) => {
+                Ok(Some(key)) if state.sessions.contains(&key) => {
                     format!("ok session {}:{}\n", key.dev, key.ino)
                 }
                 Ok(Some(_)) | Ok(None) => "ok missing\n".to_string(),
@@ -340,12 +330,7 @@ fn handle_request(
     }
 }
 
-fn register_session(
-    state: &mut DaemonState,
-    peer: &PeerCredentials,
-    profile_path: PathBuf,
-    namespace_file: File,
-) -> Result<NamespaceKey> {
+fn register_session(state: &mut DaemonState, namespace_file: File) -> Result<NamespaceKey> {
     let meta = namespace_file
         .metadata()
         .context("failed to stat received mount namespace fd")?;
@@ -353,17 +338,7 @@ fn register_session(
         dev: meta.dev(),
         ino: meta.ino(),
     };
-    state.sessions.insert(
-        key,
-        RegisteredSession {
-            key,
-            owner_uid: peer.uid,
-            owner_gid: peer.gid,
-            source_pid: peer.pid,
-            profile_path,
-            namespace_file,
-        },
-    );
+    state.sessions.insert(key);
     Ok(key)
 }
 
