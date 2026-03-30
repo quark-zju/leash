@@ -87,6 +87,43 @@ Trusted `git` checks currently inspect `/proc/<pid>/exe` and allow `.git` metada
   - `/proc` is not fully virtualized; current behavior includes a targeted compatibility shim for `/proc/self` and a hard block on `/proc/thread-self`
   - mount-plan validation errors use normalized line numbers by default and upgrade to `source:line` when `profile.sources` is available
 
+## fanotify Evaluation
+
+Recent exploration added a fanotify-based daemon, a single global active profile model, pid-namespace filtering, and daemon fail-closed teardown for running pid namespaces.
+
+Those pieces were useful and may be kept even if the execution layer returns to FUSE:
+
+- a global privileged daemon is a good control-plane shape
+- a single active profile is simpler than per-session profile registration
+- pid-namespace filtering is a good boundary for attributing controlled workloads
+- daemon liveness wired into pid-namespace PID 1 gives a clean fail-closed path when the daemon exits
+
+However, fanotify has hard limits as a complete filesystem policy engine.
+
+fanotify is a reasonable fit for observation and some open-time allow/deny decisions, but it is not a good fit for enforcing the full `leash` profile model on its own.
+
+Major limitations discovered during the fanotify design pass:
+
+- open-time permission events are not enough to express full `ro` semantics
+- directory tree mutation coverage is incomplete for `ro` enforcement, especially for operations like rename, unlink, mkdir, rmdir, link, symlink, truncate, and metadata-only changes
+- `hide` semantics do not map cleanly to fanotify permission decisions; the kernel interface is naturally closer to allow or deny than to making a path behave as absent
+- write intent is much easier to observe after the fact than to classify correctly before every possible mutating operation
+
+In practice, this means fanotify cannot safely replace the execution semantics needed for `ro` profiles.
+
+The current conclusion is:
+
+- fanotify can still be useful as an observer, auditor, or limited deny gate
+- fanotify is not sufficient as the sole enforcement layer for `leash`
+- if `leash` needs complete `ro` behavior across normal file and directory mutations, a filesystem mediation layer such as FUSE remains the more practical direction
+
+So the main design takeaway from this exploration is not "fanotify was a mistake". The better conclusion is:
+
+- keep the improved control-plane ideas
+- keep the simplified profile model
+- keep daemon fail-closed behavior for supervised workloads
+- but do not depend on fanotify alone for final read-only enforcement semantics
+
 ## Lock Files
 
 `leash` uses two lock domains:
