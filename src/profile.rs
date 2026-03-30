@@ -141,12 +141,6 @@ pub enum Visibility {
 
 #[cfg(test)]
 impl Profile {
-    #[cfg(test)]
-    pub fn parse(profile_src: &str, launch_cwd: &Path) -> Result<Self> {
-        let home = home_dir_from_env()?;
-        Self::parse_with_home(profile_src, launch_cwd, &home)
-    }
-
     pub fn parse_with_home(profile_src: &str, launch_cwd: &Path, home: &Path) -> Result<Self> {
         let cwd = normalize_abs(launch_cwd)
             .context("launch cwd for profile parsing must be an absolute normalized path")?;
@@ -279,12 +273,6 @@ impl Profile {
                     || rule.implicit_ancestor_globset.is_match(normalized))
         })
     }
-}
-
-#[cfg(test)]
-pub fn normalize_source(profile_src: &str, launch_cwd: &Path) -> Result<String> {
-    let home = home_dir_from_env()?;
-    normalize_source_with_home(profile_src, launch_cwd, &home)
 }
 
 pub fn normalize_source_with_home(
@@ -550,13 +538,6 @@ fn build_implicit_ancestor_sets(
         .build()
         .context("failed to build implicit ancestor globset for profile")?;
     Ok((implicit_visible_ancestors, implicit_ancestor_globset))
-}
-
-#[cfg(test)]
-fn home_dir_from_env() -> Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME is not set for '~' expansion"))
 }
 
 #[cfg(test)]

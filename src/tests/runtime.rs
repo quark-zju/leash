@@ -167,15 +167,6 @@ fn ns_runtime_paths_track_runtime_layout() {
     assert_eq!(runtime.mntns_path, Path::new("/run/leash-test/demo/mntns"));
     assert_eq!(runtime.ipcns_path, Path::new("/run/leash-test/demo/ipcns"));
     assert_eq!(runtime.lock_path, Path::new("/run/leash-test/demo/lock"));
-    assert_eq!(runtime.mount_dir, Path::new("/run/leash-test/demo/mount"));
-    assert_eq!(
-        runtime.fuse_pid_path,
-        Path::new("/run/leash-test/demo/fuse.pid")
-    );
-    assert_eq!(
-        runtime.fuse_log_path,
-        Path::new("/run/leash-test/demo/fuse.log")
-    );
 }
 
 #[test]
@@ -329,10 +320,9 @@ fn ns_runtime_ensure_runtime_with_repairs_partial_runtime() {
     let jail_paths = jail::jail_paths_in(&layout, "demo");
 
     let _ = ns_runtime::ensure_runtime_skeleton(&jail_paths).expect("ensure skeleton");
-    fs::write(&jail_paths.mntns_path, b"stale-mnt").expect("write stale legacy mntns");
+    fs::remove_file(&jail_paths.ipcns_path).ok();
 
     let ensured = ns_runtime::ensure_runtime_with(&jail_paths, |paths| {
-        assert!(!paths.mntns_path.exists());
         fs::write(&paths.ipcns_path, b"fresh-ipc").expect("write fresh ipcns");
         Ok(())
     })
@@ -371,44 +361,4 @@ fn ns_runtime_ensure_runtime_for_exec_succeeds() {
         exec_runtime.ensured.paths.runtime_dir,
         runtime_paths.runtime_dir
     );
-}
-
-#[test]
-fn ns_runtime_reads_fuse_pid_file() {
-    let temp = tempdir().expect("tempdir");
-    let mut layout = jail::layout_from_home(temp.path());
-    layout.runtime_root = temp.path().join("run");
-    layout.state_root = layout.runtime_root.join("state");
-    let jail_paths = jail::jail_paths_in(&layout, "demo");
-    let runtime_paths = ns_runtime::ensure_runtime_dir(&jail_paths).expect("ensure runtime");
-
-    assert!(
-        ns_runtime::read_fuse_pid(&runtime_paths)
-            .expect("read missing pid")
-            .is_none()
-    );
-    fs::write(&runtime_paths.fuse_pid_path, b"12345\n").expect("write pid");
-    assert_eq!(
-        ns_runtime::read_fuse_pid(&runtime_paths).expect("read pid"),
-        Some(12345)
-    );
-}
-
-#[test]
-fn ns_runtime_mountinfo_parser_handles_escaped_mountpoints() {
-    let raw = "\
-40 30 0:35 / /run/leash/demo/mount rw,nosuid - fuse.leash leash rw\n\
-41 30 0:36 / /run/leash/demo/space\\040path rw,nosuid - fuse.leash leash rw\n";
-    assert!(ns_runtime::mountinfo_has_mountpoint_for_test(
-        raw,
-        Path::new("/run/leash/demo/mount")
-    ));
-    assert!(ns_runtime::mountinfo_has_mountpoint_for_test(
-        raw,
-        Path::new("/run/leash/demo/space path")
-    ));
-    assert!(!ns_runtime::mountinfo_has_mountpoint_for_test(
-        raw,
-        Path::new("/run/leash/demo/missing")
-    ));
 }

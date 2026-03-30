@@ -10,6 +10,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+#[cfg(not(test))]
 use std::thread;
 
 use crate::cli::LowLevelDaemonCommand;
@@ -17,7 +18,9 @@ use crate::jail;
 use crate::privileges;
 use crate::run_env;
 
+#[cfg(not(test))]
 const FAN_MARK_FILESYSTEM: libc::c_uint = 0x0000_0100;
+#[cfg(not(test))]
 const OBSERVE_MASK: u64 =
     libc::FAN_OPEN | libc::FAN_OPEN_EXEC | libc::FAN_ACCESS | libc::FAN_CLOSE_WRITE;
 
@@ -152,6 +155,7 @@ struct ReceivedRequest {
 }
 
 struct FilesystemObserver {
+    #[cfg_attr(test, allow(dead_code))]
     fd: File,
 }
 
@@ -421,6 +425,7 @@ fn pid_namespace_path_for_pid(pid: libc::pid_t) -> PathBuf {
     PathBuf::from(format!("/proc/{pid}/ns/pid"))
 }
 
+#[cfg(not(test))]
 fn observe_events(file: File, host_pidns: NamespaceKey) {
     let fd = file.as_raw_fd();
     let mut buffer = [0u8; 8192];
@@ -501,6 +506,7 @@ fn test_register_request(profile_path: &Path) -> String {
     format!("register-session\n{}", profile_path.display())
 }
 
+#[cfg(not(test))]
 fn describe_event_fd(fd: libc::c_int) -> String {
     let link = PathBuf::from(format!("/proc/self/fd/{fd}"));
     match fs::read_link(&link) {
@@ -509,6 +515,7 @@ fn describe_event_fd(fd: libc::c_int) -> String {
     }
 }
 
+#[cfg(not(test))]
 fn describe_mask(mask: u64) -> String {
     let mut parts = Vec::new();
     if mask & libc::FAN_ACCESS != 0 {
