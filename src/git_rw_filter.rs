@@ -1,16 +1,13 @@
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
 
 use fs_err as fs;
-use log::{debug, trace};
+use log::debug;
 
 #[derive(Debug)]
 pub(crate) struct GitRwFilter {
     system_git: Option<PathBuf>,
-    repo_root_cache: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
 }
 
 impl GitRwFilter {
@@ -21,10 +18,7 @@ impl GitRwFilter {
 
     pub(crate) fn with_system_git(system_git: Option<PathBuf>) -> Self {
         debug!("git-rw: resolved system git path to {:?}", system_git);
-        Self {
-            system_git,
-            repo_root_cache: Mutex::new(HashMap::new()),
-        }
+        Self { system_git }
     }
 
     pub(crate) fn is_git_metadata_path(&self, path: &Path) -> bool {
@@ -38,9 +32,6 @@ impl GitRwFilter {
         path.file_name() == Some(OsStr::new(".git"))
     }
 
-    /// Returns `true` if the path is `.git/COMMIT_EDITMSG` inside any repository.
-    /// This file is written by editors/hooks (non-git processes) during commit
-    /// message editing, so it must remain writable by any process.
     pub(crate) fn is_commit_editmsg_path(&self, path: &Path) -> bool {
         let mut components = path.components().peekable();
         while let Some(component) = components.next() {
@@ -54,65 +45,6 @@ impl GitRwFilter {
             }
         }
         false
-    }
-
-    pub(crate) fn repo_root_for(&self, path: &Path) -> Option<PathBuf> {
-        let mut current = if path.is_dir() {
-            path.to_path_buf()
-        } else {
-            path.parent()?.to_path_buf()
-        };
-        let mut visited = Vec::new();
-
-        loop {
-            if let Ok(cache) = self.repo_root_cache.lock()
-                && let Some(cached) = cache.get(&current)
-            {
-                trace!(
-                    "git-rw: repo root cache hit path={} repo_root={:?}",
-                    current.display(),
-                    cached
-                );
-                return cached.clone();
-            }
-
-            visited.push(current.clone());
-            if current.join(".git/config").is_file() {
-                debug!(
-                    "git-rw: detected repo root {} while resolving {}",
-                    current.display(),
-                    path.display()
-                );
-                self.fill_repo_root_cache(&visited, Some(current.clone()));
-                return Some(current);
-            }
-            let Some(parent) = current.parent() else {
-                trace!(
-                    "git-rw: no repo root found while resolving {}",
-                    path.display()
-                );
-                self.fill_repo_root_cache(&visited, None);
-                return None;
-            };
-            current = parent.to_path_buf();
-        }
-    }
-
-    pub(crate) fn path_is_git_repo_member(&self, path: &Path) -> bool {
-        if self.is_git_metadata_path(path) {
-            trace!(
-                "git-rw: path={} is inside git metadata, not part of the working copy",
-                path.display()
-            );
-            return false;
-        }
-        let is_member = self.repo_root_for(path).is_some();
-        trace!(
-            "git-rw: working copy membership path={} member={}",
-            path.display(),
-            is_member
-        );
-        is_member
     }
 
     pub(crate) fn allow_git_metadata_for_pid(&self, pid: u32, mount_root: Option<&Path>) -> bool {
@@ -156,28 +88,6 @@ impl GitRwFilter {
 
         debug!("git-rw: allow pid={pid}: exe path matches trusted git");
         true
-    }
-
-    fn fill_repo_root_cache(&self, visited: &[PathBuf], repo_root: Option<PathBuf>) {
-        let Ok(mut cache) = self.repo_root_cache.lock() else {
-            return;
-        };
-        trace!(
-            "git-rw: fill repo root cache visited={} repo_root={:?}",
-            visited.len(),
-            repo_root
-        );
-        for path in visited {
-            cache.insert(path.clone(), repo_root.clone());
-        }
-    }
-
-    #[cfg(test)]
-    fn repo_root_cache_len(&self) -> usize {
-        self.repo_root_cache
-            .lock()
-            .expect("repo root cache lock")
-            .len()
     }
 }
 
@@ -224,41 +134,6 @@ fn strip_mount_root_prefix(path: PathBuf, mount_root: Option<&Path>) -> PathBuf 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn detects_plain_git_dir_repo_layout() {
-        let dir = tempdir().expect("tempdir");
-        let repo = dir.path().join("repo");
-        let nested = repo.join("src/lib.rs");
-        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
-        fs::create_dir_all(repo.join("src")).expect("mkdir src");
-        fs::write(repo.join(".git/config"), b"[core]\n").expect("write config");
-        fs::write(&nested, b"fn main() {}\n").expect("write nested file");
-
-        let filter = GitRwFilter::new();
-        assert_eq!(filter.repo_root_for(&nested), Some(repo));
-        assert!(filter.path_is_git_repo_member(&nested));
-        assert!(!filter.path_is_git_repo_member(dir.path()));
-    }
-
-    #[test]
-    fn repo_root_lookup_populates_cache_for_visited_directories() {
-        let dir = tempdir().expect("tempdir");
-        let repo = dir.path().join("repo");
-        let nested_dir = repo.join("a/b");
-        let nested = nested_dir.join("lib.rs");
-        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
-        fs::create_dir_all(&nested_dir).expect("mkdir nested");
-        fs::write(repo.join(".git/config"), b"[core]\n").expect("write config");
-        fs::write(&nested, b"fn main() {}\n").expect("write nested file");
-
-        let filter = GitRwFilter::new();
-        assert_eq!(filter.repo_root_cache_len(), 0);
-        assert_eq!(filter.repo_root_for(&nested), Some(repo.clone()));
-        assert!(filter.repo_root_cache_len() >= 3);
-        assert_eq!(filter.repo_root_for(&nested_dir), Some(repo));
-    }
 
     #[test]
     fn marks_dot_git_paths_as_metadata() {
@@ -274,13 +149,9 @@ mod tests {
     fn identifies_commit_editmsg_path() {
         let filter = GitRwFilter::new();
         assert!(filter.is_commit_editmsg_path(Path::new("/tmp/repo/.git/COMMIT_EDITMSG")));
-        // Must be a direct child of .git, not nested further
         assert!(!filter.is_commit_editmsg_path(Path::new("/tmp/repo/.git/sub/COMMIT_EDITMSG")));
-        // Other .git files are not COMMIT_EDITMSG
         assert!(!filter.is_commit_editmsg_path(Path::new("/tmp/repo/.git/config")));
-        // The .git dir itself is not COMMIT_EDITMSG
         assert!(!filter.is_commit_editmsg_path(Path::new("/tmp/repo/.git")));
-        // Working-tree files are not COMMIT_EDITMSG
         assert!(!filter.is_commit_editmsg_path(Path::new("/tmp/repo/COMMIT_EDITMSG")));
     }
 

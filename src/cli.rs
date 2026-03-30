@@ -2,7 +2,7 @@ use std::convert::Infallible;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use pico_args::Arguments;
 
 pub const DEFAULT_PROFILE: &str = "default";
@@ -17,8 +17,6 @@ pub enum Command {
     LowLevelList(ListCommand),
     LowLevelShow(ShowCommand),
     LowLevelRm(RmCommand),
-    LowLevelMount(MountCommand),
-    LowLevelFuse(LowLevelFuseCommand),
     LowLevelSuid(LowLevelSuidCommand),
 }
 
@@ -32,8 +30,6 @@ pub enum HelpTopic {
     LowLevelList,
     LowLevelShow,
     LowLevelRm,
-    LowLevelMount,
-    LowLevelFuse,
     LowLevelSuid,
 }
 
@@ -71,21 +67,6 @@ pub struct RunCommand {
     pub verbose: bool,
     pub program: OsString,
     pub args: Vec<OsString>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MountCommand {
-    pub profile: String,
-    pub verbose: bool,
-    pub path: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LowLevelFuseCommand {
-    pub profile: String,
-    pub mountpoint: PathBuf,
-    pub pid_path: PathBuf,
-    pub verbose: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,8 +112,6 @@ where
         "_list" => parse_list(args)?,
         "_show" => parse_show(args)?,
         "_rm" => parse_rm(args)?,
-        "_mount" => parse_mount(args)?,
-        "_fuse" => parse_low_level_fuse(args)?,
         "_suid" => parse_low_level_suid(args)?,
         other => bail!("unknown subcommand: {other}"),
     };
@@ -309,30 +288,6 @@ fn parse_rm(mut args: Arguments) -> Result<Command> {
     Ok(Command::LowLevelRm(RmCommand { selectors, verbose }))
 }
 
-fn parse_mount(mut args: Arguments) -> Result<Command> {
-    if args.contains(["-h", "--help"]) {
-        return Ok(help_command(HelpTopic::LowLevelMount, true));
-    }
-    let verbose = args.contains(["-v", "--verbose"]);
-    let profile = args
-        .value_from_str("--profile")
-        .context("mount requires --profile <profile>")?;
-    let path = args
-        .free_from_os_str(parse_pathbuf)
-        .context("mount requires <path>")?;
-
-    let extra = args.finish();
-    if !extra.is_empty() {
-        bail!("mount got unexpected trailing arguments");
-    }
-
-    Ok(Command::LowLevelMount(MountCommand {
-        profile,
-        verbose,
-        path,
-    }))
-}
-
 fn parse_low_level_name_selectors(mut args: Arguments, command: &str) -> Result<Vec<String>> {
     if args.opt_value_from_str::<_, String>("--name")?.is_some() {
         bail!("{command} no longer accepts --name; pass NAME or GLOB positionally");
@@ -352,34 +307,6 @@ fn parse_low_level_name_selectors(mut args: Arguments, command: &str) -> Result<
                 .map(ToOwned::to_owned)
         })
         .collect()
-}
-
-fn parse_low_level_fuse(mut args: Arguments) -> Result<Command> {
-    if args.contains(["-h", "--help"]) {
-        return Ok(help_command(HelpTopic::LowLevelFuse, true));
-    }
-    let verbose = args.contains(["-v", "--verbose"]);
-    let profile = args
-        .value_from_str("--profile")
-        .context("_fuse requires --profile <profile>")?;
-    let mountpoint = args
-        .value_from_os_str("--mountpoint", parse_pathbuf)
-        .context("_fuse requires --mountpoint <path>")?;
-    let pid_path = args
-        .value_from_os_str("--pid-path", parse_pathbuf)
-        .context("_fuse requires --pid-path <path>")?;
-
-    let extra = args.finish();
-    if !extra.is_empty() {
-        bail!("_fuse got unexpected trailing arguments");
-    }
-
-    Ok(Command::LowLevelFuse(LowLevelFuseCommand {
-        profile,
-        mountpoint,
-        pid_path,
-        verbose,
-    }))
 }
 
 fn parse_pathbuf(raw: &std::ffi::OsStr) -> Result<PathBuf, Infallible> {
@@ -432,13 +359,6 @@ mod tests {
         assert!(!run.verbose);
         assert_eq!(run.program, OsString::from("echo"));
         assert_eq!(run.args, vec![OsString::from("hi")]);
-    }
-
-    #[test]
-    fn parse_mount_requires_all_flags() {
-        let err = parse_from(os(&["_mount", "./mnt"]))
-            .expect_err("_mount without required flags should fail");
-        assert!(err.to_string().contains("mount requires --profile"));
     }
 
     #[test]
@@ -760,7 +680,6 @@ mod tests {
             }
         );
         let text = crate::cmd_help::help_text(HelpTopic::Root, true);
-        assert!(text.contains("leash _mount"));
         assert!(text.contains("leash _suid"));
     }
 
@@ -773,24 +692,6 @@ mod tests {
 
     #[test]
     fn parse_low_level_help_topics() {
-        let mount_help = parse_from(os(&["_mount", "--help"])).expect("_mount help should parse");
-        assert_eq!(
-            mount_help,
-            Command::Help {
-                topic: HelpTopic::LowLevelMount,
-                verbose: true,
-            }
-        );
-
-        let fuse_help = parse_from(os(&["_fuse", "--help"])).expect("_fuse help should parse");
-        assert_eq!(
-            fuse_help,
-            Command::Help {
-                topic: HelpTopic::LowLevelFuse,
-                verbose: true,
-            }
-        );
-
         let suid_help = parse_from(os(&["_suid", "--help"])).expect("_suid help should parse");
         assert_eq!(
             suid_help,

@@ -50,12 +50,12 @@ const BASH_COMPLETION: &str = r#"_leash_complete() {
   cmd2="${COMP_WORDS[2]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=( $(compgen -W "completion profile help run _list _show _rm _mount _fuse _suid" -- "$cur") )
+    COMPREPLY=( $(compgen -W "completion profile help run _list _show _rm _suid" -- "$cur") )
     return
   fi
 
   if [[ "$cmd1" == "help" && $COMP_CWORD -eq 2 ]]; then
-    COMPREPLY=( $(compgen -W "profile completion run _list _show _rm _mount _fuse _suid" -- "$cur") )
+    COMPREPLY=( $(compgen -W "profile completion run _list _show _rm _suid" -- "$cur") )
     return
   fi
 
@@ -97,8 +97,6 @@ const BASH_COMPLETION: &str = r#"_leash_complete() {
     run) COMPREPLY=( $(compgen -W "--profile -v --verbose" -- "$cur") ) ;;
     _rm) COMPREPLY=( $(compgen -W "-v --verbose" -- "$cur") ) ;;
     _show) COMPREPLY=( $(compgen -W "-v --verbose" -- "$cur") ) ;;
-    _mount) COMPREPLY=( $(compgen -W "--profile -v --verbose" -- "$cur") ) ;;
-    _fuse) COMPREPLY=( $(compgen -W "--profile --mountpoint --pid-path -v --verbose" -- "$cur") ) ;;
     _suid) COMPREPLY=( $(compgen -W "-v --verbose" -- "$cur") ) ;;
   esac
 }
@@ -109,8 +107,8 @@ complete -F _leash_complete leash
 const ZSH_COMPLETION: &str = r#"#compdef leash
 _leash() {
   local -a subcmds help_topics profile_subcmds shells
-  subcmds=(completion profile help run _list _show _rm _mount _fuse _suid)
-  help_topics=(profile completion run _list _show _rm _mount _fuse _suid)
+  subcmds=(completion profile help run _list _show _rm _suid)
+  help_topics=(profile completion run _list _show _rm _suid)
   profile_subcmds=(list show edit rm)
   shells=(bash zsh fish)
 
@@ -150,9 +148,9 @@ _leash() {
 compdef _leash leash
 "#;
 
-const FISH_COMPLETION: &str = r#"complete -c leash -f -n '__fish_use_subcommand' -a 'completion profile help run _list _show _rm _mount _fuse _suid'
+const FISH_COMPLETION: &str = r#"complete -c leash -f -n '__fish_use_subcommand' -a 'completion profile help run _list _show _rm _suid'
 complete -c leash -f -n '__fish_seen_subcommand_from completion; and not __fish_seen_subcommand_from bash zsh fish' -a 'bash zsh fish'
-complete -c leash -f -n '__fish_seen_subcommand_from help; and not __fish_seen_subcommand_from profile completion run _list _show _rm _mount _fuse _suid' -a 'profile completion run _list _show _rm _mount _fuse _suid'
+complete -c leash -f -n '__fish_seen_subcommand_from help; and not __fish_seen_subcommand_from profile completion run _list _show _rm _suid' -a 'profile completion run _list _show _rm _suid'
 complete -c leash -f -n '__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from list show edit rm' -a 'list show edit rm'
 complete -c leash -f -n '__fish_seen_subcommand_from profile show profile edit profile rm' -a '(leash profile list 2>/dev/null)'
 "#;

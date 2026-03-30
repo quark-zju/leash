@@ -2,10 +2,8 @@ mod access_policy;
 mod cli;
 mod cmd_completion;
 mod cmd_daemon;
-mod cmd_fuse;
 mod cmd_help;
 mod cmd_jail;
-mod cmd_mount;
 mod cmd_profile;
 mod cmd_run;
 mod cmd_show;
@@ -13,7 +11,6 @@ mod cmd_suid;
 mod daemon_client;
 mod git_rw_filter;
 mod jail;
-mod leashfs;
 mod mount_plan;
 mod ns_runtime;
 mod privileges;
@@ -92,16 +89,6 @@ fn try_main() -> Result<i32> {
             Ok(0)
         }
         Command::Run(run) => cmd_run::run_command(run).context("run subcommand failed"),
-        Command::LowLevelMount(mount) => {
-            cmd_mount::mount_command(mount).context("_mount subcommand failed")?;
-            Ok(0)
-        }
-        Command::LowLevelFuse(fuse) => {
-            env_logger::Builder::from_env(env_logger::Env::default().filter("LEASH_FUSE_LOG"))
-                .init();
-            cmd_fuse::fuse_command(fuse).context("_fuse subcommand failed")?;
-            Ok(0)
-        }
         Command::LowLevelSuid(suid) => {
             cmd_suid::suid_command(suid).context("_suid subcommand failed")?;
             Ok(0)
@@ -118,8 +105,6 @@ fn command_verbose(cmd: &Command) -> bool {
         Command::Run(run) => run.verbose,
         Command::LowLevelShow(show) => show.verbose,
         Command::LowLevelRm(rm) => rm.verbose,
-        Command::LowLevelMount(mount) => mount.verbose,
-        Command::LowLevelFuse(fuse) => fuse.verbose,
         Command::LowLevelSuid(suid) => suid.verbose,
         Command::LowLevelList(_) => false,
     }
@@ -130,14 +115,12 @@ fn require_priviledge_reason(cmd: &Command) -> Option<&'static str> {
         Command::Run(_) => Some("run requires root for pivot_root and runtime setup"),
         Command::LowLevelDaemon(_) => Some("_daemon keeps root euid for fanotify control plane"),
         Command::LowLevelRm(_) => Some("_rm may need root to clean state/runtime artifacts"),
-        Command::LowLevelFuse(_) => Some("_fuse requires root euid to mount FUSE daemon"),
         Command::LowLevelSuid(_) => Some("_suid updates binary ownership/mode"),
         Command::Help { .. }
         | Command::Completion(_)
         | Command::Profile(_)
         | Command::LowLevelList(_)
-        | Command::LowLevelShow(_)
-        | Command::LowLevelMount(_) => None,
+        | Command::LowLevelShow(_) => None,
     }
 }
 

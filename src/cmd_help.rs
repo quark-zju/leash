@@ -9,8 +9,6 @@ const HELP_TOPIC_NAMES: &[(&str, HelpTopic)] = &[
     ("_list", HelpTopic::LowLevelList),
     ("_show", HelpTopic::LowLevelShow),
     ("_rm", HelpTopic::LowLevelRm),
-    ("_mount", HelpTopic::LowLevelMount),
-    ("_fuse", HelpTopic::LowLevelFuse),
     ("_suid", HelpTopic::LowLevelSuid),
 ];
 
@@ -118,27 +116,6 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "  Profile behavior and rule matching: leash help profile",
         )
         .to_string(),
-        HelpTopic::LowLevelMount => concat!(
-            "leash _mount\n\n",
-            "USAGE:\n",
-            "  leash _mount --profile <profile> [-v|--verbose] <path>\n\n",
-            "OPTIONS:\n",
-            "  --profile <profile>   Profile path (required)\n",
-            "  -v, --verbose         Print progress logs",
-        )
-        .to_string(),
-        HelpTopic::LowLevelFuse => concat!(
-            "leash _fuse\n\n",
-            "USAGE:\n",
-            "  leash _fuse --profile <profile> --mountpoint <path> \\\n",
-            "       --pid-path <path> [-v|--verbose]\n\n",
-            "OPTIONS:\n",
-            "  --profile <profile>   Profile path (required)\n",
-            "  --mountpoint <path>   Mountpoint inside target mntns (required)\n",
-            "  --pid-path <path>     PID file path (required)\n",
-            "  -v, --verbose         Print progress logs",
-        )
-        .to_string(),
         HelpTopic::LowLevelSuid => concat!(
             "leash _suid\n\n",
             "USAGE:\n",
@@ -176,10 +153,7 @@ fn root_help_text(verbose: bool) -> String {
             "  leash _list\n",
             "  leash _show [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n",
             "  leash _rm [-v|--verbose] <name-or-glob> [<name-or-glob> ...]\n",
-            "  leash _mount --profile <profile> [-v|--verbose] <path>\n",
-            "  leash _suid [-v|--verbose]\n\n",
-            "  leash _fuse --profile <profile> \\\n",
-            "       --mountpoint <path> --pid-path <path> [-v|--verbose]\n",
+            "  leash _suid [-v|--verbose]\n",
         ));
     }
     out.push('\n');
