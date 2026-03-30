@@ -11,12 +11,17 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 #[cfg(not(test))]
 use std::thread;
 
 use crate::cli::LowLevelDaemonCommand;
 use crate::jail;
 use crate::privileges;
+#[cfg(test)]
+use crate::profile::CompiledProfile;
+#[cfg(not(test))]
+use crate::profile::{AccessDecision, CompiledProfile, RequestedAccess};
 use crate::run_env;
 
 #[cfg(not(test))]
@@ -41,10 +46,11 @@ pub(crate) fn daemon_command(cmd: LowLevelDaemonCommand) -> Result<()> {
     let observer = FilesystemObserver::new()?;
     let host_pidns = pid_namespace_key_for_pid(1)?
         .ok_or_else(|| anyhow::anyhow!("failed to resolve host pid namespace for pid 1"))?;
+    let active_profile = Arc::new(RwLock::new(None));
     mark_common_filesystems(&observer)?;
-    observer.spawn_thread(host_pidns)?;
+    observer.spawn_thread(host_pidns, active_profile.clone())?;
     let mut state = DaemonState {
-        active_profile_source: None,
+        active_profile,
         host_pidns,
         _observer: observer,
     };
@@ -137,16 +143,23 @@ struct NamespaceKey {
 }
 
 struct DaemonState {
-    active_profile_source: Option<String>,
+    active_profile: Arc<RwLock<Option<ActiveProfile>>>,
     host_pidns: NamespaceKey,
     _observer: FilesystemObserver,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveProfile {
+    source: String,
+    #[cfg_attr(test, allow(dead_code))]
+    compiled: CompiledProfile,
 }
 
 #[cfg(test)]
 impl Default for DaemonState {
     fn default() -> Self {
         Self {
-            active_profile_source: None,
+            active_profile: Arc::new(RwLock::new(None)),
             host_pidns: NamespaceKey { dev: 1, ino: 1 },
             _observer: FilesystemObserver::new().expect("test observer should initialize"),
         }
@@ -187,7 +200,11 @@ impl FilesystemObserver {
     }
 
     #[cfg(test)]
-    fn spawn_thread(&self, _host_pidns: NamespaceKey) -> Result<()> {
+    fn spawn_thread(
+        &self,
+        _host_pidns: NamespaceKey,
+        _active_profile: Arc<RwLock<Option<ActiveProfile>>>,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -197,14 +214,18 @@ impl FilesystemObserver {
     }
 
     #[cfg(not(test))]
-    fn spawn_thread(&self, host_pidns: NamespaceKey) -> Result<()> {
+    fn spawn_thread(
+        &self,
+        host_pidns: NamespaceKey,
+        active_profile: Arc<RwLock<Option<ActiveProfile>>>,
+    ) -> Result<()> {
         let file = self
             .fd
             .try_clone()
             .context("failed to clone fanotify fd for observer thread")?;
         thread::Builder::new()
             .name("leash-fanotify".to_string())
-            .spawn(move || observe_events(file, host_pidns))
+            .spawn(move || observe_events(file, host_pidns, active_profile))
             .context("failed to spawn fanotify observer thread")?;
         Ok(())
     }
@@ -317,13 +338,31 @@ fn handle_request(state: &mut DaemonState, request: &str, _peer: PeerCredentials
             if profile_source.trim().is_empty() {
                 return "error missing-profile-source\n".to_string();
             }
-            state.active_profile_source = Some(profile_source);
-            "ok profile-updated\n".to_string()
+            match CompiledProfile::compile_normalized_source(&profile_source) {
+                Ok(compiled) => {
+                    let mut guard = state
+                        .active_profile
+                        .write()
+                        .expect("active profile lock poisoned");
+                    *guard = Some(ActiveProfile {
+                        source: profile_source,
+                        compiled,
+                    });
+                    "ok profile-updated\n".to_string()
+                }
+                Err(err) => format!("error invalid-profile:{}\n", err),
+            }
         }
-        "get-profile" => match &state.active_profile_source {
-            Some(profile) => format!("ok\n{profile}\n"),
-            None => "ok\n".to_string(),
-        },
+        "get-profile" => {
+            let guard = state
+                .active_profile
+                .read()
+                .expect("active profile lock poisoned");
+            match &*guard {
+                Some(profile) => format!("ok\n{}\n", profile.source),
+                None => "ok\n".to_string(),
+            }
+        }
         _ => "error unknown-command\n".to_string(),
     }
 }
@@ -381,7 +420,11 @@ fn pid_namespace_path_for_pid(pid: libc::pid_t) -> PathBuf {
 }
 
 #[cfg(not(test))]
-fn observe_events(file: File, host_pidns: NamespaceKey) {
+fn observe_events(
+    file: File,
+    host_pidns: NamespaceKey,
+    active_profile: Arc<RwLock<Option<ActiveProfile>>>,
+) {
     let fd = file.as_raw_fd();
     let mut buffer = [0u8; 8192];
     loop {
@@ -426,14 +469,40 @@ fn observe_events(file: File, host_pidns: NamespaceKey) {
             } else {
                 "<no-fd>".to_string()
             };
+            let actual_path = if meta.fd >= 0 {
+                path_for_event_fd(meta.fd)
+            } else {
+                None
+            };
             match pid_namespace_key_for_pid(meta.pid) {
                 Ok(Some(pidns)) if pidns != host_pidns => {
+                    let exe_path = exe_path_for_pid(meta.pid);
+                    let access = requested_access_from_mask(meta.mask);
+                    let decision = match (actual_path.as_deref(), active_profile.read()) {
+                        (Some(target_path), Ok(guard)) => guard
+                            .as_ref()
+                            .and_then(|profile| {
+                                profile
+                                    .compiled
+                                    .evaluate(target_path, exe_path.as_deref(), access)
+                            })
+                            .map(format_access_decision)
+                            .unwrap_or("no-match"),
+                        (None, _) => "no-path",
+                        (_, Err(_)) => "profile-lock-error",
+                    };
                     crate::vlog!(
-                        "fanotify: controlled pid={} pidns={}:{} mask={} path={}",
+                        "fanotify: controlled pid={} pidns={}:{} mask={} access={} exe={} decision={} path={}",
                         meta.pid,
                         pidns.dev,
                         pidns.ino,
                         describe_mask(meta.mask),
+                        format_requested_access(access),
+                        exe_path
+                            .as_deref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "<unknown>".to_string()),
+                        decision,
                         path
                     );
                 }
@@ -458,11 +527,9 @@ fn observe_events(file: File, host_pidns: NamespaceKey) {
 
 #[cfg(not(test))]
 fn describe_event_fd(fd: libc::c_int) -> String {
-    let link = PathBuf::from(format!("/proc/self/fd/{fd}"));
-    match fs::read_link(&link) {
-        Ok(path) => path.display().to_string(),
-        Err(_) => format!("fd:{fd}"),
-    }
+    path_for_event_fd(fd)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| format!("fd:{fd}"))
 }
 
 #[cfg(not(test))]
@@ -490,6 +557,46 @@ fn describe_mask(mask: u64) -> String {
         return format!("0x{mask:x}");
     }
     parts.join(",")
+}
+
+#[cfg(not(test))]
+fn path_for_event_fd(fd: libc::c_int) -> Option<PathBuf> {
+    let link = PathBuf::from(format!("/proc/self/fd/{fd}"));
+    fs::read_link(&link).ok()
+}
+
+#[cfg(not(test))]
+fn exe_path_for_pid(pid: libc::pid_t) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+#[cfg(not(test))]
+fn requested_access_from_mask(mask: u64) -> RequestedAccess {
+    if mask & libc::FAN_CLOSE_WRITE != 0 {
+        RequestedAccess::Write
+    } else if mask & libc::FAN_OPEN_EXEC != 0 {
+        RequestedAccess::Execute
+    } else {
+        RequestedAccess::Read
+    }
+}
+
+#[cfg(not(test))]
+fn format_requested_access(access: RequestedAccess) -> &'static str {
+    match access {
+        RequestedAccess::Read => "read",
+        RequestedAccess::Write => "write",
+        RequestedAccess::Execute => "execute",
+    }
+}
+
+#[cfg(not(test))]
+fn format_access_decision(decision: AccessDecision) -> &'static str {
+    match decision {
+        AccessDecision::AllowReadOnly => "allow-ro",
+        AccessDecision::AllowReadWrite => "allow-rw",
+        AccessDecision::Deny => "deny",
+    }
 }
 
 #[cfg(test)]

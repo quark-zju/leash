@@ -7,9 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
-#[cfg(test)]
 use globset::GlobBuilder;
-#[cfg(test)]
 use globset::{GlobSet, GlobSetBuilder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +16,39 @@ pub enum RuleAction {
     Passthrough,
     Deny,
     Hide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestedAccess {
+    Read,
+    Write,
+    Execute,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessDecision {
+    AllowReadOnly,
+    AllowReadWrite,
+    Deny,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompiledRule {
+    action: RuleAction,
+    conditions: Vec<CompiledCondition>,
+}
+
+#[derive(Debug, Clone)]
+enum CompiledCondition {
+    Exe(Option<PathBuf>),
+    AncestorHas(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct CompiledProfile {
+    rules: Vec<CompiledRule>,
+    globset: GlobSet,
+    glob_to_rule: Vec<usize>,
 }
 
 #[cfg(test)]
@@ -67,6 +98,85 @@ impl ExeResolver for PathExeResolver {
             }
         }
         None
+    }
+}
+
+impl CompiledProfile {
+    pub fn compile_normalized_source(profile_src: &str) -> Result<Self> {
+        let exe_resolver = PathExeResolver;
+        let parsed = parse_lines(profile_src, Path::new("/"), Path::new("/"), &exe_resolver)?;
+        let mut rules = Vec::new();
+        let mut globset_builder = GlobSetBuilder::new();
+        let mut glob_to_rule = Vec::new();
+
+        for line in &parsed {
+            let rule_idx = rules.len();
+            rules.push(CompiledRule {
+                action: line.action,
+                conditions: compile_runtime_conditions(&line.normalized_conditions)?,
+            });
+
+            for glob_pattern in glob_patterns_for_runtime_rule(&line.pattern) {
+                let glob = GlobBuilder::new(&glob_pattern)
+                    .literal_separator(true)
+                    .build()
+                    .with_context(|| {
+                        format!("line {} has invalid glob: {glob_pattern}", line.line_no)
+                    })?;
+                globset_builder.add(glob);
+                glob_to_rule.push(rule_idx);
+            }
+        }
+
+        Ok(Self {
+            rules,
+            globset: globset_builder
+                .build()
+                .context("failed to build globset for compiled profile")?,
+            glob_to_rule,
+        })
+    }
+
+    pub fn evaluate(
+        &self,
+        abs_path: &Path,
+        exe_path: Option<&Path>,
+        requested_access: RequestedAccess,
+    ) -> Option<AccessDecision> {
+        let normalized = normalize_abs(abs_path).ok()?;
+        let matched = self.globset.matches(&normalized);
+
+        let mut first_rule_idx: Option<usize> = None;
+        for glob_idx in &matched {
+            let rule_idx = self.glob_to_rule[*glob_idx];
+            if !self.rules[rule_idx].conditions_match(&normalized, exe_path) {
+                continue;
+            }
+            if first_rule_idx.is_none_or(|existing| rule_idx < existing) {
+                first_rule_idx = Some(rule_idx);
+            }
+        }
+
+        first_rule_idx
+            .map(|rule_idx| access_decision_for(self.rules[rule_idx].action, requested_access))
+    }
+}
+
+impl CompiledRule {
+    fn conditions_match(&self, path: &Path, exe_path: Option<&Path>) -> bool {
+        self.conditions
+            .iter()
+            .all(|condition| condition.matches(path, exe_path))
+    }
+}
+
+impl CompiledCondition {
+    fn matches(&self, path: &Path, exe_path: Option<&Path>) -> bool {
+        match self {
+            Self::Exe(Some(expected)) => exe_path == Some(expected.as_path()),
+            Self::Exe(None) => false,
+            Self::AncestorHas(name) => runtime_ancestor_has(path, name),
+        }
     }
 }
 
@@ -352,6 +462,86 @@ fn action_to_str(action: RuleAction) -> &'static str {
         RuleAction::Passthrough => "rw",
         RuleAction::Deny => "deny",
         RuleAction::Hide => "hide",
+    }
+}
+
+fn access_decision_for(action: RuleAction, requested_access: RequestedAccess) -> AccessDecision {
+    match action {
+        RuleAction::Passthrough => AccessDecision::AllowReadWrite,
+        RuleAction::ReadOnly => match requested_access {
+            RequestedAccess::Write => AccessDecision::Deny,
+            RequestedAccess::Read | RequestedAccess::Execute => AccessDecision::AllowReadOnly,
+        },
+        RuleAction::Deny | RuleAction::Hide => AccessDecision::Deny,
+    }
+}
+
+fn compile_runtime_conditions(tokens: &[String]) -> Result<Vec<CompiledCondition>> {
+    let mut out = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        if let Some(rest) = token.strip_prefix("exe=") {
+            out.push(CompiledCondition::Exe(parse_runtime_exe_condition(rest)?));
+        } else if let Some(rest) = token.strip_prefix("ancestor-has=") {
+            out.push(CompiledCondition::AncestorHas(rest.to_string()));
+        } else {
+            bail!("unknown condition '{token}'")
+        }
+    }
+    Ok(out)
+}
+
+fn parse_runtime_exe_condition(value: &str) -> Result<Option<PathBuf>> {
+    if value.starts_with('/') {
+        return Ok(Some(PathBuf::from(value)));
+    }
+    if value.contains('/') {
+        bail!("invalid exe= value '{value}': must be a bare name or an absolute path");
+    }
+    Ok(None)
+}
+
+fn glob_patterns_for_runtime_rule(pattern: &str) -> Vec<String> {
+    let base = normalized_base_pattern_runtime(pattern);
+    let mut out = vec![base.to_string()];
+    if let Some(descendant) = descendant_glob_runtime(base)
+        && descendant != base
+    {
+        out.push(descendant);
+    }
+    out
+}
+
+fn normalized_base_pattern_runtime(pattern: &str) -> &str {
+    if pattern == "/" {
+        "/"
+    } else {
+        pattern.trim_end_matches('/')
+    }
+}
+
+fn descendant_glob_runtime(base: &str) -> Option<String> {
+    if base == "/**" || base.ends_with("/**") {
+        return None;
+    }
+    if base == "/" {
+        return Some("/**".to_string());
+    }
+    Some(format!("{base}/**"))
+}
+
+fn runtime_ancestor_has(path: &Path, name: &str) -> bool {
+    let mut dir = match path.parent() {
+        Some(parent) => parent.to_path_buf(),
+        None => return false,
+    };
+    loop {
+        if dir.join(name).exists() {
+            return true;
+        }
+        match dir.parent() {
+            Some(parent) if parent != dir => dir = parent.to_path_buf(),
+            _ => return false,
+        }
     }
 }
 
@@ -1042,5 +1232,56 @@ mod tests {
         assert!(cache.exists(Path::new("/work/repo/.git")));
         assert!(cache.exists(Path::new("/work/repo/.git")));
         assert_eq!(cache.inner.hits.get(), 1);
+    }
+
+    #[test]
+    fn compiled_profile_evaluates_rw_and_ro_rules() {
+        let compiled = CompiledProfile::compile_normalized_source("/work rw\n/etc ro\n")
+            .expect("compile profile");
+
+        assert_eq!(
+            compiled.evaluate(Path::new("/work/file.txt"), None, RequestedAccess::Write),
+            Some(AccessDecision::AllowReadWrite)
+        );
+        assert_eq!(
+            compiled.evaluate(Path::new("/etc/hosts"), None, RequestedAccess::Write),
+            Some(AccessDecision::Deny)
+        );
+        assert_eq!(
+            compiled.evaluate(Path::new("/etc/hosts"), None, RequestedAccess::Read),
+            Some(AccessDecision::AllowReadOnly)
+        );
+        assert_eq!(
+            compiled.evaluate(Path::new("/etc/hosts"), None, RequestedAccess::Execute),
+            Some(AccessDecision::AllowReadOnly)
+        );
+    }
+
+    #[test]
+    fn compiled_profile_honors_exe_and_ancestor_conditions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+        let compiled = CompiledProfile::compile_normalized_source(&format!(
+            "{} rw when exe=/usr/bin/git\n{} rw when ancestor-has=.git\n{} ro\n",
+            repo.display(),
+            repo.display(),
+            temp.path().display()
+        ))
+        .expect("compile profile");
+
+        assert_eq!(
+            compiled.evaluate(
+                &repo.join("tracked.txt"),
+                Some(Path::new("/usr/bin/git")),
+                RequestedAccess::Write,
+            ),
+            Some(AccessDecision::AllowReadWrite)
+        );
+        std::fs::create_dir_all(repo.join("nested")).expect("mkdir nested");
+        assert_eq!(
+            compiled.evaluate(&repo.join("nested/file.txt"), None, RequestedAccess::Write,),
+            Some(AccessDecision::AllowReadWrite)
+        );
     }
 }
