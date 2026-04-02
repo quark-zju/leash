@@ -23,13 +23,15 @@ The intended direction is:
 - stable handle behavior across rename
 - hardlink support
 - `mmap`-relevant file semantics coverage
-- host-visible `flock` forwarding and experimental `fcntl`-to-`flock` translation
+- host-visible `flock` forwarding
+- internal POSIX range-lock table with host `fcntl` projection through a dedicated broker process
 - zero TTL for FUSE entry/attr replies to reduce stale kernel-side metadata caching
 
 ## Current Limitations
 
 - `src/main.rs` is still a stub; there is no real mount CLI yet
-- mounted `fcntl` lock requests are intentionally translated to host `flock`, so byte ranges, ownership, and blocking behavior no longer match true POSIX record locks
+- `F_SETLKW` is intentionally rejected with `EINVAL` to avoid daemon-side blocking and deadlock
+- whole-file lock requests are treated as `flock`-compatible because `fuser` does not currently expose the FUSE lock-kind flag
 - the codebase still has some `unused`/`dead_code` allowances while the binary entrypoint is unfinished
 
 ## Testing
@@ -66,7 +68,7 @@ RUST_LOG=integration=debug,fuser=off cargo test --test integration -- --nocaptur
 RUST_LOG=debug cargo test --test integration -- --nocapture
 ```
 
-These are useful when investigating lock behavior and general FUSE request flow.
+These are useful when investigating broker projection, lock behavior, and general FUSE request flow.
 
 ## Dependencies Used Intentionally
 
@@ -80,4 +82,4 @@ These are useful when investigating lock behavior and general FUSE request flow.
 
 - replace the stub `main` with a real mount CLI
 - connect `profile` to `AccessController`
-- evaluate whether the experimental `fcntl`-to-`flock` translation is sufficient in practice
+- validate the broker-backed range-lock model against a real SQLite workload
