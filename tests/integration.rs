@@ -1,3 +1,4 @@
+#![allow(unused)]
 #[path = "../src/access.rs"]
 mod access;
 #[path = "../src/mirrorfs.rs"]
