@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CString, OsStr};
 use std::fs::Metadata;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -29,16 +30,60 @@ const ROOT_INO: u64 = 1;
 pub struct MirrorFs<P> {
     root: PathBuf,
     policy: P,
+    broker: LockBroker,
     next_ino: u64,
     next_fh: u64,
     ino_to_paths: HashMap<u64, Vec<PathBuf>>,
     path_to_ino: HashMap<PathBuf, u64>,
     handles: HashMap<u64, OpenHandle>,
+    lock_states: HashMap<u64, InodeLockState>,
 }
 
 struct OpenHandle {
     ino: u64,
     file: fs::File,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LockMode {
+    Shared,
+    Exclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnedRange {
+    start: u64,
+    end: u64,
+    mode: LockMode,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct OwnerLockState {
+    ranges: Vec<OwnedRange>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct InodeLockState {
+    owners: BTreeMap<u64, OwnerLockState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectedRange {
+    start: u64,
+    end: u64,
+    mode: LockMode,
+}
+
+#[derive(Debug)]
+struct LockBroker {
+    stream: UnixStream,
+    child_pid: libc::pid_t,
+}
+
+#[derive(Debug)]
+struct BrokerFileState {
+    file: fs::File,
+    projection: Vec<ProjectedRange>,
 }
 
 struct FuseMirrorFs<P> {
@@ -75,11 +120,13 @@ impl<P: AccessController> MirrorFs<P> {
         Self {
             root,
             policy,
+            broker: LockBroker::spawn().expect("failed to spawn lock broker"),
             next_ino: ROOT_INO + 1,
             next_fh: 1,
             ino_to_paths,
             path_to_ino,
             handles: HashMap::new(),
+            lock_states: HashMap::new(),
         }
     }
 
@@ -524,46 +571,119 @@ impl<P: AccessController> MirrorFs<P> {
         getlk(&handle.file, start, end, typ)
     }
 
-    fn setlk_flock_for_fuse(
+    fn setlk_for_fuse(
         &mut self,
         caller: &Caller,
         ino: u64,
         fh: u64,
+        lock_owner: LockOwner,
+        start: u64,
+        end: u64,
         typ: i32,
         sleep: bool,
     ) -> Result<()> {
-        let path = self
-            .path_for_ino(ino)
-            .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?;
-        self.authorize(caller, path, lock_operation(typ))?;
-        let handle = self
-            .handles
-            .get(&fh)
-            .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?;
-        // fuser does not currently expose fuse_lk_in.lk_flags, so with both
-        // FUSE_FLOCK_LOCKS and FUSE_POSIX_LOCKS enabled we cannot distinguish
-        // BSD flock requests from POSIX fcntl lock requests here. We
-        // intentionally translate every incoming lock request onto host flock.
-        // That preserves host-visible exclusion, but it changes semantics:
-        // byte ranges are ignored, ownership becomes open-file-description
-        // based, and blocking requests may deadlock if the waiter depends on
-        // another request the daemon has not yet serviced.
-        apply_flock(&handle.file, typ, sleep)
+        let Some(path) = self.path_for_ino(ino).map(Path::to_path_buf) else {
+            return Err(std::io::Error::from_raw_os_error(ENOENT).into());
+        };
+        self.authorize(caller, &path, lock_operation(typ))?;
+        let end = normalize_lock_end(end)?;
+        if is_whole_file_lock(start, end) {
+            // fuser does not expose fuse_lk_in.lk_flags, so a whole-file lock
+            // request is treated as BSD flock-compatible here.
+            let handle = self
+                .handles
+                .get(&fh)
+                .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?;
+            return apply_flock(&handle.file, typ, sleep);
+        }
+        if sleep {
+            return Err(std::io::Error::from_raw_os_error(EINVAL).into());
+        }
+
+        let owner = lock_owner.0;
+        let mut next_state = self.lock_states.get(&ino).cloned().unwrap_or_default();
+        if typ == libc::F_UNLCK {
+            next_state.unlock_owner_range(owner, start, end);
+        } else {
+            let mode = lock_mode_from_fcntl(typ)?;
+            if let Some(conflict) = next_state.find_conflict(owner, start, end, mode) {
+                debug!(
+                    "mirrorfs posix lock conflict ino={} owner={} range={}..={} conflict={}..={}",
+                    ino, owner, start, end, conflict.start, conflict.end
+                );
+                return Err(std::io::Error::from_raw_os_error(libc::EAGAIN).into());
+            }
+            next_state.apply_owner_lock(owner, start, end, mode);
+        }
+
+        self.apply_inode_lock_state(ino, &path, next_state)
     }
 
-    fn getlk_flock_for_fuse(
+    fn getlk_for_fuse(
         &mut self,
         caller: &Caller,
         ino: u64,
-        _fh: u64,
+        fh: u64,
+        lock_owner: LockOwner,
+        start: u64,
+        end: u64,
         typ: i32,
     ) -> Result<(u64, u64, i32, u32)> {
-        let path = self
-            .path_for_ino(ino)
-            .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?
-            .to_path_buf();
+        let Some(path) = self.path_for_ino(ino).map(Path::to_path_buf) else {
+            return Err(std::io::Error::from_raw_os_error(ENOENT).into());
+        };
         self.authorize(caller, &path, Operation::GetLock)?;
-        getlk_via_flock_probe(&path, typ)
+        let end = normalize_lock_end(end)?;
+        if is_whole_file_lock(start, end) {
+            // Match the whole-file flock-compatible path used by setlk().
+            let _handle = self
+                .handles
+                .get(&fh)
+                .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?;
+            return getlk_via_flock_probe(&path, typ);
+        }
+
+        let mode = lock_mode_from_fcntl(typ)?;
+        let owner = lock_owner.0;
+        Ok(self
+            .lock_states
+            .get(&ino)
+            .and_then(|state| state.find_conflict(owner, start, end, mode))
+            .map(|conflict| conflict.as_reply())
+            .unwrap_or((start, end, libc::F_UNLCK, 0)))
+    }
+
+    fn release_lock_owner_for_fuse(
+        &mut self,
+        ino: u64,
+        lock_owner: LockOwner,
+    ) -> Result<()> {
+        let Some(path) = self.path_for_ino(ino).map(Path::to_path_buf) else {
+            return Ok(());
+        };
+        let Some(mut next_state) = self.lock_states.get(&ino).cloned() else {
+            return Ok(());
+        };
+        next_state.remove_owner(lock_owner.0);
+        self.apply_inode_lock_state(ino, &path, next_state)
+    }
+
+    fn apply_inode_lock_state(
+        &mut self,
+        ino: u64,
+        path: &Path,
+        next_state: InodeLockState,
+    ) -> Result<()> {
+        if next_state.is_empty() {
+            self.broker.drop_inode(ino)?;
+            self.lock_states.remove(&ino);
+            return Ok(());
+        }
+
+        let projection = next_state.to_projection();
+        self.broker.apply_projection(ino, path, &projection)?;
+        self.lock_states.insert(ino, next_state);
+        Ok(())
     }
 
     pub(crate) fn setattr_for_test(
@@ -659,6 +779,183 @@ impl<P: AccessController> MirrorFs<P> {
         fs::rename(from, to)?;
         self.remap_paths_after_rename(from, to);
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LockConflict {
+    start: u64,
+    end: u64,
+    mode: LockMode,
+}
+
+impl LockConflict {
+    fn as_reply(self) -> (u64, u64, i32, u32) {
+        (self.start, self.end, self.mode.to_fcntl(), 0)
+    }
+}
+
+impl InodeLockState {
+    fn is_empty(&self) -> bool {
+        self.owners.is_empty()
+    }
+
+    fn remove_owner(&mut self, owner: u64) {
+        self.owners.remove(&owner);
+    }
+
+    fn apply_owner_lock(&mut self, owner: u64, start: u64, end: u64, mode: LockMode) {
+        let state = self.owners.entry(owner).or_default();
+        state.unlock_range(start, end);
+        state.ranges.push(OwnedRange { start, end, mode });
+        state.normalize();
+    }
+
+    fn unlock_owner_range(&mut self, owner: u64, start: u64, end: u64) {
+        let should_remove = match self.owners.get_mut(&owner) {
+            Some(state) => {
+                state.unlock_range(start, end);
+                state.ranges.is_empty()
+            }
+            None => false,
+        };
+        if should_remove {
+            self.owners.remove(&owner);
+        }
+    }
+
+    fn find_conflict(
+        &self,
+        owner: u64,
+        start: u64,
+        end: u64,
+        requested: LockMode,
+    ) -> Option<LockConflict> {
+        let mut best = None;
+        for (&other_owner, state) in &self.owners {
+            if other_owner == owner {
+                continue;
+            }
+            for range in &state.ranges {
+                if !requested.conflicts_with(range.mode) {
+                    continue;
+                }
+                let Some((start, end)) = overlap(start, end, range.start, range.end) else {
+                    continue;
+                };
+                let candidate = LockConflict {
+                    start,
+                    end,
+                    mode: range.mode,
+                };
+                if best
+                    .map(|current: LockConflict| candidate.start < current.start)
+                    .unwrap_or(true)
+                {
+                    best = Some(candidate);
+                }
+            }
+        }
+        best
+    }
+
+    fn to_projection(&self) -> Vec<ProjectedRange> {
+        let mut boundaries = Vec::new();
+        for state in self.owners.values() {
+            for range in &state.ranges {
+                boundaries.push(range.start);
+                boundaries.push(range.end.saturating_add(1));
+            }
+        }
+        boundaries.sort_unstable();
+        boundaries.dedup();
+
+        let mut projection: Vec<ProjectedRange> = Vec::new();
+        for window in boundaries.windows(2) {
+            let start = window[0];
+            let next = window[1];
+            if next == 0 || next <= start {
+                continue;
+            }
+            let end = next - 1;
+            let mut mode = None;
+            for state in self.owners.values() {
+                for range in &state.ranges {
+                    if range.start <= start && range.end >= end {
+                        mode = Some(match (mode, range.mode) {
+                            (Some(LockMode::Exclusive), _) => LockMode::Exclusive,
+                            (_, LockMode::Exclusive) => LockMode::Exclusive,
+                            _ => LockMode::Shared,
+                        });
+                    }
+                }
+            }
+            let Some(mode) = mode else { continue };
+            if let Some(last) = projection.last_mut() {
+                if last.mode == mode && last.end.saturating_add(1) == start {
+                    last.end = end;
+                    continue;
+                }
+            }
+            projection.push(ProjectedRange { start, end, mode });
+        }
+        projection
+    }
+}
+
+impl OwnerLockState {
+    fn unlock_range(&mut self, start: u64, end: u64) {
+        let mut next = Vec::new();
+        for range in self.ranges.drain(..) {
+            let Some((overlap_start, overlap_end)) = overlap(range.start, range.end, start, end) else {
+                next.push(range);
+                continue;
+            };
+            if range.start < overlap_start {
+                next.push(OwnedRange {
+                    start: range.start,
+                    end: overlap_start - 1,
+                    mode: range.mode,
+                });
+            }
+            if overlap_end < range.end {
+                next.push(OwnedRange {
+                    start: overlap_end + 1,
+                    end: range.end,
+                    mode: range.mode,
+                });
+            }
+        }
+        self.ranges = next;
+        self.normalize();
+    }
+
+    fn normalize(&mut self) {
+        self.ranges.sort_by_key(|range| range.start);
+        let mut normalized: Vec<OwnedRange> = Vec::new();
+        for range in self.ranges.drain(..) {
+            if let Some(last) = normalized.last_mut() {
+                if last.mode == range.mode && last.end.saturating_add(1) >= range.start {
+                    last.end = last.end.max(range.end);
+                    continue;
+                }
+            }
+            normalized.push(range);
+        }
+        self.ranges = normalized;
+    }
+}
+
+impl LockMode {
+    fn to_fcntl(self) -> i32 {
+        match self {
+            Self::Shared => libc::F_RDLCK,
+            Self::Exclusive => libc::F_WRLCK,
+        }
+    }
+
+    fn conflicts_with(self, other: Self) -> bool {
+        matches!((self, other), (Self::Exclusive, _) | (_, Self::Exclusive))
     }
 }
 
@@ -881,15 +1178,18 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
     fn flush(
         &self,
         req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
-        _lock_owner: LockOwner,
+        lock_owner: LockOwner,
         reply: ReplyEmpty,
     ) {
         let caller = caller_from_request(req);
         let mut fs = self.inner.lock().unwrap();
         match fs.flush_for_test(&caller, fh.0) {
-            Ok(()) => reply.ok(),
+            Ok(()) => match fs.release_lock_owner_for_fuse(ino.0, lock_owner) {
+                Ok(()) => reply.ok(),
+                Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
+            },
             Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
         }
     }
@@ -897,16 +1197,22 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
     fn release(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
         _flags: OpenFlags,
-        _lock_owner: Option<LockOwner>,
+        lock_owner: Option<LockOwner>,
         _flush: bool,
         reply: ReplyEmpty,
     ) {
         let mut fs = self.inner.lock().unwrap();
         fs.release_for_test(fh.0);
-        reply.ok();
+        match lock_owner {
+            Some(lock_owner) => match fs.release_lock_owner_for_fuse(ino.0, lock_owner) {
+                Ok(()) => reply.ok(),
+                Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
+            },
+            None => reply.ok(),
+        }
     }
 
     fn fsync(
@@ -1191,16 +1497,16 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
         req: &Request,
         ino: INodeNo,
         fh: FileHandle,
-        _lock_owner: LockOwner,
-        _start: u64,
-        _end: u64,
+        lock_owner: LockOwner,
+        start: u64,
+        end: u64,
         typ: i32,
         _pid: u32,
         reply: ReplyLock,
     ) {
         let caller = caller_from_request(req);
         let mut fs = self.inner.lock().unwrap();
-        match fs.getlk_flock_for_fuse(&caller, ino.0, fh.0, typ) {
+        match fs.getlk_for_fuse(&caller, ino.0, fh.0, lock_owner, start, end, typ) {
             Ok((start, end, typ, pid)) => reply.locked(start, end, typ, pid),
             Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
         }
@@ -1211,9 +1517,9 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
         req: &Request,
         ino: INodeNo,
         fh: FileHandle,
-        _lock_owner: LockOwner,
-        _start: u64,
-        _end: u64,
+        lock_owner: LockOwner,
+        start: u64,
+        end: u64,
         typ: i32,
         _pid: u32,
         sleep: bool,
@@ -1221,7 +1527,7 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
     ) {
         let caller = caller_from_request(req);
         let mut fs = self.inner.lock().unwrap();
-        match fs.setlk_flock_for_fuse(&caller, ino.0, fh.0, typ, sleep) {
+        match fs.setlk_for_fuse(&caller, ino.0, fh.0, lock_owner, start, end, typ, sleep) {
             Ok(()) => reply.ok(),
             Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
         }
@@ -1444,6 +1750,353 @@ fn getlk_via_flock_probe(path: &Path, typ: i32) -> Result<(u64, u64, i32, u32)> 
                 Err(err)
             }
         }
+    }
+}
+
+fn normalize_lock_end(end: u64) -> Result<u64> {
+    if end == u64::MAX || end > lock_range_end_to_eof() {
+        Ok(lock_range_end_to_eof())
+    } else {
+        Ok(end)
+    }
+}
+
+fn is_whole_file_lock(start: u64, end: u64) -> bool {
+    start == 0 && end == lock_range_end_to_eof()
+}
+
+fn lock_mode_from_fcntl(typ: i32) -> Result<LockMode> {
+    match typ {
+        libc::F_RDLCK => Ok(LockMode::Shared),
+        libc::F_WRLCK => Ok(LockMode::Exclusive),
+        _ => Err(std::io::Error::from_raw_os_error(EINVAL).into()),
+    }
+}
+
+fn overlap(
+    left_start: u64,
+    left_end: u64,
+    right_start: u64,
+    right_end: u64,
+) -> Option<(u64, u64)> {
+    let start = left_start.max(right_start);
+    let end = left_end.min(right_end);
+    (start <= end).then_some((start, end))
+}
+
+fn apply_host_range_lock(
+    file: &fs::File,
+    start: u64,
+    end: u64,
+    mode: LockMode,
+    wait: bool,
+) -> Result<()> {
+    apply_setlk(file, start, end, mode.to_fcntl(), wait)
+}
+
+fn apply_host_range_unlock(file: &fs::File, start: u64, end: u64) -> Result<()> {
+    apply_setlk(file, start, end, libc::F_UNLCK, false)
+}
+
+fn ranges_not_covered(current: &[ProjectedRange], target: &[ProjectedRange]) -> Vec<(u64, u64)> {
+    let mut gaps = Vec::new();
+    for current_range in current {
+        let mut cursor = current_range.start;
+        for target_range in target {
+            let Some((overlap_start, overlap_end)) = overlap(
+                cursor,
+                current_range.end,
+                target_range.start,
+                target_range.end,
+            ) else {
+                continue;
+            };
+            if cursor < overlap_start {
+                gaps.push((cursor, overlap_start - 1));
+            }
+            cursor = overlap_end.saturating_add(1);
+            if cursor == 0 || cursor > current_range.end {
+                break;
+            }
+        }
+        if cursor <= current_range.end {
+            gaps.push((cursor, current_range.end));
+        }
+    }
+    gaps
+}
+
+fn write_u8(stream: &mut UnixStream, value: u8) -> Result<()> {
+    stream.write_all(&[value])?;
+    Ok(())
+}
+
+fn read_u8(stream: &mut UnixStream) -> Result<u8> {
+    let mut buf = [0u8; 1];
+    stream.read_exact(&mut buf)?;
+    Ok(buf[0])
+}
+
+fn write_u32(stream: &mut UnixStream, value: u32) -> Result<()> {
+    stream.write_all(&value.to_le_bytes())?;
+    Ok(())
+}
+
+fn read_u32(stream: &mut UnixStream) -> Result<u32> {
+    let mut buf = [0u8; 4];
+    stream.read_exact(&mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+fn write_i32(stream: &mut UnixStream, value: i32) -> Result<()> {
+    stream.write_all(&value.to_le_bytes())?;
+    Ok(())
+}
+
+fn read_i32(stream: &mut UnixStream) -> Result<i32> {
+    let mut buf = [0u8; 4];
+    stream.read_exact(&mut buf)?;
+    Ok(i32::from_le_bytes(buf))
+}
+
+fn write_u64(stream: &mut UnixStream, value: u64) -> Result<()> {
+    stream.write_all(&value.to_le_bytes())?;
+    Ok(())
+}
+
+fn read_u64(stream: &mut UnixStream) -> Result<u64> {
+    let mut buf = [0u8; 8];
+    stream.read_exact(&mut buf)?;
+    Ok(u64::from_le_bytes(buf))
+}
+
+fn write_bytes(stream: &mut UnixStream, value: &[u8]) -> Result<()> {
+    write_u32(stream, value.len() as u32)?;
+    stream.write_all(value)?;
+    Ok(())
+}
+
+fn read_bytes(stream: &mut UnixStream) -> Result<Vec<u8>> {
+    let len = read_u32(stream)? as usize;
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf)?;
+    Ok(buf)
+}
+
+impl LockBroker {
+    fn spawn() -> std::io::Result<Self> {
+        let (parent, child) = UnixStream::pair()?;
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if pid == 0 {
+            drop(parent);
+            let code = match broker_main_loop(child) {
+                Ok(()) => 0,
+                Err(err) => {
+                    eprintln!("lock broker failed: {err}");
+                    1
+                }
+            };
+            unsafe { libc::_exit(code) }
+        }
+        drop(child);
+        Ok(Self {
+            stream: parent,
+            child_pid: pid,
+        })
+    }
+
+    fn apply_projection(
+        &mut self,
+        ino: u64,
+        path: &Path,
+        projection: &[ProjectedRange],
+    ) -> Result<()> {
+        write_broker_request(
+            &mut self.stream,
+            &BrokerRequest::ApplyProjection {
+                ino,
+                path: path.to_path_buf(),
+                projection: projection.to_vec(),
+            },
+        )?;
+        read_broker_response(&mut self.stream)?;
+        Ok(())
+    }
+
+    fn drop_inode(&mut self, ino: u64) -> Result<()> {
+        write_broker_request(&mut self.stream, &BrokerRequest::DropInode { ino })?;
+        read_broker_response(&mut self.stream)?;
+        Ok(())
+    }
+}
+
+impl Drop for LockBroker {
+    fn drop(&mut self) {
+        let _ = write_broker_request(&mut self.stream, &BrokerRequest::Shutdown);
+        let _ = read_broker_response(&mut self.stream);
+        let _ = unsafe { libc::waitpid(self.child_pid, std::ptr::null_mut(), 0) };
+    }
+}
+
+enum BrokerRequest {
+    ApplyProjection {
+        ino: u64,
+        path: PathBuf,
+        projection: Vec<ProjectedRange>,
+    },
+    DropInode {
+        ino: u64,
+    },
+    Shutdown,
+}
+
+fn broker_main_loop(mut stream: UnixStream) -> Result<()> {
+    let mut files: HashMap<u64, BrokerFileState> = HashMap::new();
+    loop {
+        match read_broker_request(&mut stream)? {
+            BrokerRequest::ApplyProjection {
+                ino,
+                path,
+                projection,
+            } => {
+                if !files.contains_key(&ino) {
+                    let file = match fs::OpenOptions::new().read(true).write(true).open(&path) {
+                        Ok(file) => file,
+                        Err(err) => {
+                            write_broker_response(
+                                &mut stream,
+                                err.raw_os_error().unwrap_or(EIO),
+                            )?;
+                            continue;
+                        }
+                    };
+                    files.insert(
+                        ino,
+                        BrokerFileState {
+                            file,
+                            projection: Vec::new(),
+                        },
+                    );
+                }
+                let state = files.get_mut(&ino).expect("broker state inserted");
+                match broker_apply_projection(&state.file, &state.projection, &projection) {
+                    Ok(()) => {
+                        state.projection = projection;
+                        write_broker_response(&mut stream, 0)?;
+                    }
+                    Err(err) => {
+                        write_broker_response(&mut stream, io_errno(&err))?;
+                    }
+                }
+            }
+            BrokerRequest::DropInode { ino } => {
+                if let Some(state) = files.remove(&ino) {
+                    let _ = broker_apply_projection(&state.file, &state.projection, &[]);
+                }
+                write_broker_response(&mut stream, 0)?;
+            }
+            BrokerRequest::Shutdown => {
+                for (_, state) in files.drain() {
+                    let _ = broker_apply_projection(&state.file, &state.projection, &[]);
+                }
+                write_broker_response(&mut stream, 0)?;
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn broker_apply_projection(
+    file: &fs::File,
+    current: &[ProjectedRange],
+    target: &[ProjectedRange],
+) -> Result<()> {
+    for segment in target {
+        apply_host_range_lock(file, segment.start, segment.end, segment.mode, false)?;
+    }
+    for stale in ranges_not_covered(current, target) {
+        apply_host_range_unlock(file, stale.0, stale.1)?;
+    }
+    Ok(())
+}
+
+fn write_broker_request(stream: &mut UnixStream, request: &BrokerRequest) -> Result<()> {
+    match request {
+        BrokerRequest::ApplyProjection {
+            ino,
+            path,
+            projection,
+        } => {
+            write_u8(stream, 1)?;
+            write_u64(stream, *ino)?;
+            write_bytes(stream, path.as_os_str().as_bytes())?;
+            write_u32(stream, projection.len() as u32)?;
+            for segment in projection {
+                write_u64(stream, segment.start)?;
+                write_u64(stream, segment.end)?;
+                write_u8(stream, match segment.mode {
+                    LockMode::Shared => 1,
+                    LockMode::Exclusive => 2,
+                })?;
+            }
+        }
+        BrokerRequest::DropInode { ino } => {
+            write_u8(stream, 2)?;
+            write_u64(stream, *ino)?;
+        }
+        BrokerRequest::Shutdown => {
+            write_u8(stream, 3)?;
+        }
+    }
+    stream.flush()?;
+    Ok(())
+}
+
+fn read_broker_request(stream: &mut UnixStream) -> Result<BrokerRequest> {
+    let kind = read_u8(stream)?;
+    Ok(match kind {
+        1 => {
+            let ino = read_u64(stream)?;
+            let path = PathBuf::from(std::ffi::OsString::from_vec(read_bytes(stream)?));
+            let len = read_u32(stream)? as usize;
+            let mut projection = Vec::with_capacity(len);
+            for _ in 0..len {
+                let start = read_u64(stream)?;
+                let end = read_u64(stream)?;
+                let mode = match read_u8(stream)? {
+                    1 => LockMode::Shared,
+                    2 => LockMode::Exclusive,
+                    _ => return Err(std::io::Error::from_raw_os_error(EIO).into()),
+                };
+                projection.push(ProjectedRange { start, end, mode });
+            }
+            BrokerRequest::ApplyProjection {
+                ino,
+                path,
+                projection,
+            }
+        }
+        2 => BrokerRequest::DropInode {
+            ino: read_u64(stream)?,
+        },
+        3 => BrokerRequest::Shutdown,
+        _ => return Err(std::io::Error::from_raw_os_error(EIO).into()),
+    })
+}
+
+fn write_broker_response(stream: &mut UnixStream, errno: i32) -> Result<()> {
+    write_i32(stream, errno)?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn read_broker_response(stream: &mut UnixStream) -> Result<()> {
+    match read_i32(stream)? {
+        0 => Ok(()),
+        errno => Err(std::io::Error::from_raw_os_error(errno).into()),
     }
 }
 

@@ -177,7 +177,10 @@ fn test_cases() -> Vec<TestCase> {
         test_case!(hardlink_shares_inode_and_content),
         test_case!(hardlink_alias_survives_original_unlink),
         test_case!(lock_round_trip_succeeds),
-        test_case!(posix_lock_reopen_after_rename_conflicts_under_flock_translation),
+        test_case!(posix_lock_reopen_after_rename_is_same_process_noop),
+        test_case!(posix_partial_unlock_updates_backing_range_conflicts),
+        test_case!(posix_range_lock_conflicts_with_backing_path_open),
+        test_case!(blocking_posix_lock_requests_are_rejected),
         test_case!(flock_dup_is_noop_but_reopen_after_rename_conflicts),
         test_case!(flock_on_mirror_handle_conflicts_with_backing_path_open),
         test_case!(read_lock_and_getlk_are_not_treated_as_writes),
@@ -431,9 +434,7 @@ fn lock_round_trip_succeeds(ctx: &TestContext) -> Result<()> {
     Ok(())
 }
 
-fn posix_lock_reopen_after_rename_conflicts_under_flock_translation(
-    ctx: &TestContext,
-) -> Result<()> {
+fn posix_lock_reopen_after_rename_is_same_process_noop(ctx: &TestContext) -> Result<()> {
     let from = ctx.fuse_path.join("locked.db");
     let to = ctx.fuse_path.join("renamed.db");
     fs::write(&from, b"123456")?;
@@ -443,12 +444,82 @@ fn posix_lock_reopen_after_rename_conflicts_under_flock_translation(
     fs::rename(&from, &to)?;
 
     let reopened = fs::OpenOptions::new().read(true).write(true).open(&to)?;
-    let err = setlk(&reopened, 0, 3, libc::F_WRLCK, false).unwrap_err();
-    assert!(
-        matches!(err.raw_os_error(), Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN)
-    );
+    setlk(&reopened, 0, 3, libc::F_WRLCK, false)?;
 
     setlk(&file, 0, 3, libc::F_UNLCK, false)?;
+    Ok(())
+}
+
+fn posix_partial_unlock_updates_backing_range_conflicts(ctx: &TestContext) -> Result<()> {
+    let fuse_path = ctx.fuse_path.join("locked.db");
+    let backing_path = ctx.backing_path.join("locked.db");
+    fs::write(&fuse_path, b"123456")?;
+
+    let mirror_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&fuse_path)?;
+    let backing_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&backing_path)?;
+
+    setlk(&mirror_file, 10, 20, libc::F_WRLCK, false)?;
+
+    let err = setlk(&backing_file, 15, 18, libc::F_WRLCK, false).unwrap_err();
+    assert!(matches!(
+        err.raw_os_error(),
+        Some(code) if code == libc::EACCES || code == libc::EAGAIN
+    ));
+
+    setlk(&mirror_file, 15, 20, libc::F_UNLCK, false)?;
+    setlk(&backing_file, 15, 18, libc::F_WRLCK, false)?;
+    setlk(&backing_file, 15, 18, libc::F_UNLCK, false)?;
+
+    let err = setlk(&backing_file, 10, 14, libc::F_WRLCK, false).unwrap_err();
+    assert!(matches!(
+        err.raw_os_error(),
+        Some(code) if code == libc::EACCES || code == libc::EAGAIN
+    ));
+
+    setlk(&mirror_file, 10, 14, libc::F_UNLCK, false)?;
+    Ok(())
+}
+
+fn posix_range_lock_conflicts_with_backing_path_open(ctx: &TestContext) -> Result<()> {
+    let fuse_path = ctx.fuse_path.join("locked.db");
+    let backing_path = ctx.backing_path.join("locked.db");
+    fs::write(&fuse_path, b"123456")?;
+
+    let mirror_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&fuse_path)?;
+    let backing_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&backing_path)?;
+
+    setlk(&mirror_file, 0x40000001, 0x40000001, libc::F_WRLCK, false)?;
+    let err = setlk(&backing_file, 0x40000001, 0x40000001, libc::F_WRLCK, false).unwrap_err();
+    assert!(matches!(
+        err.raw_os_error(),
+        Some(code) if code == libc::EACCES || code == libc::EAGAIN
+    ));
+
+    setlk(&mirror_file, 0x40000001, 0x40000001, libc::F_UNLCK, false)?;
+    setlk(&backing_file, 0x40000001, 0x40000001, libc::F_WRLCK, false)?;
+    setlk(&backing_file, 0x40000001, 0x40000001, libc::F_UNLCK, false)?;
+    Ok(())
+}
+
+fn blocking_posix_lock_requests_are_rejected(ctx: &TestContext) -> Result<()> {
+    let path = ctx.fuse_path.join("locked.db");
+    fs::write(&path, b"123456")?;
+
+    let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
+    let err = setlk(&file, 0, 3, libc::F_WRLCK, true).unwrap_err();
+    assert_eq!(err.raw_os_error(), Some(libc::EINVAL));
     Ok(())
 }
 
