@@ -3,6 +3,10 @@ name = "leash"
 version = "0.1.0"
 edition = "2024"
 
+[[test]]
+name = "integration"
+harness = false
+
 [dependencies]
 anyhow = "1"
 thiserror = "2"

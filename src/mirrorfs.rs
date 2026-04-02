@@ -620,7 +620,7 @@ impl<P: AccessController> Filesystem for MirrorFs<P> {
             .add_capabilities(consts::FUSE_PASSTHROUGH)
             .map_err(|_| libc::EOPNOTSUPP)?;
         config
-            .set_max_stack_depth(1)
+            .set_max_stack_depth(2)
             .map_err(|_| libc::EOPNOTSUPP)?;
         Ok(())
     }
@@ -702,7 +702,7 @@ impl<P: AccessController> Filesystem for MirrorFs<P> {
 
     fn open(&mut self, req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
         let caller = caller_from_request(req);
-        let result = (|| -> Result<u64> {
+        let result = (|| -> Result<(u64, bool)> {
             let path = self
                 .path_for_ino(ino)
                 .map(Path::to_path_buf)
@@ -715,12 +715,23 @@ impl<P: AccessController> Filesystem for MirrorFs<P> {
             self.authorize(&caller, &path, operation)?;
             ensure_openable_node(&path)?;
             let file = open_passthrough_file(&path, flags, false)?;
-            let backing_id = reply.open_backing(&file)?;
-            let fh = self.allocate_handle(ino, file, Some(backing_id));
-            Ok(fh)
+            let backing_id = match reply.open_backing(&file) {
+                Ok(backing_id) => Some(backing_id),
+                Err(err) => {
+                    debug!(
+                        "passthrough open unavailable for {}: {}",
+                        path.display(),
+                        err
+                    );
+                    None
+                }
+            };
+            let passthrough = backing_id.is_some();
+            let fh = self.allocate_handle(ino, file, backing_id);
+            Ok((fh, passthrough))
         })();
         match result {
-            Ok(fh) => {
+            Ok((fh, true)) => {
                 let backing_id = self
                     .handles
                     .get(&fh)
@@ -728,6 +739,7 @@ impl<P: AccessController> Filesystem for MirrorFs<P> {
                     .expect("passthrough open stores backing id");
                 reply.opened_passthrough(fh, 0, backing_id)
             }
+            Ok((fh, false)) => reply.opened(fh, 0),
             Err(err) => reply.error(io_errno(&err)),
         }
     }
