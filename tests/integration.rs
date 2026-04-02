@@ -177,7 +177,7 @@ fn test_cases() -> Vec<TestCase> {
         test_case!(hardlink_shares_inode_and_content),
         test_case!(hardlink_alias_survives_original_unlink),
         test_case!(lock_round_trip_succeeds),
-        test_case!(posix_lock_reopen_after_rename_is_same_process_noop),
+        test_case!(posix_lock_reopen_after_rename_conflicts_under_flock_translation),
         test_case!(flock_dup_is_noop_but_reopen_after_rename_conflicts),
         test_case!(flock_on_mirror_handle_conflicts_with_backing_path_open),
         test_case!(read_lock_and_getlk_are_not_treated_as_writes),
@@ -431,7 +431,9 @@ fn lock_round_trip_succeeds(ctx: &TestContext) -> Result<()> {
     Ok(())
 }
 
-fn posix_lock_reopen_after_rename_is_same_process_noop(ctx: &TestContext) -> Result<()> {
+fn posix_lock_reopen_after_rename_conflicts_under_flock_translation(
+    ctx: &TestContext,
+) -> Result<()> {
     let from = ctx.fuse_path.join("locked.db");
     let to = ctx.fuse_path.join("renamed.db");
     fs::write(&from, b"123456")?;
@@ -441,7 +443,10 @@ fn posix_lock_reopen_after_rename_is_same_process_noop(ctx: &TestContext) -> Res
     fs::rename(&from, &to)?;
 
     let reopened = fs::OpenOptions::new().read(true).write(true).open(&to)?;
-    setlk(&reopened, 0, 3, libc::F_WRLCK, false)?;
+    let err = setlk(&reopened, 0, 3, libc::F_WRLCK, false).unwrap_err();
+    assert!(
+        matches!(err.raw_os_error(), Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN)
+    );
 
     setlk(&file, 0, 3, libc::F_UNLCK, false)?;
     Ok(())
@@ -508,16 +513,8 @@ fn read_lock_and_getlk_are_not_treated_as_writes(ctx: &TestContext) -> Result<()
     setlk(&file, 0, 3, libc::F_RDLCK, false)?;
     let _ = getlk(&file, 0, u64::MAX, libc::F_RDLCK)?;
 
-    match setlk(&file, 0, 3, libc::F_WRLCK, false) {
-        Err(err) => assert_eq!(err.raw_os_error(), Some(libc::EACCES)),
-        Ok(()) => {
-            setlk(&file, 0, 3, libc::F_UNLCK, false)?;
-            eprintln!(
-                "skipping write-lock policy assertion because mounted fcntl locks are handled locally"
-            );
-            return Ok(());
-        }
-    }
+    let err = setlk(&file, 0, 3, libc::F_WRLCK, false).unwrap_err();
+    assert_eq!(err.raw_os_error(), Some(libc::EACCES));
 
     setlk(&file, 0, 3, libc::F_UNLCK, false)?;
     Ok(())

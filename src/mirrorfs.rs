@@ -540,6 +540,14 @@ impl<P: AccessController> MirrorFs<P> {
             .handles
             .get(&fh)
             .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?;
+        // fuser does not currently expose fuse_lk_in.lk_flags, so with both
+        // FUSE_FLOCK_LOCKS and FUSE_POSIX_LOCKS enabled we cannot distinguish
+        // BSD flock requests from POSIX fcntl lock requests here. We
+        // intentionally translate every incoming lock request onto host flock.
+        // That preserves host-visible exclusion, but it changes semantics:
+        // byte ranges are ignored, ownership becomes open-file-description
+        // based, and blocking requests may deadlock if the waiter depends on
+        // another request the daemon has not yet serviced.
         apply_flock(&handle.file, typ, sleep)
     }
 
@@ -661,7 +669,7 @@ fn fuse_mount_options() -> Vec<MountOption> {
 impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
         config
-            .add_capabilities(InitFlags::FUSE_FLOCK_LOCKS)
+            .add_capabilities(InitFlags::FUSE_FLOCK_LOCKS | InitFlags::FUSE_POSIX_LOCKS)
             .map_err(|unsupported| {
                 std::io::Error::other(format!("unsupported init flags: {unsupported:?}"))
             })?;
@@ -1374,11 +1382,15 @@ fn lock_operation(typ: i32) -> Operation {
 }
 
 fn lock_len(start: u64, end: u64) -> libc::off_t {
-    if end == u64::MAX {
+    if end == lock_range_end_to_eof() {
         0
     } else {
         end.saturating_sub(start).saturating_add(1) as libc::off_t
     }
+}
+
+fn lock_range_end_to_eof() -> u64 {
+    i64::MAX as u64
 }
 
 fn make_flock(start: u64, end: u64, typ: i32) -> libc::flock {
@@ -1419,12 +1431,15 @@ fn getlk_via_flock_probe(path: &Path, typ: i32) -> Result<(u64, u64, i32, u32)> 
     match apply_flock(&probe, typ, false) {
         Ok(()) => {
             apply_flock(&probe, libc::F_UNLCK, false)?;
-            Ok((0, u64::MAX, libc::F_UNLCK, 0))
+            Ok((0, lock_range_end_to_eof(), libc::F_UNLCK, 0))
         }
         Err(err) => {
             let errno = io_errno(&err);
             if errno == libc::EWOULDBLOCK || errno == libc::EAGAIN {
-                Ok((0, u64::MAX, typ, 0))
+                // flock cannot report an owning pid or byte range. Return a
+                // whole-file conflict of the requested type as an
+                // approximation for F_GETLK.
+                Ok((0, lock_range_end_to_eof(), typ, 0))
             } else {
                 Err(err)
             }

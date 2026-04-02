@@ -23,13 +23,13 @@ The intended direction is:
 - stable handle behavior across rename
 - hardlink support
 - `mmap`-relevant file semantics coverage
-- POSIX byte-range locks (`fcntl`) and `flock` test coverage
+- host-visible `flock` forwarding and experimental `fcntl`-to-`flock` translation
 - zero TTL for FUSE entry/attr replies to reduce stale kernel-side metadata caching
 
 ## Current Limitations
 
 - `src/main.rs` is still a stub; there is no real mount CLI yet
-- some lock behavior is still partly kernel-local when mounted, so a few integration checks intentionally downgrade to skip-style passes with an explanation
+- mounted `fcntl` lock requests are intentionally translated to host `flock`, so byte ranges, ownership, and blocking behavior no longer match true POSIX record locks
 - the codebase still has some `unused`/`dead_code` allowances while the binary entrypoint is unfinished
 
 ## Testing
@@ -80,4 +80,4 @@ These are useful when investigating lock behavior and general FUSE request flow.
 
 - replace the stub `main` with a real mount CLI
 - connect `profile` to `AccessController`
-- investigate targeted approaches for lock semantics that currently depend on kernel-local behavior
+- evaluate whether the experimental `fcntl`-to-`flock` translation is sufficient in practice
