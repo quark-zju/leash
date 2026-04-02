@@ -716,7 +716,10 @@ impl<P: AccessController> Filesystem for MirrorFs<P> {
             ensure_openable_node(&path)?;
             let file = open_passthrough_file(&path, flags, false)?;
             let backing_id = match reply.open_backing(&file) {
-                Ok(backing_id) => Some(backing_id),
+                Ok(backing_id) => {
+                    debug!("passthrough open active for {}", path.display());
+                    Some(backing_id)
+                }
                 Err(err) => {
                     debug!(
                         "passthrough open unavailable for {}: {}",

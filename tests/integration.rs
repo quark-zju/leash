@@ -14,6 +14,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use env_logger::Env;
 use fs_err as fs;
 use memmap2::{Mmap, MmapMut};
 use tempfile::TempDir;
@@ -121,6 +122,7 @@ struct TestContext {
 }
 
 fn main() -> ExitCode {
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("debug")).try_init();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
