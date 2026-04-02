@@ -488,14 +488,7 @@ fn flock_on_mirror_handle_conflicts_with_backing_path_open(ctx: &TestContext) ->
     match flock_exclusive_nonblocking(&backing_file) {
         Err(err) if matches!(err.raw_os_error(), Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN) =>
             {}
-        Ok(()) => {
-            flock_unlock(&backing_file)?;
-            flock_unlock(&mirror_file)?;
-            eprintln!(
-                "skipping backing flock conflict assertion because mirror handles do not share kernel lock state with a separate backing-path open"
-            );
-            return Ok(());
-        }
+        Ok(()) => panic!("expected mounted flock to conflict with a separate backing-path open"),
         Err(err) => return Err(err.into()),
     }
 

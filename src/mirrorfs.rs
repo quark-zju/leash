@@ -14,9 +14,9 @@ use fs_err as fs;
 use fs_err::os::unix::fs::OpenOptionsExt as FsOpenOptionsExt;
 use fuser::{
     AccessFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
-    Generation, INodeNo, KernelConfig, LockOwner, MountOption, OpenFlags, RenameFlags, ReplyAttr,
-    ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyLock, ReplyOpen,
-    ReplyStatfs, ReplyWrite, Request, TimeOrNow, WriteFlags,
+    Generation, INodeNo, InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, RenameFlags,
+    ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyLock,
+    ReplyOpen, ReplyStatfs, ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
 use libc::{EACCES, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR};
 use log::debug;
@@ -524,6 +524,40 @@ impl<P: AccessController> MirrorFs<P> {
         getlk(&handle.file, start, end, typ)
     }
 
+    fn setlk_flock_for_fuse(
+        &mut self,
+        caller: &Caller,
+        ino: u64,
+        fh: u64,
+        typ: i32,
+        sleep: bool,
+    ) -> Result<()> {
+        let path = self
+            .path_for_ino(ino)
+            .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?;
+        self.authorize(caller, path, lock_operation(typ))?;
+        let handle = self
+            .handles
+            .get(&fh)
+            .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?;
+        apply_flock(&handle.file, typ, sleep)
+    }
+
+    fn getlk_flock_for_fuse(
+        &mut self,
+        caller: &Caller,
+        ino: u64,
+        _fh: u64,
+        typ: i32,
+    ) -> Result<(u64, u64, i32, u32)> {
+        let path = self
+            .path_for_ino(ino)
+            .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?
+            .to_path_buf();
+        self.authorize(caller, &path, Operation::GetLock)?;
+        getlk_via_flock_probe(&path, typ)
+    }
+
     pub(crate) fn setattr_for_test(
         &mut self,
         caller: &Caller,
@@ -626,7 +660,11 @@ fn fuse_mount_options() -> Vec<MountOption> {
 
 impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
-        let _ = config;
+        config
+            .add_capabilities(InitFlags::FUSE_FLOCK_LOCKS)
+            .map_err(|unsupported| {
+                std::io::Error::other(format!("unsupported init flags: {unsupported:?}"))
+            })?;
         Ok(())
     }
 
@@ -1143,18 +1181,18 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
     fn getlk(
         &self,
         req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
         _lock_owner: LockOwner,
-        start: u64,
-        end: u64,
+        _start: u64,
+        _end: u64,
         typ: i32,
         _pid: u32,
         reply: ReplyLock,
     ) {
         let caller = caller_from_request(req);
         let mut fs = self.inner.lock().unwrap();
-        match fs.getlk_for_test(&caller, fh.0, start, end, typ) {
+        match fs.getlk_flock_for_fuse(&caller, ino.0, fh.0, typ) {
             Ok((start, end, typ, pid)) => reply.locked(start, end, typ, pid),
             Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
         }
@@ -1163,11 +1201,11 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
     fn setlk(
         &self,
         req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
         _lock_owner: LockOwner,
-        start: u64,
-        end: u64,
+        _start: u64,
+        _end: u64,
         typ: i32,
         _pid: u32,
         sleep: bool,
@@ -1175,7 +1213,7 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
     ) {
         let caller = caller_from_request(req);
         let mut fs = self.inner.lock().unwrap();
-        match fs.setlk_for_test(&caller, fh.0, start, end, typ, sleep) {
+        match fs.setlk_flock_for_fuse(&caller, ino.0, fh.0, typ, sleep) {
             Ok(()) => reply.ok(),
             Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
         }
@@ -1350,6 +1388,47 @@ fn make_flock(start: u64, end: u64, typ: i32) -> libc::flock {
         l_start: start as libc::off_t,
         l_len: lock_len(start, end),
         l_pid: 0,
+    }
+}
+
+fn flock_operation(typ: i32, sleep: bool) -> Result<libc::c_int> {
+    let base = match typ {
+        libc::F_RDLCK => libc::LOCK_SH,
+        libc::F_WRLCK => libc::LOCK_EX,
+        libc::F_UNLCK => libc::LOCK_UN,
+        _ => return Err(std::io::Error::from_raw_os_error(EINVAL).into()),
+    };
+    if typ == libc::F_UNLCK || sleep {
+        Ok(base)
+    } else {
+        Ok(base | libc::LOCK_NB)
+    }
+}
+
+fn apply_flock(file: &fs::File, typ: i32, sleep: bool) -> Result<()> {
+    let rc = unsafe { libc::flock(file.as_raw_fd(), flock_operation(typ, sleep)?) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().into())
+    }
+}
+
+fn getlk_via_flock_probe(path: &Path, typ: i32) -> Result<(u64, u64, i32, u32)> {
+    let probe = fs::OpenOptions::new().read(true).write(true).open(path)?;
+    match apply_flock(&probe, typ, false) {
+        Ok(()) => {
+            apply_flock(&probe, libc::F_UNLCK, false)?;
+            Ok((0, u64::MAX, libc::F_UNLCK, 0))
+        }
+        Err(err) => {
+            let errno = io_errno(&err);
+            if errno == libc::EWOULDBLOCK || errno == libc::EAGAIN {
+                Ok((0, u64::MAX, typ, 0))
+            } else {
+                Err(err)
+            }
+        }
     }
 }
 
