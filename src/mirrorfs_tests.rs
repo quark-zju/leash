@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -50,6 +51,24 @@ impl AccessController for WriteLockOnlyPolicy {
 
 fn test_caller(name: &str) -> crate::access::Caller {
     MirrorFs::<AllowAll>::caller_for_test(name)
+}
+
+fn flock_exclusive_nonblocking(file: &fs::File) -> std::io::Result<()> {
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn flock_unlock(file: &fs::File) -> std::io::Result<()> {
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 #[test]
@@ -176,6 +195,61 @@ fn lock_round_trip_succeeds() -> Result<()> {
         lock.2,
         libc::F_WRLCK | libc::F_UNLCK | libc::F_RDLCK
     ));
+    Ok(())
+}
+
+#[test]
+fn posix_lock_reopen_after_rename_is_same_process_noop() -> Result<()> {
+    let dir = tempdir()?;
+    let from = dir.path().join("locked.db");
+    let to = dir.path().join("renamed.db");
+    fs::write(&from, b"123456")?;
+
+    let mut mirror = MirrorFs::new(dir.path().to_path_buf(), AllowAll);
+    let caller = test_caller("sqlite");
+    let fh = mirror.open_for_test(&caller, &from, libc::O_RDWR)?;
+
+    mirror.setlk_for_test(&caller, fh, 0, 3, libc::F_WRLCK, false)?;
+    mirror.rename_for_test(&caller, &from, &to)?;
+
+    let reopened = mirror.open_for_test(&caller, &to, libc::O_RDWR)?;
+    mirror.setlk_for_test(&caller, reopened, 0, 3, libc::F_WRLCK, false)?;
+
+    mirror.setlk_for_test(&caller, fh, 0, 3, libc::F_UNLCK, false)?;
+    mirror.release_for_test(reopened);
+    mirror.release_for_test(fh);
+    Ok(())
+}
+
+#[test]
+fn flock_dup_is_noop_but_reopen_after_rename_conflicts() -> Result<()> {
+    let dir = tempdir()?;
+    let from = dir.path().join("locked.db");
+    let to = dir.path().join("renamed.db");
+    fs::write(&from, b"123456")?;
+
+    let mut mirror = MirrorFs::new(dir.path().to_path_buf(), AllowAll);
+    let caller = test_caller("sqlite");
+    let fh = mirror.open_for_test(&caller, &from, libc::O_RDWR)?;
+    let original = mirror.dup_handle_for_test(fh)?;
+    let duplicated = original.try_clone()?;
+
+    flock_exclusive_nonblocking(&original)?;
+    flock_exclusive_nonblocking(&duplicated)?;
+
+    mirror.rename_for_test(&caller, &from, &to)?;
+
+    let reopened = fs::OpenOptions::new().read(true).write(true).open(&to)?;
+    let err = flock_exclusive_nonblocking(&reopened).unwrap_err();
+    assert!(
+        matches!(err.raw_os_error(), Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN)
+    );
+
+    flock_unlock(&duplicated)?;
+    flock_exclusive_nonblocking(&reopened)?;
+
+    flock_unlock(&reopened)?;
+    mirror.release_for_test(fh);
     Ok(())
 }
 
