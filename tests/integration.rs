@@ -122,7 +122,11 @@ struct TestContext {
 }
 
 fn main() -> ExitCode {
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("debug")).try_init();
+    // Common `RUST_LOG` settings for this harness:
+    // - `RUST_LOG=integration=debug` enables only this test crate's logs.
+    // - `RUST_LOG=integration=debug,fuser=off` enables this crate and silences fuser.
+    // - `RUST_LOG=debug` enables all logs, including fuser internals.
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
