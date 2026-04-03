@@ -24,11 +24,13 @@
 //! Paths that do not match any rule are hidden by default.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use libc::{EACCES, ENOENT, EPERM};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
+
+use crate::access::{AccessController, AccessDecision, AccessRequest};
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
@@ -38,6 +40,13 @@ pub enum Action {
     ReadWrite,
     Deny,
     Hide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Action(Action),
+    ImplicitAncestor,
+    Hidden,
 }
 
 impl Action {
@@ -115,6 +124,7 @@ impl ExeResolver for PathExeResolver {
 /// instead of touching the real filesystem.
 pub trait FsCheck {
     fn exists(&self, path: &Path) -> bool;
+    fn is_dir(&self, path: &Path) -> bool;
 }
 
 /// Production [`FsCheck`]: delegates to `Path::exists`.
@@ -123,6 +133,10 @@ pub struct RealFsCheck;
 impl FsCheck for RealFsCheck {
     fn exists(&self, path: &Path) -> bool {
         path.exists()
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        path.is_dir()
     }
 }
 
@@ -209,6 +223,9 @@ pub struct Rule {
     pub pattern: String,
     /// Compiled glob for path matching (includes an auto-added `<pat>/**`).
     pub(crate) glob: GlobSet,
+    /// Compiled glob for ancestor paths that should stay visible for
+    /// descendant traversal.
+    pub(crate) ancestor_glob: GlobSet,
     pub action: Action,
     /// All conditions (AND semantics).
     pub conditions: Vec<Condition>,
@@ -249,16 +266,51 @@ impl Profile {
         None
     }
 
+    pub fn visibility(&self, path: &Path, ctx: &EvalContext<'_>) -> Visibility {
+        if let Some(action) = self.evaluate(path, ctx) {
+            if action == Action::Hide && self.is_implicit_ancestor(path, ctx) {
+                return Visibility::ImplicitAncestor;
+            }
+            return Visibility::Action(action);
+        }
+        if self.is_implicit_ancestor(path, ctx) {
+            return Visibility::ImplicitAncestor;
+        }
+        Visibility::Hidden
+    }
+
     pub fn effective_action(&self, path: &Path, ctx: &EvalContext<'_>) -> Action {
         self.evaluate(path, ctx).unwrap_or(Action::Hide)
     }
 
     pub fn access_errno(&self, path: &Path, ctx: &EvalContext<'_>) -> Option<i32> {
-        self.effective_action(path, ctx).access_errno()
+        match self.visibility(path, ctx) {
+            Visibility::Action(action) => action.access_errno(),
+            Visibility::ImplicitAncestor if ctx.fs.is_dir(path) => None,
+            Visibility::ImplicitAncestor | Visibility::Hidden => Some(ENOENT),
+        }
     }
 
     pub fn mutation_errno(&self, path: &Path, ctx: &EvalContext<'_>) -> Option<i32> {
-        self.effective_action(path, ctx).mutation_errno()
+        match self.visibility(path, ctx) {
+            Visibility::Action(action) => action.mutation_errno(),
+            Visibility::ImplicitAncestor if ctx.fs.is_dir(path) => None,
+            Visibility::ImplicitAncestor | Visibility::Hidden => Some(EPERM),
+        }
+    }
+
+    fn is_implicit_ancestor(&self, path: &Path, ctx: &EvalContext<'_>) -> bool {
+        self.rules.iter().any(|rule| {
+            rule.action.allows_visible_descendants()
+                && rule.ancestor_glob.is_match(path)
+                && rule.conditions_match(path, ctx)
+        })
+    }
+}
+
+impl Action {
+    fn allows_visible_descendants(self) -> bool {
+        matches!(self, Self::ReadOnly | Self::ReadWrite)
     }
 }
 
@@ -531,10 +583,13 @@ fn parse_rule_line(
 
     let abs_pattern = expand_pattern(pattern_tok, home, cwd);
     let glob = build_glob(&abs_pattern).map_err(|e| ParseError::BadGlob(abs_pattern.clone(), e))?;
+    let ancestor_glob = build_ancestor_glob(&abs_pattern)
+        .map_err(|e| ParseError::BadGlob(abs_pattern.clone(), e))?;
 
     Ok(Rule {
         pattern: abs_pattern,
         glob,
+        ancestor_glob,
         action,
         conditions,
     })
@@ -575,6 +630,134 @@ fn build_glob(pattern: &str) -> Result<GlobSet, String> {
     }
 
     builder.build().map_err(|e| e.to_string())
+}
+
+fn build_ancestor_glob(pattern: &str) -> Result<GlobSet, String> {
+    let mut builder = GlobSetBuilder::new();
+    for ancestor in ancestor_globs_for_rule(pattern) {
+        let glob = Glob::new(&ancestor).map_err(|e| e.to_string())?;
+        builder.add(glob);
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
+fn ancestor_globs_for_rule(pattern: &str) -> Vec<String> {
+    let base = if pattern == "/" {
+        "/"
+    } else {
+        pattern.trim_end_matches('/')
+    };
+    let path = Path::new(base);
+    let mut out = Vec::new();
+    if base != "/" {
+        out.push("/".to_string());
+    }
+
+    let components: Vec<String> = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    if components.len() <= 1 {
+        return out;
+    }
+
+    let mut prefix = String::new();
+    let has_double_star = base.contains("**");
+    let limit = if has_double_star {
+        components
+            .iter()
+            .position(|segment| segment.contains("**"))
+            .unwrap_or(components.len())
+    } else {
+        components.len().saturating_sub(1)
+    };
+    for component in components.into_iter().take(limit) {
+        prefix.push('/');
+        prefix.push_str(&component);
+        out.push(prefix.clone());
+    }
+    if has_double_star {
+        let prefix = base
+            .split("/**")
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('/');
+        if prefix.is_empty() {
+            out.push("/**".to_owned());
+        } else {
+            out.push(format!("{prefix}/**"));
+        }
+    }
+    out
+}
+
+fn parse_environ(raw: Vec<u8>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for pair in raw.split(|byte| *byte == 0) {
+        if pair.is_empty() {
+            continue;
+        }
+        let Some(eq) = pair.iter().position(|byte| *byte == b'=') else {
+            continue;
+        };
+        let key = String::from_utf8_lossy(&pair[..eq]).into_owned();
+        let value = String::from_utf8_lossy(&pair[eq + 1..]).into_owned();
+        out.insert(key, value);
+    }
+    out
+}
+
+pub struct ProfileController<F = RealFsCheck> {
+    profile: Profile,
+    fs: F,
+}
+
+impl ProfileController<RealFsCheck> {
+    pub fn new(profile: Profile) -> Self {
+        Self {
+            profile,
+            fs: RealFsCheck,
+        }
+    }
+}
+
+impl<F: FsCheck> ProfileController<F> {
+    #[allow(dead_code)]
+    pub(crate) fn with_fs(profile: Profile, fs: F) -> Self {
+        Self { profile, fs }
+    }
+}
+
+impl<F: FsCheck + Send + Sync + 'static> AccessController for ProfileController<F> {
+    fn check(&self, request: &AccessRequest<'_>) -> AccessDecision {
+        let exe = request
+            .caller
+            .pid
+            .and_then(|pid| std::fs::read_link(format!("/proc/{pid}/exe")).ok());
+        let env = request
+            .caller
+            .pid
+            .and_then(|pid| std::fs::read(format!("/proc/{pid}/environ")).ok())
+            .map(parse_environ)
+            .unwrap_or_default();
+        let ctx = EvalContext {
+            exe: exe.as_deref(),
+            env: &env,
+            fs: &self.fs,
+        };
+        let errno = if request.operation.is_write() {
+            self.profile.mutation_errno(request.path, &ctx)
+        } else {
+            self.profile.access_errno(request.path, &ctx)
+        };
+        match errno {
+            None => AccessDecision::Allow,
+            Some(errno) => AccessDecision::Deny(errno),
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -630,6 +813,10 @@ mod tests {
 
     impl FsCheck for MockFsCheck {
         fn exists(&self, path: &Path) -> bool {
+            self.0.contains(path)
+        }
+
+        fn is_dir(&self, path: &Path) -> bool {
             self.0.contains(path)
         }
     }
@@ -743,6 +930,43 @@ mod tests {
         );
         assert_eq!(
             p.mutation_errno(Path::new("/home/user/file"), &ctx),
+            Some(EPERM)
+        );
+    }
+
+    #[test]
+    fn visible_descendant_rule_makes_hidden_parent_directory_traversable() {
+        let p = parse_simple("/workspace/project/foo/**/*.txt rw\n/workspace/project/foo hide\n");
+        let env = HashMap::new();
+        let fs = MockFsCheck::new(&["/workspace/project/foo", "/workspace/project/foo/bar"]);
+        let ctx = EvalContext {
+            exe: None,
+            env: &env,
+            fs: &fs,
+        };
+
+        assert_eq!(
+            p.visibility(Path::new("/workspace/project/foo"), &ctx),
+            Visibility::ImplicitAncestor
+        );
+        assert_eq!(
+            p.visibility(Path::new("/workspace/project/foo/bar"), &ctx),
+            Visibility::ImplicitAncestor
+        );
+        assert_eq!(
+            p.access_errno(Path::new("/workspace/project/foo"), &ctx),
+            None
+        );
+        assert_eq!(
+            p.evaluate(Path::new("/workspace/project/foo/bar/ok.txt"), &ctx),
+            Some(Action::ReadWrite)
+        );
+        assert_eq!(
+            p.access_errno(Path::new("/workspace/project/foo/bar/no.bin"), &ctx),
+            Some(ENOENT)
+        );
+        assert_eq!(
+            p.mutation_errno(Path::new("/workspace/project/foo/bar/no.bin"), &ctx),
             Some(EPERM)
         );
     }
