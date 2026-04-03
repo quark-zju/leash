@@ -6,7 +6,7 @@
 //! pattern  action  [when condition[,condition...]]
 //! ```
 //!
-//! **action**: `ro` | `rw` | `deny`
+//! **action**: `ro` | `rw` | `deny` | `hide`
 //!
 //! **conditions** (all must be true — AND semantics):
 //! - `exe=name`            — calling process's executable matches: bare name
@@ -21,9 +21,12 @@
 //!
 //! Evaluation: top-down, first match wins.
 //! A rule whose conditions are not all satisfied is skipped.
+//! Paths that do not match any rule are hidden by default.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use libc::{EACCES, ENOENT, EPERM};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
@@ -34,6 +37,7 @@ pub enum Action {
     ReadOnly,
     ReadWrite,
     Deny,
+    Hide,
 }
 
 impl Action {
@@ -42,7 +46,24 @@ impl Action {
             "ro" => Some(Self::ReadOnly),
             "rw" => Some(Self::ReadWrite),
             "deny" => Some(Self::Deny),
+            "hide" => Some(Self::Hide),
             _ => None,
+        }
+    }
+
+    pub fn access_errno(self) -> Option<i32> {
+        match self {
+            Self::ReadOnly | Self::ReadWrite => None,
+            Self::Deny => Some(EACCES),
+            Self::Hide => Some(ENOENT),
+        }
+    }
+
+    pub fn mutation_errno(self) -> Option<i32> {
+        match self {
+            Self::ReadWrite => None,
+            Self::ReadOnly | Self::Deny => Some(EACCES),
+            Self::Hide => Some(EPERM),
         }
     }
 }
@@ -53,6 +74,7 @@ impl std::fmt::Display for Action {
             Self::ReadOnly => "ro",
             Self::ReadWrite => "rw",
             Self::Deny => "deny",
+            Self::Hide => "hide",
         })
     }
 }
@@ -225,6 +247,18 @@ impl Profile {
             }
         }
         None
+    }
+
+    pub fn effective_action(&self, path: &Path, ctx: &EvalContext<'_>) -> Action {
+        self.evaluate(path, ctx).unwrap_or(Action::Hide)
+    }
+
+    pub fn access_errno(&self, path: &Path, ctx: &EvalContext<'_>) -> Option<i32> {
+        self.effective_action(path, ctx).access_errno()
+    }
+
+    pub fn mutation_errno(&self, path: &Path, ctx: &EvalContext<'_>) -> Option<i32> {
+        self.effective_action(path, ctx).mutation_errno()
     }
 }
 
@@ -658,6 +692,25 @@ mod tests {
     }
 
     #[test]
+    fn unconditional_hide() {
+        let p = parse_simple("/secret hide\n/secret rw\n");
+        let env = HashMap::new();
+        let fs = MockFsCheck::empty();
+        let ctx = EvalContext {
+            exe: None,
+            env: &env,
+            fs: &fs,
+        };
+
+        assert_eq!(eval(&p, "/secret/key", None, &[]), Some(Action::Hide));
+        assert_eq!(p.access_errno(Path::new("/secret/key"), &ctx), Some(ENOENT));
+        assert_eq!(
+            p.mutation_errno(Path::new("/secret/key"), &ctx),
+            Some(EPERM)
+        );
+    }
+
+    #[test]
     fn first_match_wins() {
         let p = parse_simple("/tmp rw\n/tmp ro\n");
         assert_eq!(eval(&p, "/tmp/foo", None, &[]), Some(Action::ReadWrite));
@@ -667,6 +720,31 @@ mod tests {
     fn no_match_returns_none() {
         let p = parse_simple("/usr ro\n");
         assert_eq!(eval(&p, "/home/user/file", None, &[]), None);
+    }
+
+    #[test]
+    fn no_match_is_hidden_by_default() {
+        let p = parse_simple("/usr ro\n");
+        let env = HashMap::new();
+        let fs = MockFsCheck::empty();
+        let ctx = EvalContext {
+            exe: None,
+            env: &env,
+            fs: &fs,
+        };
+
+        assert_eq!(
+            p.effective_action(Path::new("/home/user/file"), &ctx),
+            Action::Hide
+        );
+        assert_eq!(
+            p.access_errno(Path::new("/home/user/file"), &ctx),
+            Some(ENOENT)
+        );
+        assert_eq!(
+            p.mutation_errno(Path::new("/home/user/file"), &ctx),
+            Some(EPERM)
+        );
     }
 
     // ── condition: exe= ───────────────────────────────────────────────────────
