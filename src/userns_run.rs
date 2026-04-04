@@ -477,6 +477,7 @@ fn run_pid_namespace_init_and_exec(
 
     let worker_pid = fork_process("pidns-worker")?;
     if worker_pid == 0 {
+        close_fds_best_effort_from(3);
         let err = ProcessCommand::new(&config.program)
             .args(&config.args)
             .exec();
@@ -532,6 +533,32 @@ fn set_process_name(name: &str) -> Result<()> {
         return Err(std::io::Error::last_os_error()).context("prctl(PR_SET_NAME) failed");
     }
     Ok(())
+}
+
+fn close_fds_best_effort_from(first: libc::c_uint) {
+    if try_close_range(first).is_ok() {
+        return;
+    }
+    for fd in first as i32..65536 {
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
+fn try_close_range(first: libc::c_uint) -> Result<()> {
+    let rc = unsafe { libc::syscall(libc::SYS_close_range, first, libc::c_uint::MAX, 0) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    if matches!(
+        err.raw_os_error(),
+        Some(libc::ENOSYS | libc::EINVAL | libc::EPERM)
+    ) {
+        return Err(err).context("close_range unavailable");
+    }
+    Err(err).context("close_range failed")
 }
 
 fn wait_for_specific_child(pid: libc::pid_t) -> Result<i32> {
