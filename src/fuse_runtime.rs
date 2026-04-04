@@ -40,7 +40,12 @@ fn ensure_global_mountpoint_in(
 }
 
 pub fn read_global_mount_state(mountpoint: &Path) -> Result<MountState> {
-    read_mount_state_from(mountpoint, Path::new(MOUNTINFO_PATH))
+    let state = read_mount_state_from(mountpoint, Path::new(MOUNTINFO_PATH))?;
+    if matches!(state, MountState::Fuse { .. }) && mountpoint_is_stale(mountpoint)? {
+        lazy_unmount_stale_fuse_mount(mountpoint)?;
+        return Ok(MountState::Unmounted);
+    }
+    Ok(state)
 }
 
 pub fn write_global_daemon_pid() -> Result<()> {
@@ -169,6 +174,14 @@ fn ensure_dir(path: &Path) -> Result<bool> {
         Err(err) => {
             Err(err).with_context(|| format!("failed to inspect {}", path.display()))
         }
+    }
+}
+
+fn mountpoint_is_stale(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(err) if err.raw_os_error() == Some(libc::ENOTCONN) => Ok(true),
+        Err(err) => Err(err).with_context(|| format!("failed to inspect {}", path.display())),
     }
 }
 
