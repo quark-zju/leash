@@ -33,9 +33,6 @@ const BASIC_PROFILE_SOURCE: &str = "\
 /dev/ptmx rw
 /dev/pts rw
 /dev/random ro
-/dev/stderr rw
-/dev/stdin ro
-/dev/stdout rw
 /dev/tty rw
 /dev/urandom ro
 /dev/zero rw
@@ -206,5 +203,26 @@ mod tests {
         );
         assert_eq!(store.resolve("missing").expect("resolve"), None);
         assert!(store.resolve("../escape").expect_err("invalid name").contains("invalid profile name"));
+    }
+
+    #[test]
+    fn builtin_default_profile_has_a_valid_mount_plan() {
+        let tempdir = tempdir().expect("tempdir");
+        let home = tempdir.path().join("home");
+        fs::create_dir_all(&home).expect("home");
+        let store = ProfileStore::new(home.join(".config/leash2"));
+        let source = store
+            .load_default_profile_source()
+            .expect("load default profile");
+        let profile = parse(
+            &source,
+            &home,
+            Path::new("/tmp"),
+            &store,
+            &PathExeResolver,
+        )
+        .expect("parse builtin profile");
+
+        crate::mount_plan::build_mount_plan(&profile).expect("build mount plan");
     }
 }
