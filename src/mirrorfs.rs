@@ -42,6 +42,7 @@ pub struct MirrorFs<P> {
 struct OpenHandle {
     ino: u64,
     file: fs::File,
+    writable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -402,7 +403,7 @@ impl<P: AccessController> MirrorFs<P> {
         self.authorize_open_path(caller, path, operation)?;
         ensure_openable_node(path)?;
         let file = open_host_file(path, flags, false)?;
-        Ok(self.allocate_handle(ino, file))
+        Ok(self.allocate_handle(ino, file, operation.is_write()))
     }
 
     #[allow(dead_code)]
@@ -514,7 +515,7 @@ impl<P: AccessController> MirrorFs<P> {
         file.set_permissions(std::fs::Permissions::from_mode(created_mode))?;
         let metadata = file.metadata()?;
         let ino = self.ensure_ino(&path);
-        let fh = self.allocate_handle(ino, file);
+        let fh = self.allocate_handle(ino, file, true);
         Ok((self.attr_for_path(&path, &metadata), fh))
     }
 
@@ -530,20 +531,25 @@ impl<P: AccessController> MirrorFs<P> {
     }
 
     pub(crate) fn flush_for_test(&mut self, caller: &Caller, fh: u64) -> Result<()> {
-        let ino = self
+        let Some((ino, writable)) = self
             .handles
             .get(&fh)
-            .map(|handle| handle.ino)
-            .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?;
+            .map(|handle| (handle.ino, handle.writable))
+        else {
+            return Err(std::io::Error::from_raw_os_error(ENOENT).into());
+        };
+        if !writable {
+            return Ok(());
+        }
         let path = self
             .path_for_ino(ino)
             .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?;
         self.authorize(caller, path, Operation::Fsync)?;
-        self.handles
+        let handle = self
+            .handles
             .get_mut(&fh)
-            .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?
-            .file
-            .sync_data()?;
+            .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?;
+        handle.file.sync_data()?;
         Ok(())
     }
 
@@ -762,10 +768,10 @@ impl<P: AccessController> MirrorFs<P> {
         Ok(self.attr_for_path(path, &metadata))
     }
 
-    fn allocate_handle(&mut self, ino: u64, file: fs::File) -> u64 {
+    fn allocate_handle(&mut self, ino: u64, file: fs::File, writable: bool) -> u64 {
         let fh = self.next_fh;
         self.next_fh += 1;
-        self.handles.insert(fh, OpenHandle { ino, file });
+        self.handles.insert(fh, OpenHandle { ino, file, writable });
         fh
     }
 
@@ -1102,7 +1108,7 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             fs.authorize_open_path(&caller, &path, operation)?;
             ensure_openable_node(&path)?;
             let file = open_host_file(&path, raw_flags, false)?;
-            Ok(fs.allocate_handle(ino.0, file))
+            Ok(fs.allocate_handle(ino.0, file, operation.is_write()))
         })();
         match result {
             Ok(fh) => reply.opened(FileHandle(fh), FopenFlags::empty()),
@@ -1172,7 +1178,7 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             file.set_permissions(std::fs::Permissions::from_mode(created_mode))?;
             let metadata = file.metadata()?;
             let ino = fs.ensure_ino(&path);
-            let fh = fs.allocate_handle(ino, file);
+            let fh = fs.allocate_handle(ino, file, true);
             let attr = fs.attr_for_path(&path, &metadata);
             Ok((attr, fh))
         })();
