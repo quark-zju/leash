@@ -9,15 +9,19 @@ const CONFIG_DIR_NAME: &str = "leash2";
 const DEFAULT_PROFILE_NAME: &str = "profile";
 
 const DEFAULT_PROFILE_SOURCE: &str = "\
+%include builtin:deny-sensitive
 %include builtin:basic
 %include builtin:agents
-/proc ro
-/sys ro
-~/**/.git/COMMIT_EDITMSG rw
-~/**/.git rw when exe=git
-~/**/.git deny
-~ rw when ancestor-has=.git
-~ ro
+%include builtin:home-hide
+%include builtin:home-git-rw
+";
+
+const DENY_SENSITIVE_PROFILE_SOURCE: &str = "\
+~/.config/leash deny
+~/.cache/mozilla hide
+~/.config/google-chrome* hide
+~/.config/chromium* hide
+~/.ssh deny
 ";
 
 const BASIC_PROFILE_SOURCE: &str = "\
@@ -33,6 +37,9 @@ const BASIC_PROFILE_SOURCE: &str = "\
 /dev/ptmx rw
 /dev/pts rw
 /dev/random ro
+/dev/stderr rw
+/dev/stdin ro
+/dev/stdout rw
 /dev/tty rw
 /dev/urandom ro
 /dev/zero rw
@@ -56,15 +63,29 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 ~/.pyenv ro
 ~/.rustup ro
 
+";
+
+const HOME_HIDE: &str = "\
 ~/.local hide
 ~/.cache hide
 ~/.config hide
 ";
 
+const HOME_GIT_RW: &str = "\
+~/**/.git/COMMIT_EDITMSG rw
+~/**/.git rw when exe=git
+~/**/.git deny
+~ rw when ancestor-has=.git
+~ ro
+";
+
 const BUILTINS: &[(&str, &str)] = &[
     ("builtin:default", DEFAULT_PROFILE_SOURCE),
+    ("builtin:deny-sensitive", DENY_SENSITIVE_PROFILE_SOURCE),
     ("builtin:basic", BASIC_PROFILE_SOURCE),
     ("builtin:agents", AGENTS_PROFILE_SOURCE),
+    ("builtin:home-hide", HOME_HIDE),
+    ("builtin:home-git-rw", HOME_GIT_RW),
 ];
 
 pub fn load_default_profile(cwd: &Path) -> Result<Profile> {
