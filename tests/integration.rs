@@ -188,6 +188,14 @@ fn run_profile_policy_tests() -> Result<()> {
     eprintln!("test profile_policy_hide_and_implicit_ancestor_visibility ...");
     profile_policy_hide_and_implicit_ancestor_visibility()?;
     eprintln!("test profile_policy_hide_and_implicit_ancestor_visibility ... ok");
+
+    eprintln!("test profile_mkdir_prefers_eexist_for_visible_existing_directory ...");
+    profile_mkdir_prefers_eexist_for_visible_existing_directory()?;
+    eprintln!("test profile_mkdir_prefers_eexist_for_visible_existing_directory ... ok");
+
+    eprintln!("test profile_symlink_target_policy_blocks_open_and_setattr ...");
+    profile_symlink_target_policy_blocks_open_and_setattr()?;
+    eprintln!("test profile_symlink_target_policy_blocks_open_and_setattr ... ok");
     Ok(())
 }
 
@@ -239,6 +247,21 @@ fn wait_for_path(path: &Path) -> Result<()> {
     let mut last_err = None;
     for _ in 0..100 {
         match fs::metadata(path) {
+            Ok(_) => return Ok(()),
+            Err(err) => last_err = Some(err),
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    match last_err {
+        Some(err) => Err(err.into()),
+        None => Err(anyhow!("{} did not appear", path.display())),
+    }
+}
+
+fn wait_for_symlink_path(path: &Path) -> Result<()> {
+    let mut last_err = None;
+    for _ in 0..100 {
+        match fs::symlink_metadata(path) {
             Ok(_) => return Ok(()),
             Err(err) => last_err = Some(err),
         }
@@ -728,6 +751,62 @@ fn profile_policy_hide_and_implicit_ancestor_visibility() -> Result<()> {
         .open(suite.mount_root.join("foo/sub/new.bin"))
         .unwrap_err();
     assert_eq!(create_bin.kind(), ErrorKind::PermissionDenied);
+    Ok(())
+}
+
+fn profile_mkdir_prefers_eexist_for_visible_existing_directory() -> Result<()> {
+    let suite = MountedSuite::with_policy_factory(|backing_root| {
+        let profile_src = format!("{} ro\n", backing_root.display());
+        let profile = profile::parse(
+            &profile_src,
+            Path::new("/tmp"),
+            Path::new("/tmp"),
+            &NoIncludes,
+            &PathExeResolver,
+        )?;
+        Ok(ProfileController::new(profile))
+    })?;
+
+    fs::create_dir(suite.backing_root.join("existing"))?;
+    wait_for_path(&suite.mount_root.join("existing"))?;
+
+    let err = fs::create_dir(suite.mount_root.join("existing")).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::AlreadyExists);
+    Ok(())
+}
+
+fn profile_symlink_target_policy_blocks_open_and_setattr() -> Result<()> {
+    let suite = MountedSuite::with_policy_factory(|backing_root| {
+        let profile_src = format!(
+            "{} rw\n{} deny\n",
+            backing_root.join("allowed").display(),
+            backing_root.join("denied").display()
+        );
+        let profile = profile::parse(
+            &profile_src,
+            Path::new("/tmp"),
+            Path::new("/tmp"),
+            &NoIncludes,
+            &PathExeResolver,
+        )?;
+        Ok(ProfileController::new(profile))
+    })?;
+
+    fs::create_dir_all(suite.backing_root.join("allowed"))?;
+    fs::create_dir_all(suite.backing_root.join("denied"))?;
+    fs::write(suite.backing_root.join("denied/secret.txt"), b"secret")?;
+    std::os::unix::fs::symlink("../denied/secret.txt", suite.backing_root.join("allowed/secret-link"))?;
+    wait_for_symlink_path(&suite.mount_root.join("allowed/secret-link"))?;
+
+    let read_err = fs::read(suite.mount_root.join("allowed/secret-link")).unwrap_err();
+    assert_eq!(read_err.kind(), ErrorKind::PermissionDenied);
+
+    let chmod_err = fs::set_permissions(
+        suite.mount_root.join("allowed/secret-link"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap_err();
+    assert_eq!(chmod_err.kind(), ErrorKind::PermissionDenied);
     Ok(())
 }
 

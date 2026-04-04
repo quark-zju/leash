@@ -19,7 +19,7 @@ use fuser::{
     ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyLock,
     ReplyOpen, ReplyStatfs, ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
-use libc::{EACCES, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR};
+use libc::{EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR};
 use log::debug;
 
 use crate::access::{AccessController, AccessDecision, AccessRequest, Caller, Operation};
@@ -262,6 +262,28 @@ impl<P: AccessController> MirrorFs<P> {
         }
     }
 
+    fn create_errno(&self, caller: &Caller, path: &Path, operation: Operation) -> Option<i32> {
+        if self.authorize_errno(caller, path, Operation::Lookup).is_none()
+            && fs::symlink_metadata(path).is_ok()
+        {
+            return Some(EEXIST);
+        }
+        self.authorize_errno(caller, path, operation)
+    }
+
+    fn authorize_open_path(
+        &self,
+        caller: &Caller,
+        path: &Path,
+        operation: Operation,
+    ) -> Result<()> {
+        self.authorize(caller, path, operation)?;
+        let Some(target) = resolved_host_target(path) else {
+            return Ok(());
+        };
+        self.authorize(caller, &target, operation)
+    }
+
     fn attr_for_path(&mut self, path: &Path, metadata: &Metadata) -> FileAttr {
         FileAttr {
             ino: INodeNo(self.ensure_ino(path)),
@@ -377,7 +399,7 @@ impl<P: AccessController> MirrorFs<P> {
         } else {
             Operation::OpenWrite
         };
-        self.authorize(caller, path, operation)?;
+        self.authorize_open_path(caller, path, operation)?;
         ensure_openable_node(path)?;
         let file = open_host_file(path, flags, false)?;
         Ok(self.allocate_handle(ino, file))
@@ -484,7 +506,9 @@ impl<P: AccessController> MirrorFs<P> {
         flags: i32,
     ) -> Result<(FileAttr, u64)> {
         let path = parent.join(name);
-        self.authorize(caller, &path, Operation::Create)?;
+        if let Some(errno) = self.create_errno(caller, &path, Operation::Create) {
+            return Err(std::io::Error::from_raw_os_error(errno).into());
+        }
         let file = open_host_file(&path, flags | libc::O_CREAT, true)?;
         let created_mode = normalize_create_mode(mode, umask) as u32;
         file.set_permissions(std::fs::Permissions::from_mode(created_mode))?;
@@ -702,7 +726,7 @@ impl<P: AccessController> MirrorFs<P> {
         atime: Option<TimeOrNow>,
         mtime: Option<TimeOrNow>,
     ) -> Result<FileAttr> {
-        self.authorize(caller, path, Operation::SetAttr)?;
+        self.authorize_open_path(caller, path, Operation::SetAttr)?;
         self.apply_setattr(path, size, mode, atime, mtime)
     }
 
@@ -1075,7 +1099,7 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             } else {
                 Operation::OpenWrite
             };
-            fs.authorize(&caller, &path, operation)?;
+            fs.authorize_open_path(&caller, &path, operation)?;
             ensure_openable_node(&path)?;
             let file = open_host_file(&path, raw_flags, false)?;
             Ok(fs.allocate_handle(ino.0, file))
@@ -1140,7 +1164,9 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
         };
         let result = (|| -> Result<(FileAttr, u64)> {
             let path = parent_path.join(name);
-            fs.authorize(&caller, &path, Operation::Create)?;
+            if let Some(errno) = fs.create_errno(&caller, &path, Operation::Create) {
+                return Err(std::io::Error::from_raw_os_error(errno).into());
+            }
             let file = open_host_file(&path, flags | libc::O_CREAT, true)?;
             let created_mode = normalize_create_mode(mode, umask) as u32;
             file.set_permissions(std::fs::Permissions::from_mode(created_mode))?;
@@ -1274,7 +1300,7 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             return;
         };
         let path = parent_path.join(name);
-        if let Some(errno) = fs.authorize_errno(&caller, &path, Operation::Mkdir) {
+        if let Some(errno) = fs.create_errno(&caller, &path, Operation::Mkdir) {
             reply.error(Errno::from_i32(errno));
             return;
         }
@@ -2029,6 +2055,15 @@ fn arm_broker_parent_death_signal() -> std::io::Result<()> {
         unsafe { libc::_exit(0) }
     }
     Ok(())
+}
+
+fn resolved_host_target(path: &Path) -> Option<PathBuf> {
+    let resolved = fs::canonicalize(path).ok()?;
+    if resolved == path {
+        None
+    } else {
+        Some(resolved)
+    }
 }
 
 fn broker_apply_projection(
