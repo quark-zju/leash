@@ -6,6 +6,7 @@ use fs_err as fs;
 
 const RUNTIME_DIR_NAME: &str = "leash2";
 const MOUNT_DIR_NAME: &str = "mount";
+const PID_FILE_NAME: &str = "fuse.pid";
 const MOUNTINFO_PATH: &str = "/proc/self/mountinfo";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +34,59 @@ pub fn read_global_mount_state(mountpoint: &Path) -> Result<MountState> {
     read_mount_state_from(mountpoint, Path::new(MOUNTINFO_PATH))
 }
 
+pub fn write_global_daemon_pid() -> Result<()> {
+    let runtime_dir = xdg_runtime_dir_from_env()?;
+    write_global_daemon_pid_under(&runtime_dir)
+}
+
+fn write_global_daemon_pid_under(runtime_dir: &Path) -> Result<()> {
+    let path = global_daemon_pid_path_under(runtime_dir)?;
+    fs::write(&path, format!("{}\n", std::process::id()))
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
+pub fn clear_global_daemon_pid() -> Result<()> {
+    let runtime_dir = xdg_runtime_dir_from_env()?;
+    clear_global_daemon_pid_under(&runtime_dir)
+}
+
+fn clear_global_daemon_pid_under(runtime_dir: &Path) -> Result<()> {
+    let path = global_daemon_pid_path_under(runtime_dir)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("failed to remove {}", path.display())),
+    }
+}
+
+pub fn signal_global_daemon(signal: libc::c_int) -> Result<bool> {
+    let runtime_dir = xdg_runtime_dir_from_env()?;
+    signal_global_daemon_under(&runtime_dir, signal)
+}
+
+fn signal_global_daemon_under(runtime_dir: &Path, signal: libc::c_int) -> Result<bool> {
+    let path = global_daemon_pid_path_under(runtime_dir)?;
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err).with_context(|| format!("failed to read {}", path.display())),
+    };
+    let pid = raw
+        .trim()
+        .parse::<libc::pid_t>()
+        .with_context(|| format!("invalid daemon pid file {}", path.display()))?;
+    if unsafe { libc::kill(pid, signal) } == 0 {
+        return Ok(true);
+    }
+
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        let _ = fs::remove_file(&path);
+        return Ok(false);
+    }
+    Err(err).with_context(|| format!("failed to signal daemon pid {pid}"))
+}
+
 fn read_mount_state_from(mountpoint: &Path, mountinfo: &Path) -> Result<MountState> {
     let content = fs::read_to_string(mountinfo)
         .with_context(|| format!("failed to read {}", mountinfo.display()))?;
@@ -56,6 +110,13 @@ fn xdg_runtime_dir_from_env() -> Result<PathBuf> {
         bail!("XDG_RUNTIME_DIR is not set");
     };
     Ok(PathBuf::from(path))
+}
+
+fn global_daemon_pid_path_under(runtime_dir: &Path) -> Result<PathBuf> {
+    ensure_private_dir(runtime_dir)?;
+    let leash_dir = runtime_dir.join(RUNTIME_DIR_NAME);
+    ensure_private_dir(&leash_dir)?;
+    Ok(leash_dir.join(PID_FILE_NAME))
 }
 
 fn ensure_private_dir(path: &Path) -> Result<()> {
@@ -195,5 +256,27 @@ mod tests {
             read_mount_state_from(Path::new("/tmp/other"), &mountinfo).expect("read mount state"),
             MountState::Unmounted
         );
+    }
+
+    #[test]
+    fn global_daemon_pid_file_round_trips_and_stale_pid_is_cleared() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime_dir = tempdir.path().join("xdg-runtime");
+
+        write_global_daemon_pid_under(&runtime_dir).expect("write pid");
+        let path = global_daemon_pid_path_under(&runtime_dir).expect("pid path");
+        assert_eq!(
+            fs::read_to_string(&path).expect("pid file"),
+            format!("{}\n", std::process::id())
+        );
+
+        fs::write(&path, "999999\n").expect("overwrite stale pid");
+        assert!(
+            !signal_global_daemon_under(&runtime_dir, libc::SIGHUP)
+                .expect("signal stale daemon")
+        );
+        assert!(!path.exists());
+
+        clear_global_daemon_pid_under(&runtime_dir).expect("clear missing pid");
     }
 }

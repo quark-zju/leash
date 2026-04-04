@@ -42,6 +42,7 @@ pub(crate) fn fuse_command(_command: LowLevelFuseCommand) -> Result<()> {
     let controller = Arc::new(ProfileController::new(profile));
     let _reload_thread = spawn_profile_reload_thread(Arc::clone(&controller))?;
     let fs = MirrorFs::new(PathBuf::from("/"), controller);
+    let _pid_file = DaemonPidFile::write()?;
 
     info!("mounting shared mirrorfs at {}", mountpoint.display());
     fs.mount(Path::new(&mountpoint))
@@ -97,6 +98,23 @@ fn reload_profile_with(
         }
         Err(err) => {
             warn!("ignoring failed SIGHUP profile reload: {err:#}");
+        }
+    }
+}
+
+struct DaemonPidFile;
+
+impl DaemonPidFile {
+    fn write() -> Result<Self> {
+        fuse_runtime::write_global_daemon_pid()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for DaemonPidFile {
+    fn drop(&mut self) {
+        if let Err(err) = fuse_runtime::clear_global_daemon_pid() {
+            warn!("failed to clear daemon pid file: {err:#}");
         }
     }
 }
