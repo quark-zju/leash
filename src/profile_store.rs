@@ -76,6 +76,31 @@ pub fn load_default_profile(cwd: &Path) -> Result<Profile> {
         .context("failed to parse default profile")
 }
 
+pub fn default_profile_path() -> Result<PathBuf> {
+    Ok(ProfileStore::new(config_dir(&home_dir()?)).default_profile_path())
+}
+
+pub fn load_default_profile_source() -> Result<String> {
+    ProfileStore::new(config_dir(&home_dir()?)).load_default_profile_source()
+}
+
+pub fn render_default_profile_source_for_show() -> Result<String> {
+    let home = home_dir()?;
+    let store = ProfileStore::new(config_dir(&home));
+    let source = store.load_default_profile_source()?;
+    let mut include_stack = Vec::new();
+    render_source_for_show(&store, &source, &mut include_stack, 0)
+}
+
+pub fn save_default_profile_source(source: &str) -> Result<()> {
+    let home = home_dir()?;
+    let store = ProfileStore::new(config_dir(&home));
+    parse(source, &home, Path::new("/"), &store, &PathExeResolver)
+        .map_err(|err| anyhow::anyhow!("{err}"))
+        .context("edited profile is invalid")?;
+    store.save_default_profile_source(source)
+}
+
 #[derive(Debug, Clone)]
 struct ProfileStore {
     dir: PathBuf,
@@ -86,9 +111,21 @@ impl ProfileStore {
         Self { dir }
     }
 
+    fn default_profile_path(&self) -> PathBuf {
+        self.dir.join(DEFAULT_PROFILE_NAME)
+    }
+
     fn load_default_profile_source(&self) -> Result<String> {
         self.load_profile_source(DEFAULT_PROFILE_NAME)
             .map(|source| source.unwrap_or_else(|| DEFAULT_PROFILE_SOURCE.to_owned()))
+    }
+
+    fn save_default_profile_source(&self, source: &str) -> Result<()> {
+        fs::create_dir_all(&self.dir)
+            .with_context(|| format!("failed to create {}", self.dir.display()))?;
+        let path = self.default_profile_path();
+        fs::write(&path, source.as_bytes())
+            .with_context(|| format!("failed to write profile {}", path.display()))
     }
 
     fn load_profile_source(&self, name: &str) -> Result<Option<String>> {
@@ -144,6 +181,56 @@ fn validate_profile_name(name: &str) -> Result<()> {
         bail!("invalid profile name: {name:?}");
     }
     Ok(())
+}
+
+fn render_source_for_show(
+    store: &ProfileStore,
+    source: &str,
+    include_stack: &mut Vec<String>,
+    depth: usize,
+) -> Result<String> {
+    let mut out = String::new();
+    let indent = "  ".repeat(depth + 1);
+    for line in source.lines() {
+        out.push_str(line);
+        out.push('\n');
+
+        let Some(include_name) = parse_include_directive(line) else {
+            continue;
+        };
+        if include_stack.iter().any(|name| name == include_name) {
+            out.push_str(&indent);
+            out.push_str("# skipped cyclic include ");
+            out.push_str(include_name);
+            out.push('\n');
+            continue;
+        }
+        let Some(include_source) = store.load_profile_source(include_name)? else {
+            continue;
+        };
+
+        include_stack.push(include_name.to_owned());
+        let rendered = render_source_for_show(store, &include_source, include_stack, depth + 1)
+            .with_context(|| format!("failed to render include {include_name}"))?;
+        include_stack.pop();
+        for rendered_line in rendered.lines() {
+            out.push_str(&indent);
+            out.push_str("# ");
+            out.push_str(rendered_line);
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+fn parse_include_directive(line: &str) -> Option<&str> {
+    let mut tokens = line.trim().strip_prefix('%')?.split_whitespace();
+    let directive = tokens.next()?;
+    if directive != "include" {
+        return None;
+    }
+    let include_name = tokens.next()?;
+    tokens.next().is_none().then_some(include_name)
 }
 
 #[cfg(test)]
@@ -224,5 +311,49 @@ mod tests {
         .expect("parse builtin profile");
 
         crate::mount_plan::build_mount_plan(&profile).expect("build mount plan");
+    }
+
+    #[test]
+    fn render_default_profile_source_for_show_expands_includes_as_comments() {
+        let tempdir = tempdir().expect("tempdir");
+        let home = tempdir.path().join("home");
+        let store = ProfileStore::new(home.join(".config/leash2"));
+        let mut stack = Vec::new();
+
+        let text =
+            render_source_for_show(&store, "%include builtin:basic\n/tmp rw\n", &mut stack, 0)
+                .expect("render source");
+
+        assert!(text.contains("%include builtin:basic\n"));
+        assert!(text.contains("  # /bin ro\n"));
+        assert!(text.ends_with("/tmp rw\n"));
+    }
+
+    #[test]
+    fn save_default_profile_source_validates_before_write() {
+        let tempdir = tempdir().expect("tempdir");
+        let home = tempdir.path().join("home");
+        let store = ProfileStore::new(home.join(".config/leash2"));
+
+        store
+            .save_default_profile_source("/tmp rw\n")
+            .expect("save valid profile");
+        assert_eq!(
+            fs::read_to_string(store.default_profile_path()).expect("read profile"),
+            "/tmp rw\n"
+        );
+
+        let err = parse(
+            ". rw\n",
+            &home,
+            Path::new("/"),
+            &store,
+            &PathExeResolver,
+        )
+        .expect_err("invalid profile");
+        assert!(
+            err.to_string().contains("relative pattern '.' is not supported"),
+            "{err:#}"
+        );
     }
 }
