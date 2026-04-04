@@ -70,6 +70,14 @@ RUST_LOG=debug cargo test --test integration -- --nocapture
 
 These are useful when investigating broker projection, lock behavior, and general FUSE request flow.
 
+## Docs
+
+- [docs/TECHNICAL_OVERVIEW.md](docs/TECHNICAL_OVERVIEW.md)
+- [docs/PRIVILEGE_MODEL.md](docs/PRIVILEGE_MODEL.md)
+- [docs/RUNTIME_LAYOUT.md](docs/RUNTIME_LAYOUT.md)
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+- [docs/locking.md](docs/locking.md)
+
 ## Dependencies Used Intentionally
 
 - `fs_err` for host filesystem access
