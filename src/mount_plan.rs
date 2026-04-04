@@ -170,7 +170,7 @@ fn retain_existing_bind_sources(plan: &mut Vec<MountPlanEntry>) -> Result<()> {
             retained.push(entry);
             continue;
         };
-        let metadata = match std::fs::metadata(&path) {
+        let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 debug!("mount-plan: skip missing bind source {}", path.display());
@@ -338,6 +338,15 @@ mod tests {
     #[test]
     fn missing_dev_bind_source_is_skipped() {
         let profile = profile_from("/dev/leash2-definitely-missing-node rw\n/proc ro\n");
+        assert_eq!(
+            build_mount_plan(&profile).expect("plan"),
+            vec![MountPlanEntry::Proc { read_only: true }]
+        );
+    }
+
+    #[test]
+    fn dev_symlink_source_is_skipped_without_following_target() {
+        let profile = profile_from("/dev/stderr rw\n/proc ro\n");
         assert_eq!(
             build_mount_plan(&profile).expect("plan"),
             vec![MountPlanEntry::Proc { read_only: true }]
