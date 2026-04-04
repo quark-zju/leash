@@ -471,7 +471,9 @@ impl IncludeResolver for NoIncludes {
 
 /// Parse a profile from source text.
 ///
-/// - `home` / `cwd`: used to expand `~` and relative patterns.
+/// - `home`: used to expand `~`.
+/// - `cwd`: retained in the public API for now, but relative patterns are rejected
+///   so daemon-side profile reload does not depend on a process working directory.
 /// - `include_resolver`: handles `%include` directives.
 /// - `exe_resolver`: resolves bare executable names in `exe=` conditions.
 pub fn parse(
@@ -632,7 +634,7 @@ fn parse_rule_line(
         .map(|c| c.compile(exe_resolver))
         .collect::<Result<_, _>>()?;
 
-    let abs_pattern = expand_pattern(pattern_tok, home, cwd);
+    let abs_pattern = expand_pattern(pattern_tok, home, cwd, lineno)?;
     let glob = build_glob(&abs_pattern).map_err(|e| ParseError::BadGlob(abs_pattern.clone(), e))?;
     let ancestor_glob = build_ancestor_glob(&abs_pattern)
         .map_err(|e| ParseError::BadGlob(abs_pattern.clone(), e))?;
@@ -648,23 +650,28 @@ fn parse_rule_line(
 
 // ── Pattern normalisation ─────────────────────────────────────────────────────
 
-fn expand_pattern(pattern: &str, home: &Path, cwd: &Path) -> String {
+fn expand_pattern(
+    pattern: &str,
+    home: &Path,
+    cwd: &Path,
+    lineno: usize,
+) -> Result<String, ParseError> {
+    let _ = cwd;
     if pattern == "~" {
-        return home.to_string_lossy().into_owned();
+        return Ok(home.to_string_lossy().into_owned());
     }
     if let Some(rest) = pattern.strip_prefix("~/") {
-        return home.join(rest).to_string_lossy().into_owned();
-    }
-    if pattern == "." {
-        return cwd.to_string_lossy().into_owned();
-    }
-    if pattern.starts_with("./") {
-        return cwd.join(&pattern[2..]).to_string_lossy().into_owned();
+        return Ok(home.join(rest).to_string_lossy().into_owned());
     }
     if pattern.starts_with('/') || pattern.starts_with("**/") {
-        return pattern.to_owned();
+        return Ok(pattern.to_owned());
     }
-    cwd.join(pattern).to_string_lossy().into_owned()
+    Err(ParseError::syntax(
+        lineno,
+        format!(
+            "relative pattern '{pattern}' is not supported; use an absolute path or ~/path"
+        ),
+    ))
 }
 
 /// Build a `GlobSet` that matches the pattern itself and all descendants.
@@ -1271,7 +1278,7 @@ mod tests {
         let fs = MockFsCheck::new(&["/repo/.git"]);
 
         let p = parse(
-            ". rw when ancestor-has=.git\n. ro\n",
+            "/repo rw when ancestor-has=.git\n/repo ro\n",
             &home(),
             &PathBuf::from("/repo"),
             &NoIncludes,
@@ -1304,7 +1311,7 @@ mod tests {
         let fs = MockFsCheck::new(&["/project/.git"]);
 
         let p = parse(
-            ". rw when ancestor-has=.git\n. deny\n",
+            "/project rw when ancestor-has=.git\n/project deny\n",
             &home(),
             &PathBuf::from("/project"),
             &NoIncludes,
@@ -1425,11 +1432,24 @@ mod tests {
     }
 
     #[test]
-    fn relative_path_resolved_under_cwd() {
-        let p = parse_simple("subdir deny\n");
-        assert_eq!(
-            eval(&p, "/workspace/project/subdir/secret", None, &[]),
-            Some(Action::Deny)
+    fn relative_path_patterns_are_rejected() {
+        let err = parse_simple_result("subdir deny\n").expect_err("relative path should fail");
+        assert!(
+            err.to_string().contains("relative pattern 'subdir' is not supported"),
+            "{err:#}"
+        );
+
+        let err = parse_simple_result(". rw\n").expect_err("dot path should fail");
+        assert!(
+            err.to_string().contains("relative pattern '.' is not supported"),
+            "{err:#}"
+        );
+
+        let err = parse_simple_result("./subdir rw\n").expect_err("dot slash path should fail");
+        assert!(
+            err.to_string()
+                .contains("relative pattern './subdir' is not supported"),
+            "{err:#}"
         );
     }
 
