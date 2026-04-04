@@ -1,4 +1,5 @@
 use std::ffi::{CString, OsStr, OsString};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -380,6 +381,13 @@ fn remount_read_only(target: &Path) -> Result<()> {
 }
 
 fn pivot_root_into(new_root: &Path) -> Result<()> {
+    bind_mount(new_root, new_root).with_context(|| {
+        format!(
+            "self bind mount failed before pivot_root: {}",
+            new_root.display()
+        )
+    })?;
+    let old_root = fs::File::open("/").context("open old root before pivot_root failed")?;
     let new_root_c = c_path(new_root).context("pivot_root path contains interior NUL byte")?;
     let dot = CString::new(".").expect("literal '.' cannot contain NUL");
     let root = CString::new("/").expect("literal '/' cannot contain NUL");
@@ -394,6 +402,12 @@ fn pivot_root_into(new_root: &Path) -> Result<()> {
     let rc = unsafe { libc::syscall(libc::SYS_pivot_root, dot.as_ptr(), dot.as_ptr()) };
     if rc != 0 {
         return Err(std::io::Error::last_os_error()).context("pivot_root('.', '.') failed");
+    }
+
+    debug!("userns-run: syscall fchdir(old_root)");
+    if unsafe { libc::fchdir(old_root.as_raw_fd()) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("fchdir(old_root) failed after pivot_root");
     }
 
     debug!("userns-run: syscall umount2(., MNT_DETACH)");
