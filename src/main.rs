@@ -3,6 +3,7 @@ mod access;
 mod cli;
 mod cmd_fuse;
 mod cmd_help;
+mod cmd_profile;
 mod cmd_run;
 mod fuse_runtime;
 mod mount_plan;
@@ -41,7 +42,8 @@ fn try_main() -> Result<i32> {
             Ok(0)
         }
         Command::Profile(profile) => {
-            bail!("profile {:?} is not implemented yet", profile.action);
+            cmd_profile::profile_command(profile).context("profile subcommand failed")?;
+            Ok(0)
         }
     }
 }
