@@ -155,7 +155,7 @@ fn ensure_runtime_dir(path: &Path, chmod_on_create: bool) -> Result<()> {
 }
 
 fn ensure_dir(path: &Path) -> Result<bool> {
-    match fs::symlink_metadata(path) {
+    match std::fs::symlink_metadata(path) {
         Ok(metadata) => {
             if !metadata.is_dir() {
                 bail!("{} exists but is not a directory", path.display());
@@ -178,7 +178,7 @@ fn ensure_dir(path: &Path) -> Result<bool> {
 }
 
 fn mountpoint_is_stale(path: &Path) -> Result<bool> {
-    match fs::symlink_metadata(path) {
+    match std::fs::symlink_metadata(path) {
         Ok(_) => Ok(false),
         Err(err) if err.raw_os_error() == Some(libc::ENOTCONN) => Ok(true),
         Err(err) => Err(err).with_context(|| format!("failed to inspect {}", path.display())),
