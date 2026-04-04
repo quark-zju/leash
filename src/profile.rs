@@ -258,6 +258,15 @@ impl Profile {
     /// `ctx` supplies runtime information needed to evaluate conditions.
     /// Returns `None` when no rule matches.
     pub fn evaluate(&self, path: &Path, ctx: &EvalContext<'_>) -> Option<Action> {
+        let mut ctx = StaticRuntimeEvalContext { ctx };
+        self.evaluate_with_runtime(path, &mut ctx)
+    }
+
+    fn evaluate_with_runtime(
+        &self,
+        path: &Path,
+        ctx: &mut dyn RuntimeEvalContext,
+    ) -> Option<Action> {
         for rule in &self.rules {
             if rule.glob.is_match(path) && rule.conditions_match(path, ctx) {
                 return Some(rule.action);
@@ -267,13 +276,22 @@ impl Profile {
     }
 
     pub fn visibility(&self, path: &Path, ctx: &EvalContext<'_>) -> Visibility {
-        if let Some(action) = self.evaluate(path, ctx) {
-            if action == Action::Hide && self.is_implicit_ancestor(path, ctx) {
+        let mut ctx = StaticRuntimeEvalContext { ctx };
+        self.visibility_with_runtime(path, &mut ctx)
+    }
+
+    fn visibility_with_runtime(
+        &self,
+        path: &Path,
+        ctx: &mut dyn RuntimeEvalContext,
+    ) -> Visibility {
+        if let Some(action) = self.evaluate_with_runtime(path, ctx) {
+            if action == Action::Hide && self.is_implicit_ancestor_with_runtime(path, ctx) {
                 return Visibility::ImplicitAncestor;
             }
             return Visibility::Action(action);
         }
-        if self.is_implicit_ancestor(path, ctx) {
+        if self.is_implicit_ancestor_with_runtime(path, ctx) {
             return Visibility::ImplicitAncestor;
         }
         Visibility::Hidden
@@ -300,6 +318,15 @@ impl Profile {
     }
 
     fn is_implicit_ancestor(&self, path: &Path, ctx: &EvalContext<'_>) -> bool {
+        let mut ctx = StaticRuntimeEvalContext { ctx };
+        self.is_implicit_ancestor_with_runtime(path, &mut ctx)
+    }
+
+    fn is_implicit_ancestor_with_runtime(
+        &self,
+        path: &Path,
+        ctx: &mut dyn RuntimeEvalContext,
+    ) -> bool {
         self.rules.iter().any(|rule| {
             rule.action.allows_visible_descendants()
                 && rule.ancestor_glob.is_match(path)
@@ -326,27 +353,51 @@ pub struct EvalContext<'a> {
     pub fs: &'a dyn FsCheck,
 }
 
+trait RuntimeEvalContext {
+    fn exe(&mut self) -> Option<&Path>;
+    fn has_env(&mut self, name: &str) -> bool;
+    fn fs(&self) -> &dyn FsCheck;
+}
+
+struct StaticRuntimeEvalContext<'a, 'b> {
+    ctx: &'a EvalContext<'b>,
+}
+
+impl RuntimeEvalContext for StaticRuntimeEvalContext<'_, '_> {
+    fn exe(&mut self) -> Option<&Path> {
+        self.ctx.exe
+    }
+
+    fn has_env(&mut self, name: &str) -> bool {
+        self.ctx.env.contains_key(name)
+    }
+
+    fn fs(&self) -> &dyn FsCheck {
+        self.ctx.fs
+    }
+}
+
 // ── Condition matching ────────────────────────────────────────────────────────
 
 impl Rule {
-    fn conditions_match(&self, path: &Path, ctx: &EvalContext<'_>) -> bool {
+    fn conditions_match(&self, path: &Path, ctx: &mut dyn RuntimeEvalContext) -> bool {
         self.conditions.iter().all(|c| c.matches(path, ctx))
     }
 }
 
 impl Condition {
-    pub fn matches(&self, path: &Path, ctx: &EvalContext<'_>) -> bool {
+    fn matches(&self, path: &Path, ctx: &mut dyn RuntimeEvalContext) -> bool {
         match self {
-            Condition::Exe(resolved) => match (resolved.as_deref(), ctx.exe) {
+            Condition::Exe(resolved) => match (resolved.as_deref(), ctx.exe()) {
                 // Name not found in PATH at parse time → never matches.
                 (None, _) => false,
                 (_, None) => false,
                 (Some(expected), Some(exe)) => exe == expected,
             },
 
-            Condition::AncestorHas(name) => ancestor_has(path, name, ctx.fs),
+            Condition::AncestorHas(name) => ancestor_has(path, name, ctx.fs()),
 
-            Condition::Env(var) => ctx.env.contains_key(var.as_str()),
+            Condition::Env(var) => ctx.has_env(var),
         }
     }
 }
@@ -710,48 +761,88 @@ fn parse_environ(raw: Vec<u8>) -> HashMap<String, String> {
     out
 }
 
-pub struct ProfileController<F = RealFsCheck> {
-    profile: Profile,
-    fs: F,
+pub trait CallerDataSource {
+    fn exe(&self, pid: u32) -> Option<PathBuf>;
+    fn env(&self, pid: u32) -> HashMap<String, String>;
 }
 
-impl ProfileController<RealFsCheck> {
+pub struct ProcCallerDataSource;
+
+impl CallerDataSource for ProcCallerDataSource {
+    fn exe(&self, pid: u32) -> Option<PathBuf> {
+        std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+    }
+
+    fn env(&self, pid: u32) -> HashMap<String, String> {
+        std::fs::read(format!("/proc/{pid}/environ"))
+            .map(parse_environ)
+            .unwrap_or_default()
+    }
+}
+
+pub struct ProfileController<F = RealFsCheck, C = ProcCallerDataSource> {
+    profile: Profile,
+    fs: F,
+    caller_data: C,
+}
+
+impl ProfileController<RealFsCheck, ProcCallerDataSource> {
     pub fn new(profile: Profile) -> Self {
         Self {
             profile,
             fs: RealFsCheck,
+            caller_data: ProcCallerDataSource,
         }
     }
 }
 
-impl<F: FsCheck> ProfileController<F> {
+impl<F: FsCheck> ProfileController<F, ProcCallerDataSource> {
     #[allow(dead_code)]
     pub(crate) fn with_fs(profile: Profile, fs: F) -> Self {
-        Self { profile, fs }
+        Self {
+            profile,
+            fs,
+            caller_data: ProcCallerDataSource,
+        }
     }
 }
 
-impl<F: FsCheck + Send + Sync + 'static> AccessController for ProfileController<F> {
+impl<F: FsCheck, C: CallerDataSource> ProfileController<F, C> {
+    #[allow(dead_code)]
+    pub(crate) fn with_sources(profile: Profile, fs: F, caller_data: C) -> Self {
+        Self {
+            profile,
+            fs,
+            caller_data,
+        }
+    }
+}
+
+impl<F: FsCheck + Send + Sync + 'static, C: CallerDataSource + Send + Sync + 'static>
+    AccessController for ProfileController<F, C>
+{
     fn check(&self, request: &AccessRequest<'_>) -> AccessDecision {
-        let exe = request
-            .caller
-            .pid
-            .and_then(|pid| std::fs::read_link(format!("/proc/{pid}/exe")).ok());
-        let env = request
-            .caller
-            .pid
-            .and_then(|pid| std::fs::read(format!("/proc/{pid}/environ")).ok())
-            .map(parse_environ)
-            .unwrap_or_default();
-        let ctx = EvalContext {
-            exe: exe.as_deref(),
-            env: &env,
+        let mut ctx = LazyRuntimeEvalContext {
+            pid: request.caller.pid,
             fs: &self.fs,
+            caller_data: &self.caller_data,
+            exe_loaded: false,
+            exe: None,
+            env_loaded: false,
+            env: HashMap::new(),
         };
         let errno = if request.operation.is_write() {
-            self.profile.mutation_errno(request.path, &ctx)
+            match self.profile.visibility_with_runtime(request.path, &mut ctx) {
+                Visibility::Action(action) => action.mutation_errno(),
+                Visibility::ImplicitAncestor if ctx.fs().is_dir(request.path) => None,
+                Visibility::ImplicitAncestor | Visibility::Hidden => Some(EPERM),
+            }
         } else {
-            self.profile.access_errno(request.path, &ctx)
+            match self.profile.visibility_with_runtime(request.path, &mut ctx) {
+                Visibility::Action(action) => action.access_errno(),
+                Visibility::ImplicitAncestor if ctx.fs().is_dir(request.path) => None,
+                Visibility::ImplicitAncestor | Visibility::Hidden => Some(ENOENT),
+            }
         };
         match errno {
             None => AccessDecision::Allow,
@@ -760,12 +851,49 @@ impl<F: FsCheck + Send + Sync + 'static> AccessController for ProfileController<
     }
 }
 
+struct LazyRuntimeEvalContext<'a, F, C> {
+    pid: Option<u32>,
+    fs: &'a F,
+    caller_data: &'a C,
+    exe_loaded: bool,
+    exe: Option<PathBuf>,
+    env_loaded: bool,
+    env: HashMap<String, String>,
+}
+
+impl<F: FsCheck, C: CallerDataSource> RuntimeEvalContext for LazyRuntimeEvalContext<'_, F, C> {
+    fn exe(&mut self) -> Option<&Path> {
+        if !self.exe_loaded {
+            self.exe = self.pid.and_then(|pid| self.caller_data.exe(pid));
+            self.exe_loaded = true;
+        }
+        self.exe.as_deref()
+    }
+
+    fn has_env(&mut self, name: &str) -> bool {
+        if !self.env_loaded {
+            self.env = self
+                .pid
+                .map(|pid| self.caller_data.env(pid))
+                .unwrap_or_default();
+            self.env_loaded = true;
+        }
+        self.env.contains_key(name)
+    }
+
+    fn fs(&self) -> &dyn FsCheck {
+        self.fs
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::access::{Caller, Operation};
     use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -818,6 +946,26 @@ mod tests {
 
         fn is_dir(&self, path: &Path) -> bool {
             self.0.contains(path)
+        }
+    }
+
+    #[derive(Default)]
+    struct MockCallerDataSource {
+        exe: Option<PathBuf>,
+        env: HashMap<String, String>,
+        exe_reads: AtomicUsize,
+        env_reads: AtomicUsize,
+    }
+
+    impl CallerDataSource for MockCallerDataSource {
+        fn exe(&self, _pid: u32) -> Option<PathBuf> {
+            self.exe_reads.fetch_add(1, Ordering::Relaxed);
+            self.exe.clone()
+        }
+
+        fn env(&self, _pid: u32) -> HashMap<String, String> {
+            self.env_reads.fetch_add(1, Ordering::Relaxed);
+            self.env.clone()
         }
     }
 
@@ -932,6 +1080,44 @@ mod tests {
             p.mutation_errno(Path::new("/home/user/file"), &ctx),
             Some(EPERM)
         );
+    }
+
+    #[test]
+    fn profile_controller_skips_proc_reads_for_unconditional_path_match() {
+        let profile = parse_simple("/workspace/project ro\n/workspace/project rw when env=TOKEN\n");
+        let caller_data = MockCallerDataSource::default();
+        let controller =
+            ProfileController::with_sources(profile, MockFsCheck::empty(), caller_data);
+
+        assert_eq!(
+            controller.check(&AccessRequest {
+                caller: &Caller::new(Some(123), Some("test".to_owned())),
+                path: Path::new("/workspace/project/file.txt"),
+                operation: Operation::Lookup,
+            }),
+            AccessDecision::Allow
+        );
+        assert_eq!(controller.caller_data.exe_reads.load(Ordering::Relaxed), 0);
+        assert_eq!(controller.caller_data.env_reads.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn profile_controller_reads_env_only_when_matching_rule_requires_it() {
+        let profile = parse_simple("/workspace/project rw when env=TOKEN\n/workspace/project ro\n");
+        let caller_data = MockCallerDataSource::default();
+        let controller =
+            ProfileController::with_sources(profile, MockFsCheck::empty(), caller_data);
+
+        assert_eq!(
+            controller.check(&AccessRequest {
+                caller: &Caller::new(Some(123), Some("test".to_owned())),
+                path: Path::new("/workspace/project/file.txt"),
+                operation: Operation::Lookup,
+            }),
+            AccessDecision::Allow
+        );
+        assert_eq!(controller.caller_data.exe_reads.load(Ordering::Relaxed), 0);
+        assert_eq!(controller.caller_data.env_reads.load(Ordering::Relaxed), 1);
     }
 
     #[test]
