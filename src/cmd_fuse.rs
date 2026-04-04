@@ -54,11 +54,13 @@ fn spawn_profile_reload_thread(
     install_sighup_reload_handler()?;
     thread::Builder::new()
         .name("leash-profile-reload".to_owned())
-        .spawn(move || loop {
-            if PROFILE_RELOAD_REQUESTED.swap(false, Ordering::Relaxed) {
-                reload_default_profile(&controller);
+        .spawn(move || {
+            loop {
+                if PROFILE_RELOAD_REQUESTED.swap(false, Ordering::Relaxed) {
+                    reload_default_profile(&controller);
+                }
+                thread::sleep(PROFILE_RELOAD_POLL);
             }
-            thread::sleep(PROFILE_RELOAD_POLL);
         })
         .context("failed to spawn profile reload thread")
 }

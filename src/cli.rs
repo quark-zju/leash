@@ -235,7 +235,10 @@ mod tests {
 
     #[test]
     fn parse_low_level_kill() {
-        assert_eq!(parse_from(os(&["_kill"])).expect("parse"), Command::LowLevelKill);
+        assert_eq!(
+            parse_from(os(&["_kill"])).expect("parse"),
+            Command::LowLevelKill
+        );
     }
 
     #[test]

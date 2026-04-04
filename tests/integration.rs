@@ -702,8 +702,14 @@ fn profile_policy_hide_and_implicit_ancestor_visibility() -> Result<()> {
     fs::create_dir_all(suite.backing_root.join("foo/sub/deeper"))?;
     fs::write(suite.backing_root.join("foo/sub/ok.txt"), b"ok")?;
     fs::write(suite.backing_root.join("foo/sub/no.bin"), b"no")?;
-    fs::write(suite.backing_root.join("foo/sub/deeper/nested.txt"), b"nested")?;
-    fs::write(suite.backing_root.join("foo/sub/deeper/nested.bin"), b"nested-bin")?;
+    fs::write(
+        suite.backing_root.join("foo/sub/deeper/nested.txt"),
+        b"nested",
+    )?;
+    fs::write(
+        suite.backing_root.join("foo/sub/deeper/nested.bin"),
+        b"nested-bin",
+    )?;
 
     wait_for_path(&suite.mount_root.join("visible.txt"))?;
     wait_for_path(&suite.mount_root.join("foo"))?;
@@ -743,7 +749,10 @@ fn profile_policy_hide_and_implicit_ancestor_visibility() -> Result<()> {
         .open(suite.mount_root.join("foo/sub/new.txt"))?;
     file.write_all(b"new")?;
     file.sync_data()?;
-    assert_eq!(fs::read(suite.backing_root.join("foo/sub/new.txt"))?, b"new");
+    assert_eq!(
+        fs::read(suite.backing_root.join("foo/sub/new.txt"))?,
+        b"new"
+    );
 
     let create_bin = fs::OpenOptions::new()
         .create_new(true)
@@ -795,7 +804,10 @@ fn profile_symlink_target_policy_blocks_open_and_setattr() -> Result<()> {
     fs::create_dir_all(suite.backing_root.join("allowed"))?;
     fs::create_dir_all(suite.backing_root.join("denied"))?;
     fs::write(suite.backing_root.join("denied/secret.txt"), b"secret")?;
-    std::os::unix::fs::symlink("../denied/secret.txt", suite.backing_root.join("allowed/secret-link"))?;
+    std::os::unix::fs::symlink(
+        "../denied/secret.txt",
+        suite.backing_root.join("allowed/secret-link"),
+    )?;
     wait_for_symlink_path(&suite.mount_root.join("allowed/secret-link"))?;
 
     let read_err = fs::read(suite.mount_root.join("allowed/secret-link")).unwrap_err();

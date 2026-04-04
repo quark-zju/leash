@@ -177,8 +177,9 @@ fn retain_existing_bind_sources(plan: &mut Vec<MountPlanEntry>) -> Result<()> {
                 continue;
             }
             Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("{}: /dev bind source is not accessible", path.display()));
+                return Err(err).with_context(|| {
+                    format!("{}: /dev bind source is not accessible", path.display())
+                });
             }
         };
         let kind = metadata.file_type();
@@ -342,15 +343,18 @@ mod tests {
 
     #[test]
     fn dev_ancestor_has_rules_are_rejected() {
-        let err = build_mount_plan(&profile_from("/dev/pts rw when ancestor-has=.git\n"))
-            .unwrap_err();
+        let err =
+            build_mount_plan(&profile_from("/dev/pts rw when ancestor-has=.git\n")).unwrap_err();
         assert!(err.to_string().contains("ancestor-has"), "{err:#}");
     }
 
     #[test]
     fn dev_deny_rules_are_rejected() {
         let err = build_mount_plan(&profile_from("/dev/null deny\n")).unwrap_err();
-        assert!(err.to_string().contains("/dev only supports ro/rw"), "{err:#}");
+        assert!(
+            err.to_string().contains("/dev only supports ro/rw"),
+            "{err:#}"
+        );
     }
 
     #[test]

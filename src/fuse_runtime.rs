@@ -179,9 +179,7 @@ fn ensure_dir(path: &Path) -> Result<bool> {
             lazy_unmount_stale_fuse_mount(path)?;
             ensure_dir(path)
         }
-        Err(err) => {
-            Err(err).with_context(|| format!("failed to inspect {}", path.display()))
-        }
+        Err(err) => Err(err).with_context(|| format!("failed to inspect {}", path.display())),
     }
 }
 
@@ -195,11 +193,7 @@ fn mountpoint_is_stale(path: &Path) -> Result<bool> {
 
 fn lazy_unmount_stale_fuse_mount(path: &Path) -> Result<()> {
     for command in ["fusermount3", "fusermount"] {
-        debug!(
-            "fuse-runtime: execute {} -u -z {}",
-            command,
-            path.display()
-        );
+        debug!("fuse-runtime: execute {} -u -z {}", command, path.display());
         let status = match ProcessCommand::new(command)
             .arg("-u")
             .arg("-z")
@@ -209,9 +203,8 @@ fn lazy_unmount_stale_fuse_mount(path: &Path) -> Result<()> {
             Ok(status) => status,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => {
-                return Err(err).with_context(|| {
-                    format!("failed to run {command} -u -z {}", path.display())
-                });
+                return Err(err)
+                    .with_context(|| format!("failed to run {command} -u -z {}", path.display()));
             }
         };
         if !status.success() {
@@ -377,8 +370,7 @@ mod tests {
 
         fs::write(&path, "999999\n").expect("overwrite stale pid");
         assert!(
-            !signal_global_daemon_under(&runtime_dir, libc::SIGHUP)
-                .expect("signal stale daemon")
+            !signal_global_daemon_under(&runtime_dir, libc::SIGHUP).expect("signal stale daemon")
         );
         assert!(!path.exists());
 

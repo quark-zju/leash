@@ -7,8 +7,8 @@ mod cmd_kill;
 mod cmd_profile;
 mod cmd_run;
 mod fuse_runtime;
-mod mount_plan;
 mod mirrorfs;
+mod mount_plan;
 mod profile;
 mod profile_store;
 mod userns_run;
@@ -88,9 +88,9 @@ mod tests {
             program: OsString::from("true"),
             args: vec![],
         })));
-        assert!(command_verbose(&Command::LowLevelFuse(LowLevelFuseCommand {
-            verbose: true,
-        })));
+        assert!(command_verbose(&Command::LowLevelFuse(
+            LowLevelFuseCommand { verbose: true }
+        )));
         assert!(!command_verbose(&Command::Help {
             topic: HelpTopic::Root,
             verbose: false,

@@ -76,9 +76,8 @@ fn unshare_run_namespaces() -> Result<()> {
     debug!("userns-run: syscall unshare(flags={flags:#x})");
     let rc = unsafe { libc::unshare(flags) };
     if rc != 0 {
-        return Err(std::io::Error::last_os_error()).context(
-            "unshare(CLONE_NEWUSER|CLONE_NEWNS|CLONE_NEWIPC|CLONE_NEWPID) failed",
-        );
+        return Err(std::io::Error::last_os_error())
+            .context("unshare(CLONE_NEWUSER|CLONE_NEWNS|CLONE_NEWIPC|CLONE_NEWPID) failed");
     }
     Ok(())
 }
@@ -88,12 +87,18 @@ fn write_current_user_namespace_maps(uid: libc::uid_t, gid: libc::gid_t) -> Resu
     fs::write("/proc/self/setgroups", b"deny\n").context("write /proc/self/setgroups failed")?;
 
     let uid_map = format!("{} {} 1\n", uid, uid);
-    debug!("userns-run: write /proc/self/uid_map = {}", uid_map.trim_end());
+    debug!(
+        "userns-run: write /proc/self/uid_map = {}",
+        uid_map.trim_end()
+    );
     fs::write("/proc/self/uid_map", uid_map.as_bytes())
         .context("write /proc/self/uid_map failed")?;
 
     let gid_map = format!("{} {} 1\n", gid, gid);
-    debug!("userns-run: write /proc/self/gid_map = {}", gid_map.trim_end());
+    debug!(
+        "userns-run: write /proc/self/gid_map = {}",
+        gid_map.trim_end()
+    );
     fs::write("/proc/self/gid_map", gid_map.as_bytes())
         .context("write /proc/self/gid_map failed")?;
 
@@ -279,8 +284,10 @@ fn remount_bind_read_only(target: &Path) -> Result<()> {
 }
 
 fn readonly_bind_remount_flags(target: &Path) -> Result<libc::c_ulong> {
-    Ok((libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY) as libc::c_ulong
-        | locked_mount_flags_for_target(target, Path::new(MOUNTINFO_PATH))?)
+    Ok(
+        (libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY) as libc::c_ulong
+            | locked_mount_flags_for_target(target, Path::new(MOUNTINFO_PATH))?,
+    )
 }
 
 fn locked_mount_flags_for_target(target: &Path, mountinfo: &Path) -> Result<libc::c_ulong> {
@@ -350,9 +357,8 @@ fn mount_virtual_fs(source: &str, fstype: &str, target: &Path) -> Result<()> {
         )
     };
     if rc != 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| {
-            format!("mount {fstype} failed at {}", target.display())
-        });
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("mount {fstype} failed at {}", target.display()));
     }
     Ok(())
 }
@@ -512,7 +518,8 @@ fn fork_process(label: &str) -> Result<libc::pid_t> {
     debug!("userns-run: syscall fork() for {label}");
     let pid = unsafe { libc::fork() };
     if pid < 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| format!("fork failed for {label}"));
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("fork failed for {label}"));
     }
     Ok(pid)
 }
@@ -520,15 +527,7 @@ fn fork_process(label: &str) -> Result<libc::pid_t> {
 fn set_process_name(name: &str) -> Result<()> {
     let name_c = CString::new(name).context("process name contains interior NUL byte")?;
     debug!("userns-run: syscall prctl(PR_SET_NAME, {name})");
-    let rc = unsafe {
-        libc::prctl(
-            libc::PR_SET_NAME,
-            name_c.as_ptr() as libc::c_ulong,
-            0,
-            0,
-            0,
-        )
-    };
+    let rc = unsafe { libc::prctl(libc::PR_SET_NAME, name_c.as_ptr() as libc::c_ulong, 0, 0, 0) };
     if rc != 0 {
         return Err(std::io::Error::last_os_error()).context("prctl(PR_SET_NAME) failed");
     }
@@ -651,7 +650,8 @@ mod tests {
 
     #[test]
     fn parse_mountinfo_mount_flags_preserves_locked_mount_attrs() {
-        let line = "41 29 0:45 / /tmp/My\\040Mount rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw";
+        let line =
+            "41 29 0:45 / /tmp/My\\040Mount rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw";
 
         let parsed = parse_mountinfo_mount_flags(line)
             .expect("parse mountinfo")

@@ -1,5 +1,5 @@
-use std::path::Path;
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -19,7 +19,8 @@ const FUSE_STARTUP_POLL: Duration = Duration::from_millis(20);
 pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to resolve current working directory")?;
     let profile = profile_store::load_default_profile(&cwd)?;
-    let mount_plan = mount_plan::build_mount_plan(&profile).context("failed to build mount plan")?;
+    let mount_plan =
+        mount_plan::build_mount_plan(&profile).context("failed to build mount plan")?;
     let fuse_mount_root = ensure_fuse_daemon_running(run.verbose)?;
 
     let config = UsernsRunConfig::new(
@@ -109,7 +110,10 @@ fn wait_for_fuse_mount(mountpoint: &Path, child: &mut Child) -> Result<()> {
             bail!("_fuse daemon exited before mounting {mountpoint:?}: {status}");
         }
         if Instant::now() >= deadline {
-            bail!("timed out waiting for _fuse to mount {}", mountpoint.display());
+            bail!(
+                "timed out waiting for _fuse to mount {}",
+                mountpoint.display()
+            );
         }
         thread::sleep(FUSE_STARTUP_POLL);
     }

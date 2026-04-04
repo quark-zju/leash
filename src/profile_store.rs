@@ -253,12 +253,7 @@ fn home_dir() -> Result<PathBuf> {
 }
 
 fn validate_profile_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name.contains('/')
-        || name == "."
-        || name == ".."
-        || name.contains('\0')
-    {
+    if name.is_empty() || name.contains('/') || name == "." || name == ".." || name.contains('\0') {
         bail!("invalid profile name: {name:?}");
     }
     Ok(())
@@ -370,7 +365,12 @@ mod tests {
             Some("/opt rw\n".to_owned())
         );
         assert_eq!(store.resolve("missing").expect("resolve"), None);
-        assert!(store.resolve("../escape").expect_err("invalid name").contains("invalid profile name"));
+        assert!(
+            store
+                .resolve("../escape")
+                .expect_err("invalid name")
+                .contains("invalid profile name")
+        );
     }
 
     #[test]
@@ -419,7 +419,10 @@ mod tests {
             .load_default_profile_source_with_origin()
             .expect("load profile");
 
-        assert_eq!(loaded.origin, DefaultProfileOrigin::Builtin("builtin:default"));
+        assert_eq!(
+            loaded.origin,
+            DefaultProfileOrigin::Builtin("builtin:default")
+        );
         assert_eq!(loaded.source, DEFAULT_PROFILE_SOURCE);
     }
 
@@ -458,16 +461,11 @@ mod tests {
             "/tmp rw\n"
         );
 
-        let err = parse(
-            ". rw\n",
-            &home,
-            Path::new("/"),
-            &store,
-            &PathExeResolver,
-        )
-        .expect_err("invalid profile");
+        let err = parse(". rw\n", &home, Path::new("/"), &store, &PathExeResolver)
+            .expect_err("invalid profile");
         assert!(
-            err.to_string().contains("relative pattern '.' is not supported"),
+            err.to_string()
+                .contains("relative pattern '.' is not supported"),
             "{err:#}"
         );
     }
@@ -487,6 +485,9 @@ mod tests {
         let loaded = store
             .load_default_profile_source_with_origin()
             .expect("load profile");
-        assert_eq!(loaded.origin, DefaultProfileOrigin::Builtin("builtin:default"));
+        assert_eq!(
+            loaded.origin,
+            DefaultProfileOrigin::Builtin("builtin:default")
+        );
     }
 }

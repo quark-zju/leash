@@ -14,10 +14,10 @@ use anyhow::{Context, Result};
 use fs_err as fs;
 use fs_err::os::unix::fs::OpenOptionsExt as FsOpenOptionsExt;
 use fuser::{
-    AccessFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
-    Generation, INodeNo, InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, RenameFlags,
-    ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyLock,
-    ReplyOpen, ReplyStatfs, ReplyWrite, Request, TimeOrNow, WriteFlags,
+    AccessFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
+    INodeNo, InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, RenameFlags, ReplyAttr,
+    ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyLock, ReplyOpen,
+    ReplyStatfs, ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
 use libc::{EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR};
 use log::debug;
@@ -264,7 +264,9 @@ impl<P: AccessController> MirrorFs<P> {
     }
 
     fn create_errno(&self, caller: &Caller, path: &Path, operation: Operation) -> Option<i32> {
-        if self.authorize_errno(caller, path, Operation::Lookup).is_none()
+        if self
+            .authorize_errno(caller, path, Operation::Lookup)
+            .is_none()
             && fs::symlink_metadata(path).is_ok()
         {
             return Some(EEXIST);
@@ -690,11 +692,7 @@ impl<P: AccessController> MirrorFs<P> {
             .unwrap_or((start, end, libc::F_UNLCK, 0)))
     }
 
-    fn release_lock_owner_for_fuse(
-        &mut self,
-        ino: u64,
-        lock_owner: LockOwner,
-    ) -> Result<()> {
+    fn release_lock_owner_for_fuse(&mut self, ino: u64, lock_owner: LockOwner) -> Result<()> {
         let Some(path) = self.path_for_ino(ino).map(Path::to_path_buf) else {
             return Ok(());
         };
@@ -771,7 +769,14 @@ impl<P: AccessController> MirrorFs<P> {
     fn allocate_handle(&mut self, ino: u64, file: fs::File, writable: bool) -> u64 {
         let fh = self.next_fh;
         self.next_fh += 1;
-        self.handles.insert(fh, OpenHandle { ino, file, writable });
+        self.handles.insert(
+            fh,
+            OpenHandle {
+                ino,
+                file,
+                writable,
+            },
+        );
         fh
     }
 
@@ -944,7 +949,8 @@ impl OwnerLockState {
     fn unlock_range(&mut self, start: u64, end: u64) {
         let mut next = Vec::new();
         for range in self.ranges.drain(..) {
-            let Some((overlap_start, overlap_end)) = overlap(range.start, range.end, start, end) else {
+            let Some((overlap_start, overlap_end)) = overlap(range.start, range.end, start, end)
+            else {
                 next.push(range);
                 continue;
             };
@@ -1812,12 +1818,7 @@ fn lock_mode_from_fcntl(typ: i32) -> Result<LockMode> {
     }
 }
 
-fn overlap(
-    left_start: u64,
-    left_end: u64,
-    right_start: u64,
-    right_end: u64,
-) -> Option<(u64, u64)> {
+fn overlap(left_start: u64, left_end: u64, right_start: u64, right_end: u64) -> Option<(u64, u64)> {
     let start = left_start.max(right_start);
     let end = left_end.min(right_end);
     (start <= end).then_some((start, end))
@@ -2009,10 +2010,7 @@ fn broker_main_loop(mut stream: UnixStream) -> Result<()> {
                     let file = match fs::OpenOptions::new().read(true).write(true).open(&path) {
                         Ok(file) => file,
                         Err(err) => {
-                            write_broker_response(
-                                &mut stream,
-                                err.raw_os_error().unwrap_or(EIO),
-                            )?;
+                            write_broker_response(&mut stream, err.raw_os_error().unwrap_or(EIO))?;
                             continue;
                         }
                     };
@@ -2100,10 +2098,13 @@ fn write_broker_request(stream: &mut UnixStream, request: &BrokerRequest) -> Res
             for segment in projection {
                 write_u64(stream, segment.start)?;
                 write_u64(stream, segment.end)?;
-                write_u8(stream, match segment.mode {
-                    LockMode::Shared => 1,
-                    LockMode::Exclusive => 2,
-                })?;
+                write_u8(
+                    stream,
+                    match segment.mode {
+                        LockMode::Shared => 1,
+                        LockMode::Exclusive => 2,
+                    },
+                )?;
             }
         }
         BrokerRequest::DropInode { ino } => {

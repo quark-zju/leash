@@ -282,11 +282,7 @@ impl Profile {
         self.visibility_with_runtime(path, &mut ctx)
     }
 
-    fn visibility_with_runtime(
-        &self,
-        path: &Path,
-        ctx: &mut dyn RuntimeEvalContext,
-    ) -> Visibility {
+    fn visibility_with_runtime(&self, path: &Path, ctx: &mut dyn RuntimeEvalContext) -> Visibility {
         if let Some(action) = self.evaluate_with_runtime(path, ctx) {
             if action == Action::Hide && self.is_implicit_ancestor_with_runtime(path, ctx) {
                 return Visibility::ImplicitAncestor;
@@ -670,9 +666,7 @@ fn expand_pattern(
     }
     Err(ParseError::syntax(
         lineno,
-        format!(
-            "relative pattern '{pattern}' is not supported; use an absolute path or ~/path"
-        ),
+        format!("relative pattern '{pattern}' is not supported; use an absolute path or ~/path"),
     ))
 }
 
@@ -740,11 +734,7 @@ fn ancestor_globs_for_rule(pattern: &str) -> Vec<String> {
         out.push(prefix.clone());
     }
     if has_double_star {
-        let prefix = base
-            .split("/**")
-            .next()
-            .unwrap_or("")
-            .trim_end_matches('/');
+        let prefix = base.split("/**").next().unwrap_or("").trim_end_matches('/');
         if prefix.is_empty() {
             out.push("/**".to_owned());
         } else {
@@ -1472,13 +1462,15 @@ mod tests {
     fn relative_path_patterns_are_rejected() {
         let err = parse_simple_result("subdir deny\n").expect_err("relative path should fail");
         assert!(
-            err.to_string().contains("relative pattern 'subdir' is not supported"),
+            err.to_string()
+                .contains("relative pattern 'subdir' is not supported"),
             "{err:#}"
         );
 
         let err = parse_simple_result(". rw\n").expect_err("dot path should fail");
         assert!(
-            err.to_string().contains("relative pattern '.' is not supported"),
+            err.to_string()
+                .contains("relative pattern '.' is not supported"),
             "{err:#}"
         );
 
