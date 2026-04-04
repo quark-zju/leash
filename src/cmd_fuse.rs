@@ -1,13 +1,21 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use log::{debug, info};
+use log::{info, warn};
 
 use crate::cli::LowLevelFuseCommand;
 use crate::fuse_runtime::{self, MountState};
 use crate::mirrorfs::MirrorFs;
 use crate::profile::ProfileController;
 use crate::profile_store;
+
+const PROFILE_RELOAD_POLL: Duration = Duration::from_millis(100);
+
+static PROFILE_RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn fuse_command(_command: LowLevelFuseCommand) -> Result<()> {
     let mountpoint = fuse_runtime::ensure_global_mountpoint()?;
@@ -30,11 +38,96 @@ pub(crate) fn fuse_command(_command: LowLevelFuseCommand) -> Result<()> {
         }
     }
 
-    let cwd = std::env::current_dir().context("failed to resolve daemon startup cwd")?;
-    let profile = profile_store::load_default_profile(&cwd)?;
-    let fs = MirrorFs::new(PathBuf::from("/"), ProfileController::new(profile));
+    let profile = profile_store::load_default_profile(Path::new("/"))?;
+    let controller = Arc::new(ProfileController::new(profile));
+    let _reload_thread = spawn_profile_reload_thread(Arc::clone(&controller))?;
+    let fs = MirrorFs::new(PathBuf::from("/"), controller);
 
     info!("mounting shared mirrorfs at {}", mountpoint.display());
-    debug!("_fuse: policy compiled with startup cwd {}", cwd.display());
     fs.mount(Path::new(&mountpoint))
+}
+
+fn spawn_profile_reload_thread(
+    controller: Arc<ProfileController>,
+) -> Result<thread::JoinHandle<()>> {
+    install_sighup_reload_handler()?;
+    thread::Builder::new()
+        .name("leash-profile-reload".to_owned())
+        .spawn(move || loop {
+            if PROFILE_RELOAD_REQUESTED.swap(false, Ordering::Relaxed) {
+                reload_default_profile(&controller);
+            }
+            thread::sleep(PROFILE_RELOAD_POLL);
+        })
+        .context("failed to spawn profile reload thread")
+}
+
+fn install_sighup_reload_handler() -> Result<()> {
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_flags = 0;
+    action.sa_sigaction = handle_sighup_reload as *const () as libc::sighandler_t;
+    let rc = unsafe {
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGHUP, &action, std::ptr::null_mut())
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to install SIGHUP handler");
+    }
+    Ok(())
+}
+
+extern "C" fn handle_sighup_reload(_signal: libc::c_int) {
+    PROFILE_RELOAD_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+fn reload_default_profile(controller: &ProfileController) {
+    reload_profile_with(controller, || {
+        profile_store::load_default_profile(Path::new("/"))
+    });
+}
+
+fn reload_profile_with(
+    controller: &ProfileController,
+    load_profile: impl FnOnce() -> Result<crate::profile::Profile>,
+) {
+    match load_profile() {
+        Ok(profile) => {
+            controller.replace_profile(profile);
+            info!("reloaded default profile after SIGHUP");
+        }
+        Err(err) => {
+            warn!("ignoring failed SIGHUP profile reload: {err:#}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::access::{AccessController, AccessRequest, Caller, Operation};
+    use crate::profile::{NoIncludes, PathExeResolver, parse};
+
+    #[test]
+    fn reload_default_profile_helper_keeps_serving_old_policy_on_parse_error() {
+        let controller = ProfileController::new(
+            parse(
+                "/tmp ro\n",
+                Path::new("/home/user"),
+                Path::new("/"),
+                &NoIncludes,
+                &PathExeResolver,
+            )
+            .expect("parse profile"),
+        );
+        reload_profile_with(&controller, || bail!("bad profile syntax"));
+
+        assert_eq!(
+            controller.check(&AccessRequest {
+                caller: &Caller::new(None, None),
+                path: Path::new("/tmp/file.txt"),
+                operation: Operation::Lookup,
+            }),
+            crate::access::AccessDecision::Allow
+        );
+    }
 }
