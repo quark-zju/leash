@@ -66,11 +66,8 @@ fn run_namespace_supervisor(
     unshare_run_namespaces()?;
     write_current_user_namespace_maps(uid, gid)?;
     make_mounts_private()?;
-    apply_mount_plan(&config.fuse_mount_root, &config.mount_plan)?;
-    pivot_root_into(&config.fuse_mount_root)?;
-    drop_to_target_ids(uid, gid)?;
-    chdir_or_root(&config.cwd)?;
-    run_pid_namespace_init_and_exec(&config.program, &config.args)
+    apply_mount_plan_before_pid_namespace_init(&config.fuse_mount_root, &config.mount_plan)?;
+    run_pid_namespace_init_and_exec(config, uid, gid)
 }
 
 fn unshare_run_namespaces() -> Result<()> {
@@ -121,11 +118,47 @@ fn make_mounts_private() -> Result<()> {
     Ok(())
 }
 
-fn apply_mount_plan(fuse_mount_root: &Path, plan: &[MountPlanEntry]) -> Result<()> {
+fn apply_mount_plan_before_pid_namespace_init(
+    fuse_mount_root: &Path,
+    plan: &[MountPlanEntry],
+) -> Result<()> {
+    apply_mount_plan(fuse_mount_root, plan, MountPhase::BeforePidNamespaceInit)
+}
+
+fn apply_mount_plan_in_pid_namespace_init(
+    fuse_mount_root: &Path,
+    plan: &[MountPlanEntry],
+) -> Result<()> {
+    apply_mount_plan(fuse_mount_root, plan, MountPhase::InPidNamespaceInit)
+}
+
+fn apply_mount_plan(
+    fuse_mount_root: &Path,
+    plan: &[MountPlanEntry],
+    phase: MountPhase,
+) -> Result<()> {
     for entry in plan {
+        if mount_phase_for_entry(entry) != phase {
+            continue;
+        }
         apply_mount_plan_entry(fuse_mount_root, entry)?;
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MountPhase {
+    BeforePidNamespaceInit,
+    InPidNamespaceInit,
+}
+
+fn mount_phase_for_entry(entry: &MountPlanEntry) -> MountPhase {
+    match entry {
+        MountPlanEntry::Bind { .. } | MountPlanEntry::Sys { .. } => {
+            MountPhase::BeforePidNamespaceInit
+        }
+        MountPlanEntry::Proc { .. } => MountPhase::InPidNamespaceInit,
+    }
 }
 
 fn apply_mount_plan_entry(fuse_mount_root: &Path, entry: &MountPlanEntry) -> Result<()> {
@@ -145,9 +178,10 @@ fn apply_mount_plan_entry(fuse_mount_root: &Path, entry: &MountPlanEntry) -> Res
             }
         }
         MountPlanEntry::Sys { read_only } => {
-            mount_virtual_fs("sysfs", "sysfs", &target)?;
+            ensure_mount_target_type(Path::new("/sys"), &target)?;
+            bind_mount(Path::new("/sys"), &target)?;
             if *read_only {
-                remount_read_only(&target)?;
+                remount_bind_read_only(&target)?;
             }
         }
     }
@@ -411,15 +445,26 @@ fn chdir_or_root(cwd: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_pid_namespace_init_and_exec(program: &OsStr, args: &[OsString]) -> Result<i32> {
+fn run_pid_namespace_init_and_exec(
+    config: &UsernsRunConfig,
+    uid: libc::uid_t,
+    gid: libc::gid_t,
+) -> Result<i32> {
     let init_pid = fork_process("pidns-init")?;
     if init_pid > 0 {
         return wait_for_specific_child(init_pid);
     }
 
+    apply_mount_plan_in_pid_namespace_init(&config.fuse_mount_root, &config.mount_plan)?;
+    pivot_root_into(&config.fuse_mount_root)?;
+    drop_to_target_ids(uid, gid)?;
+    chdir_or_root(&config.cwd)?;
+
     let worker_pid = fork_process("pidns-worker")?;
     if worker_pid == 0 {
-        let err = ProcessCommand::new(program).args(args).exec();
+        let err = ProcessCommand::new(&config.program)
+            .args(&config.args)
+            .exec();
         eprintln!("leash2 exec failed: {err}");
         unsafe { libc::_exit(127) }
     }

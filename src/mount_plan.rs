@@ -49,15 +49,14 @@ fn append_proc_mount(rule: &Rule, plan: &mut Vec<MountPlanEntry>) -> Result<()> 
 }
 
 fn append_sys_mount(rule: &Rule, plan: &mut Vec<MountPlanEntry>) -> Result<()> {
+    let _ = plan;
     reject_conditional_mount_rule(rule)?;
     reject_glob_mount_rule(rule, "/sys")?;
     if rule.pattern != "/sys" {
         bail!("{}: /sys only allows the exact path /sys", rule.pattern);
     }
     match rule.action {
-        Action::ReadOnly => plan.push(MountPlanEntry::Sys { read_only: true }),
-        Action::ReadWrite => plan.push(MountPlanEntry::Sys { read_only: false }),
-        Action::Hide => {}
+        Action::ReadOnly | Action::ReadWrite | Action::Hide => {}
         Action::Deny => bail!("{}: /sys only supports ro/rw/hide", rule.pattern),
     }
     Ok(())
@@ -201,14 +200,11 @@ mod tests {
     }
 
     #[test]
-    fn proc_and_sys_rules_build_mount_entries() {
+    fn proc_rule_builds_mount_entry_but_sys_rule_stays_in_fuse() {
         let profile = profile_from("/proc ro\n/sys rw\n");
         assert_eq!(
             build_mount_plan(&profile).expect("plan"),
-            vec![
-                MountPlanEntry::Proc { read_only: true },
-                MountPlanEntry::Sys { read_only: false },
-            ]
+            vec![MountPlanEntry::Proc { read_only: true }]
         );
     }
 
