@@ -8,6 +8,7 @@ use log::debug;
 
 const RUNTIME_DIR_NAME: &str = "leash2";
 const MOUNT_DIR_NAME: &str = "mount";
+const FUSE_LOG_FILE_NAME: &str = "fuse.log";
 const PID_FILE_NAME: &str = "fuse.pid";
 const MOUNTINFO_PATH: &str = "/proc/self/mountinfo";
 
@@ -25,6 +26,11 @@ pub fn ensure_global_mountpoint() -> Result<PathBuf> {
 
 pub fn ensure_global_mountpoint_under(runtime_dir: &Path) -> Result<PathBuf> {
     ensure_global_mountpoint_in(runtime_dir, false)
+}
+
+pub fn global_fuse_log_path() -> Result<PathBuf> {
+    let runtime_dir = global_runtime_dir();
+    global_fuse_log_path_under(&runtime_dir.path)
 }
 
 fn ensure_global_mountpoint_in(
@@ -151,6 +157,13 @@ fn global_daemon_pid_path_under(runtime_dir: &Path) -> Result<PathBuf> {
     let leash_dir = runtime_dir.join(RUNTIME_DIR_NAME);
     ensure_dir(&leash_dir)?;
     Ok(leash_dir.join(PID_FILE_NAME))
+}
+
+fn global_fuse_log_path_under(runtime_dir: &Path) -> Result<PathBuf> {
+    ensure_dir(runtime_dir)?;
+    let leash_dir = runtime_dir.join(RUNTIME_DIR_NAME);
+    ensure_dir(&leash_dir)?;
+    Ok(leash_dir.join(FUSE_LOG_FILE_NAME))
 }
 
 fn ensure_runtime_dir(path: &Path, chmod_on_create: bool) -> Result<()> {
@@ -375,5 +388,15 @@ mod tests {
         assert!(!path.exists());
 
         clear_global_daemon_pid_under(&runtime_dir).expect("clear missing pid");
+    }
+
+    #[test]
+    fn global_fuse_log_path_under_uses_shared_runtime_dir() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime_dir = tempdir.path().join("xdg-runtime");
+
+        let path = global_fuse_log_path_under(&runtime_dir).expect("fuse log path");
+
+        assert_eq!(path, runtime_dir.join("leash2/fuse.log"));
     }
 }

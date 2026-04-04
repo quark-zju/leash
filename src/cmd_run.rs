@@ -1,4 +1,5 @@
 use std::os::unix::process::CommandExt;
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::thread;
@@ -65,8 +66,18 @@ fn spawn_fuse_daemon(verbose: bool) -> Result<Child> {
     command.arg("_fuse");
     if verbose {
         command.arg("--verbose");
-        command.stdout(Stdio::inherit());
-        command.stderr(Stdio::inherit());
+        let fuse_log_path = fuse_runtime::global_fuse_log_path()?;
+        let fuse_log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&fuse_log_path)
+            .with_context(|| format!("failed to open {}", fuse_log_path.display()))?;
+        let fuse_log_err = fuse_log
+            .try_clone()
+            .with_context(|| format!("failed to clone {}", fuse_log_path.display()))?;
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::from(fuse_log));
+        command.stderr(Stdio::from(fuse_log_err));
     } else {
         command.stdin(Stdio::null());
         command.stdout(Stdio::null());
