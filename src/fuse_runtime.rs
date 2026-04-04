@@ -188,7 +188,7 @@ fn ensure_dir(path: &Path) -> Result<bool> {
                 .with_context(|| format!("failed to create {}", path.display()))?;
             Ok(true)
         }
-        Err(err) if err.raw_os_error() == Some(libc::ENOTCONN) => {
+        Err(err) if is_stale_fuse_errno(&err) => {
             lazy_unmount_stale_fuse_mount(path)?;
             ensure_dir(path)
         }
@@ -199,9 +199,16 @@ fn ensure_dir(path: &Path) -> Result<bool> {
 fn mountpoint_is_stale(path: &Path) -> Result<bool> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => Ok(false),
-        Err(err) if err.raw_os_error() == Some(libc::ENOTCONN) => Ok(true),
+        Err(err) if is_stale_fuse_errno(&err) => Ok(true),
         Err(err) => Err(err).with_context(|| format!("failed to inspect {}", path.display())),
     }
+}
+
+fn is_stale_fuse_errno(err: &std::io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(libc::ENOTCONN | libc::ECONNABORTED)
+    )
 }
 
 fn lazy_unmount_stale_fuse_mount(path: &Path) -> Result<()> {
@@ -398,5 +405,18 @@ mod tests {
         let path = global_fuse_log_path_under(&runtime_dir).expect("fuse log path");
 
         assert_eq!(path, runtime_dir.join("leash2/fuse.log"));
+    }
+
+    #[test]
+    fn stale_fuse_errno_matches_disconnect_and_connection_abort() {
+        assert!(is_stale_fuse_errno(&std::io::Error::from_raw_os_error(
+            libc::ENOTCONN
+        )));
+        assert!(is_stale_fuse_errno(&std::io::Error::from_raw_os_error(
+            libc::ECONNABORTED
+        )));
+        assert!(!is_stale_fuse_errno(&std::io::Error::from_raw_os_error(
+            libc::EACCES
+        )));
     }
 }
