@@ -10,6 +10,8 @@ use log::debug;
 
 use crate::mount_plan::MountPlanEntry;
 
+const MOUNTINFO_PATH: &str = "/proc/self/mountinfo";
+
 #[derive(Debug, Clone)]
 pub struct UsernsRunConfig {
     pub fuse_mount_root: PathBuf,
@@ -220,7 +222,7 @@ fn bind_mount(source: &Path, target: &Path) -> Result<()> {
 
 fn remount_bind_read_only(target: &Path) -> Result<()> {
     let target_c = c_path(target).context("bind remount target path contains interior NUL byte")?;
-    let flags = (libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY) as libc::c_ulong;
+    let flags = readonly_bind_remount_flags(target)?;
     debug!(
         "userns-run: syscall mount(NULL, {}, NULL, {flags:#x}, NULL)",
         target.display()
@@ -239,6 +241,58 @@ fn remount_bind_read_only(target: &Path) -> Result<()> {
             .with_context(|| format!("bind remount read-only failed: {}", target.display()));
     }
     Ok(())
+}
+
+fn readonly_bind_remount_flags(target: &Path) -> Result<libc::c_ulong> {
+    Ok((libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY) as libc::c_ulong
+        | locked_mount_flags_for_target(target, Path::new(MOUNTINFO_PATH))?)
+}
+
+fn locked_mount_flags_for_target(target: &Path, mountinfo: &Path) -> Result<libc::c_ulong> {
+    let content = fs::read_to_string(mountinfo)
+        .with_context(|| format!("failed to read {}", mountinfo.display()))?;
+    for line in content.lines() {
+        let Some((mount_point, mount_flags)) = parse_mountinfo_mount_flags(line)? else {
+            continue;
+        };
+        if mount_point == target {
+            return Ok(mount_flags);
+        }
+    }
+    bail!("failed to find mountinfo entry for {}", target.display())
+}
+
+fn parse_mountinfo_mount_flags(line: &str) -> Result<Option<(PathBuf, libc::c_ulong)>> {
+    if line.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let Some(sep) = fields.iter().position(|field| *field == "-") else {
+        bail!("mountinfo line missing separator: {line}");
+    };
+    if sep < 6 {
+        bail!("mountinfo line is malformed: {line}");
+    }
+
+    let mut flags = 0;
+    for option in fields[5].split(',') {
+        flags |= match option {
+            "nosuid" => libc::MS_NOSUID as libc::c_ulong,
+            "nodev" => libc::MS_NODEV as libc::c_ulong,
+            "noexec" => libc::MS_NOEXEC as libc::c_ulong,
+            "noatime" => libc::MS_NOATIME as libc::c_ulong,
+            "nodiratime" => libc::MS_NODIRATIME as libc::c_ulong,
+            "relatime" => libc::MS_RELATIME as libc::c_ulong,
+            "strictatime" => libc::MS_STRICTATIME as libc::c_ulong,
+            _ => 0,
+        };
+    }
+
+    Ok(Some((
+        PathBuf::from(unescape_mount_field(fields[4])),
+        flags,
+    )))
 }
 
 fn mount_virtual_fs(source: &str, fstype: &str, target: &Path) -> Result<()> {
@@ -431,6 +485,28 @@ fn c_path(path: &Path) -> Result<CString, std::ffi::NulError> {
     CString::new(path.as_os_str().as_bytes())
 }
 
+fn unescape_mount_field(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] == b'\\'
+            && idx + 3 < bytes.len()
+            && bytes[idx + 1..idx + 4]
+                .iter()
+                .all(|byte| matches!(byte, b'0'..=b'7'))
+            && let Ok(value) = u8::from_str_radix(&input[idx + 1..idx + 4], 8)
+        {
+            out.push(value as char);
+            idx += 4;
+            continue;
+        }
+        out.push(bytes[idx] as char);
+        idx += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,5 +542,21 @@ mod tests {
     fn wait_status_to_exit_code_handles_normal_exit_and_signal() {
         assert_eq!(wait_status_to_exit_code(7 << 8), 7);
         assert_eq!(wait_status_to_exit_code(libc::SIGTERM), 128 + libc::SIGTERM);
+    }
+
+    #[test]
+    fn parse_mountinfo_mount_flags_preserves_locked_mount_attrs() {
+        let line = "41 29 0:45 / /tmp/My\\040Mount rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw";
+
+        let parsed = parse_mountinfo_mount_flags(line)
+            .expect("parse mountinfo")
+            .expect("mount entry");
+
+        assert_eq!(parsed.0, PathBuf::from("/tmp/My Mount"));
+        assert_eq!(
+            parsed.1,
+            (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_RELATIME)
+                as libc::c_ulong
+        );
     }
 }
