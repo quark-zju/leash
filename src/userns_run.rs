@@ -438,12 +438,11 @@ fn pivot_root_into(new_root: &Path) -> Result<()> {
     }
     log_stat_dev_urandom("after fchdir(old_root)");
 
-    // Temporarily keep old root mounted for debugging pivot_root side effects.
-    // debug!("userns-run: syscall umount2(., MNT_DETACH)");
-    // if unsafe { libc::umount2(dot.as_ptr(), libc::MNT_DETACH) } != 0 {
-    //     return Err(std::io::Error::last_os_error())
-    //         .context("umount2('.', MNT_DETACH) failed after pivot_root");
-    // }
+    debug!("userns-run: syscall umount2(., MNT_DETACH)");
+    if unsafe { libc::umount2(dot.as_ptr(), libc::MNT_DETACH) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("umount2('.', MNT_DETACH) failed after pivot_root");
+    }
 
     debug!("userns-run: syscall chdir(/)");
     if unsafe { libc::chdir(root.as_ptr()) } != 0 {
