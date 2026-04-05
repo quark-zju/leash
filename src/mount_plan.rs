@@ -184,10 +184,7 @@ fn retain_existing_bind_sources(plan: &mut Vec<MountPlanEntry>) -> Result<()> {
         };
         let kind = metadata.file_type();
         if !kind.is_char_device() && !kind.is_dir() {
-            debug!(
-                "mount-plan: skip non-bindable source {}",
-                path.display()
-            );
+            debug!("mount-plan: skip non-bindable source {}", path.display());
             continue;
         }
         retained.push(MountPlanEntry::Bind { path, read_only });
