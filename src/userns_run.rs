@@ -7,7 +7,7 @@ use std::process::Command as ProcessCommand;
 
 use anyhow::{Context, Result, bail};
 use fs_err as fs;
-use log::debug;
+use log::{debug, warn};
 
 use crate::mount_plan::MountPlanEntry;
 
@@ -147,7 +147,13 @@ fn apply_mount_plan(
         if mount_phase_for_entry(entry) != phase {
             continue;
         }
-        apply_mount_plan_entry(fuse_mount_root, entry)?;
+        if let Err(err) = apply_mount_plan_entry(fuse_mount_root, entry) {
+            if is_best_effort_tmp_bind(entry) {
+                warn!("ignoring failed /tmp bind fast path: {err:#}");
+                continue;
+            }
+            return Err(err);
+        }
     }
     Ok(())
 }
@@ -165,6 +171,13 @@ fn mount_phase_for_entry(entry: &MountPlanEntry) -> MountPhase {
         }
         MountPlanEntry::Proc { .. } => MountPhase::InPidNamespaceInit,
     }
+}
+
+fn is_best_effort_tmp_bind(entry: &MountPlanEntry) -> bool {
+    matches!(
+        entry,
+        MountPlanEntry::Bind { path, .. } if path == Path::new("/tmp")
+    )
 }
 
 fn apply_mount_plan_entry(fuse_mount_root: &Path, entry: &MountPlanEntry) -> Result<()> {
@@ -663,5 +676,17 @@ mod tests {
             (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_RELATIME)
                 as libc::c_ulong
         );
+    }
+
+    #[test]
+    fn tmp_bind_mounts_are_marked_best_effort() {
+        assert!(is_best_effort_tmp_bind(&MountPlanEntry::Bind {
+            path: PathBuf::from("/tmp"),
+            read_only: false,
+        }));
+        assert!(!is_best_effort_tmp_bind(&MountPlanEntry::Bind {
+            path: PathBuf::from("/dev/null"),
+            read_only: false,
+        }));
     }
 }
