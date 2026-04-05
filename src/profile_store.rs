@@ -26,13 +26,15 @@ const DENY_SENSITIVE_PROFILE_SOURCE: &str = "\
 
 const BASIC_PROFILE_SOURCE: &str = "\
 /tmp rw
+/proc rw
+
 /bin ro
+/etc ro
+/lib64 ro
+/lib ro
+/opt ro
 /sbin ro
 /usr ro
-/lib ro
-/lib64 ro
-/etc ro
-/proc rw
 
 /dev/full rw
 /dev/null rw
@@ -50,6 +52,8 @@ const BASIC_PROFILE_SOURCE: &str = "\
 const AGENTS_PROFILE_SOURCE: &str = "\
 ~/.agents rw
 ~/.claude rw
+# .claude.json, .claude.json.tmp.*, claude.json.lock
+~/.claude.* rw
 ~/.codex rw
 ~/.copilot rw
 ~/.cache/opencode rw
