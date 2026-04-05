@@ -444,6 +444,7 @@ fn pivot_root_into(new_root: &Path) -> Result<()> {
     if unsafe { libc::chdir(root.as_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error()).context("chdir('/') failed after pivot_root");
     }
+    log_stat_dev_urandom("after chdir(/)");
     Ok(())
 }
 
