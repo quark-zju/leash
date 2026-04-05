@@ -7,11 +7,11 @@
   copies
 - protects `.git` metadata so normal writes do not silently corrupt a repo
 
-`leash` 主要面向 Codex、OpenCode、Claude Code 这类 AI 编码工具。
+`leash` 主要面向 Codex、OpenCode、Claude Code 等 AI 编码工具。
 
-- 阻止读取敏感文件，如 `~/.ssh`、浏览器配置、部分系统机密
-- 控制哪些路径可写，如 `/tmp`、agent 状态目录、git 工作区
-- 保护 `.git` 元数据，避免普通写入破坏仓库
+- 阻止读取敏感文件，如 `~/.ssh`、浏览器配置及部分系统密钥
+- 控制写入范围，只允许 `/tmp`、agent 状态目录、git 工作区等路径可写
+- 保护 `.git` 元数据，防止普通写入操作意外破坏代码仓库
 
 ## Quick Start
 

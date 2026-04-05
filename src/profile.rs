@@ -284,7 +284,9 @@ impl Profile {
 
     fn visibility_with_runtime(&self, path: &Path, ctx: &mut dyn RuntimeEvalContext) -> Visibility {
         if let Some(action) = self.evaluate_with_runtime(path, ctx) {
-            if action == Action::Hide && self.is_implicit_ancestor_with_runtime(path, ctx) {
+            if matches!(action, Action::Hide | Action::Deny)
+                && self.is_implicit_ancestor_with_runtime(path, ctx)
+            {
                 return Visibility::ImplicitAncestor;
             }
             return Visibility::Action(action);
@@ -1188,6 +1190,33 @@ mod tests {
         assert_eq!(
             p.mutation_errno(Path::new("/workspace/project/foo/bar/no.bin"), &ctx),
             Some(EPERM)
+        );
+    }
+
+    #[test]
+    fn visible_descendant_rule_makes_denied_parent_directory_traversable() {
+        let p = parse_simple(
+            "/home/user/**/.git/COMMIT_EDITMSG rw\n/home/user/**/.git deny\n/home/user ro\n",
+        );
+        let env = HashMap::new();
+        let fs = MockFsCheck::new(&["/home/user/repo/.git"]);
+        let ctx = EvalContext {
+            exe: None,
+            env: &env,
+            fs: &fs,
+        };
+
+        assert_eq!(
+            p.visibility(Path::new("/home/user/repo/.git"), &ctx),
+            Visibility::ImplicitAncestor
+        );
+        assert_eq!(
+            p.access_errno(Path::new("/home/user/repo/.git"), &ctx),
+            None
+        );
+        assert_eq!(
+            p.evaluate(Path::new("/home/user/repo/.git/COMMIT_EDITMSG"), &ctx),
+            Some(Action::ReadWrite)
         );
     }
 
