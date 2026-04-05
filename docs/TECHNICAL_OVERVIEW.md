@@ -102,7 +102,7 @@ preserved without exposing hidden entries.
 ## Locking
 
 The dedicated lock design is documented separately in
-[`docs/locking.md`](locking.md).
+[`docs/LOCKING.md`](LOCKING.md).
 
 ## Known Trade-Offs
 
@@ -117,4 +117,4 @@ The dedicated lock design is documented separately in
 - [`docs/RUNTIME_LAYOUT.md`](RUNTIME_LAYOUT.md)
 - [`docs/PRIVILEGE_MODEL.md`](PRIVILEGE_MODEL.md)
 - [`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
-- [`docs/locking.md`](locking.md)
+- [`docs/LOCKING.md`](LOCKING.md)

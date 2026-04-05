@@ -63,6 +63,6 @@ RUST_LOG=debug cargo test --test integration -- --nocapture
 ## Locking and SQLite
 
 If an agent CLI using SQLite shows lock contention or unexpected busy behavior,
-read [`docs/locking.md`](locking.md) first. The current design supports
+read [`docs/LOCKING.md`](LOCKING.md) first. The current design supports
 host-visible non-blocking POSIX byte-range locks, but `F_SETLKW` is still
 rejected explicitly.

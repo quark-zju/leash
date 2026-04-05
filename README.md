@@ -76,7 +76,7 @@ These are useful when investigating broker projection, lock behavior, and genera
 - [docs/PRIVILEGE_MODEL.md](docs/PRIVILEGE_MODEL.md)
 - [docs/RUNTIME_LAYOUT.md](docs/RUNTIME_LAYOUT.md)
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- [docs/locking.md](docs/locking.md)
+- [docs/LOCKING.md](docs/LOCKING.md)
 
 ## Dependencies Used Intentionally
 
