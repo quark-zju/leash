@@ -25,8 +25,8 @@ leash run bash  # or codex, opencode, etc
 [Profile](docs/PROFILE.md) decides what paths can be accessed.
 
 ```bash
-leash profile show  # show rules
-leash profile edit  # edit rules
+leash rules show  # show rules
+leash rules edit  # edit rules
 ```
 
 ## More docs

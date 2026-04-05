@@ -27,7 +27,7 @@ This document describes the current privilege and namespace transitions in
 - executes the user command in a worker process while PID 1 remains a child
   reaper
 
-`leash profile show|edit`:
+`leash rules show|edit`:
 
 - operates on the default profile file as the invoking user
 - `edit` validates the profile before writing it back and signals `_fuse` with

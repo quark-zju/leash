@@ -9,7 +9,7 @@ Default profile path:
 - `$XDG_CONFIG_HOME/leash/profile` when `XDG_CONFIG_HOME` is set
 - fallback: `~/.config/leash/profile`
 
-If the profile file does not exist, `profile show` and `_fuse` use the built-in
+If the profile file does not exist, `rules show` and `_fuse` use the built-in
 default profile source.
 
 ## Runtime Root
@@ -55,7 +55,7 @@ mount per profile.
 - lazy-unmounts the shared FUSE mountpoint
 - removes stale pid files so the next `run` can start a fresh daemon
 
-`profile edit`:
+`rules edit`:
 
 - writes the validated profile back to the default profile file
 - sends `SIGHUP` to the PID recorded in `fuse.pid` when a daemon is running

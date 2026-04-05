@@ -12,12 +12,12 @@ behavior used by `leash`.
 
 Commands:
 
-- `leash profile show`
+- `leash rules show`
   - prints the current default profile source
   - shows a leading comment describing whether the source came from the
     filesystem or the built-in default
   - expands `%include` content as indented comment lines for easier inspection
-- `leash profile edit`
+- `leash rules edit`
   - edits a temporary copy in `$EDITOR`
   - validates syntax before writing back
   - sends `SIGHUP` to a running `_fuse` daemon so the policy reloads
@@ -25,8 +25,8 @@ Commands:
     profile file and falls back to the built-in default
 
 There is no profile-name selection yet. Built-in fragments exist for inclusion
-and inspection through `profile show`, but not as separate named user-facing
-profile commands.
+and inspection through `rules show`, but not as separate named user-facing
+rules commands.
 
 ## Default Profile
 
@@ -51,7 +51,7 @@ That means the shipped policy is assembled from a few focused fragments:
 The normal way to customize the default policy is:
 
 ```bash
-leash profile edit
+leash rules edit
 ```
 
 ## Syntax

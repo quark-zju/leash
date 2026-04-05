@@ -20,7 +20,7 @@ pub enum HelpTopic {
     Root,
     Run,
     Tail,
-    Profile,
+    Rules,
     LowLevelFuse,
     LowLevelKill,
 }
@@ -72,14 +72,14 @@ where
 
     let mut args = Arguments::from_vec(raw);
     let Some(subcmd) = args.subcommand()? else {
-        bail!("missing subcommand (expected: help, profile, run, tail, _fuse, _kill)");
+        bail!("missing subcommand (expected: help, rules, run, tail, _fuse, _kill)");
     };
 
     match subcmd.as_str() {
         "help" => parse_help(args),
         "run" => parse_run(args),
         "tail" => parse_tail(args),
-        "profile" => parse_profile(args),
+        "rules" => parse_rules(args),
         "_fuse" => parse_low_level_fuse(args),
         "_kill" => parse_low_level_kill(args),
         other => bail!("unknown subcommand: {other}"),
@@ -125,21 +125,21 @@ fn parse_run(mut args: Arguments) -> Result<Command> {
     }))
 }
 
-fn parse_profile(mut args: Arguments) -> Result<Command> {
+fn parse_rules(mut args: Arguments) -> Result<Command> {
     if args.contains(["-h", "--help"]) {
-        return Ok(help_command(HelpTopic::Profile, false));
+        return Ok(help_command(HelpTopic::Rules, false));
     }
     let extra = args.finish();
     if extra.len() != 1 {
-        bail!("profile requires subcommand: show or edit");
+        bail!("rules requires subcommand: show or edit");
     }
     let subcmd = extra[0]
         .to_str()
-        .ok_or_else(|| anyhow::anyhow!("profile subcommand must be valid UTF-8"))?;
+        .ok_or_else(|| anyhow::anyhow!("rules subcommand must be valid UTF-8"))?;
     let action = match subcmd {
         "show" => ProfileAction::Show,
         "edit" => ProfileAction::Edit,
-        other => bail!("unknown profile subcommand: {other}"),
+        other => bail!("unknown rules subcommand: {other}"),
     };
     Ok(Command::Profile(ProfileCommand { action }))
 }
@@ -252,15 +252,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_profile_show_and_edit() {
+    fn parse_rules_show_and_edit() {
         assert_eq!(
-            parse_from(os(&["profile", "show"])).expect("parse"),
+            parse_from(os(&["rules", "show"])).expect("parse"),
             Command::Profile(ProfileCommand {
                 action: ProfileAction::Show,
             })
         );
         assert_eq!(
-            parse_from(os(&["profile", "edit"])).expect("parse"),
+            parse_from(os(&["rules", "edit"])).expect("parse"),
             Command::Profile(ProfileCommand {
                 action: ProfileAction::Edit,
             })

@@ -3,7 +3,7 @@ use crate::cli::HelpTopic;
 const HELP_TOPIC_NAMES: &[(&str, HelpTopic)] = &[
     ("run", HelpTopic::Run),
     ("tail", HelpTopic::Tail),
-    ("profile", HelpTopic::Profile),
+    ("rules", HelpTopic::Rules),
     ("_fuse", HelpTopic::LowLevelFuse),
     ("_kill", HelpTopic::LowLevelKill),
 ];
@@ -37,11 +37,11 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "  --kinds <list>        Comma-separated event kinds: lookup-miss,open-denied,mutation-denied,lock\n",
         )
         .to_string(),
-        HelpTopic::Profile => concat!(
-            "leash profile\n\n",
+        HelpTopic::Rules => concat!(
+            "leash rules\n\n",
             "USAGE:\n",
-            "  leash profile edit\n",
-            "  leash profile show\n",
+            "  leash rules edit\n",
+            "  leash rules show\n",
         )
         .to_string(),
         HelpTopic::LowLevelFuse => concat!(
@@ -73,9 +73,9 @@ fn root_help_text(verbose: bool) -> String {
         "  leash run [-v|--verbose] command ...\n\n",
         "TAIL:\n",
         "  leash tail [--kinds <list>]\n\n",
-        "PROFILE:\n",
-        "  leash profile edit\n",
-        "  leash profile show\n",
+        "RULES:\n",
+        "  leash rules edit\n",
+        "  leash rules show\n",
     ));
     if verbose {
         out.push_str(concat!(
@@ -116,6 +116,7 @@ mod tests {
         assert_eq!(topic_from_name("run"), Some(HelpTopic::Run));
         assert_eq!(topic_from_name("tail"), Some(HelpTopic::Tail));
         assert_eq!(topic_from_name("_fuse"), Some(HelpTopic::LowLevelFuse));
+        assert_eq!(topic_from_name("rules"), Some(HelpTopic::Rules));
         assert_eq!(topic_from_name("_unknown"), None);
     }
 }
