@@ -1,6 +1,7 @@
 use std::ffi::{CString, OsStr, OsString};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -416,18 +417,21 @@ fn pivot_root_into(new_root: &Path) -> Result<()> {
         return Err(std::io::Error::last_os_error())
             .context("chdir into fuse mount root failed before pivot_root");
     }
+    log_stat_dev_urandom("after chdir(new_root)");
 
     debug!("userns-run: syscall pivot_root(., .)");
     let rc = unsafe { libc::syscall(libc::SYS_pivot_root, dot.as_ptr(), dot.as_ptr()) };
     if rc != 0 {
         return Err(std::io::Error::last_os_error()).context("pivot_root('.', '.') failed");
     }
+    log_stat_dev_urandom("after pivot_root");
 
     debug!("userns-run: syscall fchdir(old_root)");
     if unsafe { libc::fchdir(old_root.as_raw_fd()) } != 0 {
         return Err(std::io::Error::last_os_error())
             .context("fchdir(old_root) failed after pivot_root");
     }
+    log_stat_dev_urandom("after fchdir(old_root)");
 
     // Temporarily keep old root mounted for debugging pivot_root side effects.
     // debug!("userns-run: syscall umount2(., MNT_DETACH)");
@@ -601,6 +605,25 @@ fn wait_status_to_exit_code(status: libc::c_int) -> i32 {
 
 fn c_path(path: &Path) -> Result<CString, std::ffi::NulError> {
     CString::new(path.as_os_str().as_bytes())
+}
+
+fn log_stat_dev_urandom(stage: &str) {
+    match fs::symlink_metadata("dev/urandom") {
+        Ok(metadata) => {
+            debug!(
+                "userns-run: stat('dev/urandom') at {stage}: dev={:#x} rdev={:#x} ino={} mode={:#o} uid={} gid={}",
+                metadata.dev(),
+                metadata.rdev(),
+                metadata.ino(),
+                metadata.mode(),
+                metadata.uid(),
+                metadata.gid()
+            );
+        }
+        Err(err) => {
+            debug!("userns-run: stat('dev/urandom') at {stage} failed: {err}");
+        }
+    }
 }
 
 fn unescape_mount_field(input: &str) -> String {
