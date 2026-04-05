@@ -223,11 +223,6 @@ fn resolve_exe(value: &str, resolver: &dyn ExeResolver) -> Result<Option<PathBuf
 pub struct Rule {
     /// Original pattern string (for display).
     pub pattern: String,
-    /// Compiled glob for path matching (includes an auto-added `<pat>/**`).
-    pub(crate) glob: GlobSet,
-    /// Compiled glob for ancestor paths that should stay visible for
-    /// descendant traversal.
-    pub(crate) ancestor_glob: GlobSet,
     pub action: Action,
     /// All conditions (AND semantics).
     pub conditions: Vec<Condition>,
@@ -248,6 +243,20 @@ impl std::fmt::Debug for Rule {
 #[derive(Debug)]
 pub struct Profile {
     rules: Vec<Rule>,
+    match_globset: GlobSet,
+    match_entries: Vec<InternalRuleMatch>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InternalRuleKind {
+    ImplicitAncestor,
+    Explicit,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InternalRuleMatch {
+    original_rule_index: usize,
+    kind: InternalRuleKind,
 }
 
 impl Profile {
@@ -269,10 +278,21 @@ impl Profile {
         path: &Path,
         ctx: &mut dyn RuntimeEvalContext,
     ) -> Option<Action> {
-        for rule in &self.rules {
-            if rule.glob.is_match(path) && rule.conditions_match(path, ctx) {
-                return Some(rule.action);
+        let mut cached_conditions = vec![None; self.rules.len()];
+        for matched_idx in self.match_globset.matches(path) {
+            let matched = &self.match_entries[matched_idx];
+            if matched.kind != InternalRuleKind::Explicit {
+                continue;
             }
+            if !self.rule_conditions_match(
+                matched.original_rule_index,
+                path,
+                ctx,
+                &mut cached_conditions,
+            ) {
+                continue;
+            }
+            return Some(self.rules[matched.original_rule_index].action);
         }
         None
     }
@@ -283,15 +303,37 @@ impl Profile {
     }
 
     fn visibility_with_runtime(&self, path: &Path, ctx: &mut dyn RuntimeEvalContext) -> Visibility {
-        if let Some(action) = self.evaluate_with_runtime(path, ctx) {
-            if matches!(action, Action::Hide | Action::Deny)
-                && self.is_implicit_ancestor_with_runtime(path, ctx)
-            {
-                return Visibility::ImplicitAncestor;
+        let mut implicit_ancestor_visible = false;
+        let mut cached_conditions = vec![None; self.rules.len()];
+
+        // Match entries are inserted in source order, with implicit entries
+        // before explicit entries for each rule.
+        for matched_idx in self.match_globset.matches(path) {
+            let matched = &self.match_entries[matched_idx];
+            if !self.rule_conditions_match(
+                matched.original_rule_index,
+                path,
+                ctx,
+                &mut cached_conditions,
+            ) {
+                continue;
             }
-            return Visibility::Action(action);
+            let rule = &self.rules[matched.original_rule_index];
+            match matched.kind {
+                InternalRuleKind::ImplicitAncestor => {
+                    implicit_ancestor_visible = true;
+                }
+                InternalRuleKind::Explicit => {
+                    if matches!(rule.action, Action::Hide | Action::Deny)
+                        && implicit_ancestor_visible
+                    {
+                        return Visibility::ImplicitAncestor;
+                    }
+                    return Visibility::Action(rule.action);
+                }
+            }
         }
-        if self.is_implicit_ancestor_with_runtime(path, ctx) {
+        if implicit_ancestor_visible {
             return Visibility::ImplicitAncestor;
         }
         Visibility::Hidden
@@ -327,11 +369,37 @@ impl Profile {
         path: &Path,
         ctx: &mut dyn RuntimeEvalContext,
     ) -> bool {
-        self.rules.iter().any(|rule| {
-            rule.action.allows_visible_descendants()
-                && rule.ancestor_glob.is_match(path)
-                && rule.conditions_match(path, ctx)
-        })
+        let mut cached_conditions = vec![None; self.rules.len()];
+        for matched_idx in self.match_globset.matches(path) {
+            let matched = &self.match_entries[matched_idx];
+            if matched.kind != InternalRuleKind::ImplicitAncestor {
+                continue;
+            }
+            if self.rule_conditions_match(
+                matched.original_rule_index,
+                path,
+                ctx,
+                &mut cached_conditions,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn rule_conditions_match(
+        &self,
+        rule_index: usize,
+        path: &Path,
+        ctx: &mut dyn RuntimeEvalContext,
+        cache: &mut [Option<bool>],
+    ) -> bool {
+        if let Some(matched) = cache[rule_index] {
+            return matched;
+        }
+        let matched = self.rules[rule_index].conditions_match(path, ctx);
+        cache[rule_index] = Some(matched);
+        matched
     }
 }
 
@@ -494,7 +562,12 @@ pub fn parse(
         &include_stack,
         &mut rules,
     )?;
-    Ok(Profile { rules })
+    let (match_globset, match_entries) = build_internal_rule_index(&rules)?;
+    Ok(Profile {
+        rules,
+        match_globset,
+        match_entries,
+    })
 }
 
 fn parse_lines(
@@ -635,14 +708,9 @@ fn parse_rule_line(
         .collect::<Result<_, _>>()?;
 
     let abs_pattern = expand_pattern(pattern_tok, home, cwd, lineno)?;
-    let glob = build_glob(&abs_pattern).map_err(|e| ParseError::BadGlob(abs_pattern.clone(), e))?;
-    let ancestor_glob = build_ancestor_glob(&abs_pattern)
-        .map_err(|e| ParseError::BadGlob(abs_pattern.clone(), e))?;
-
+    validate_pattern_globs(&abs_pattern)?;
     Ok(Rule {
         pattern: abs_pattern,
-        glob,
-        ancestor_glob,
         action,
         conditions,
     })
@@ -672,29 +740,22 @@ fn expand_pattern(
     ))
 }
 
-/// Build a `GlobSet` that matches the pattern itself and all descendants.
-fn build_glob(pattern: &str) -> Result<GlobSet, String> {
-    let mut builder = GlobSetBuilder::new();
-
-    let g = Glob::new(pattern).map_err(|e| e.to_string())?;
-    builder.add(g);
-
+fn explicit_globs_for_rule(pattern: &str) -> Vec<String> {
+    let mut globs = vec![pattern.to_owned()];
     if !pattern.ends_with("/**") && !pattern.ends_with("**") {
-        let descendant = format!("{pattern}/**");
-        let g2 = Glob::new(&descendant).map_err(|e| e.to_string())?;
-        builder.add(g2);
+        globs.push(format!("{pattern}/**"));
     }
-
-    builder.build().map_err(|e| e.to_string())
+    globs
 }
 
-fn build_ancestor_glob(pattern: &str) -> Result<GlobSet, String> {
-    let mut builder = GlobSetBuilder::new();
-    for ancestor in ancestor_globs_for_rule(pattern) {
-        let glob = Glob::new(&ancestor).map_err(|e| e.to_string())?;
-        builder.add(glob);
+fn validate_pattern_globs(pattern: &str) -> Result<(), ParseError> {
+    for glob in explicit_globs_for_rule(pattern) {
+        Glob::new(&glob).map_err(|e| ParseError::BadGlob(pattern.to_owned(), e.to_string()))?;
     }
-    builder.build().map_err(|e| e.to_string())
+    for glob in ancestor_globs_for_rule(pattern) {
+        Glob::new(&glob).map_err(|e| ParseError::BadGlob(pattern.to_owned(), e.to_string()))?;
+    }
+    Ok(())
 }
 
 fn ancestor_globs_for_rule(pattern: &str) -> Vec<String> {
@@ -744,6 +805,50 @@ fn ancestor_globs_for_rule(pattern: &str) -> Vec<String> {
         }
     }
     out
+}
+
+pub(crate) fn pattern_matches_implicit_ancestor(pattern: &str, path: &Path) -> bool {
+    ancestor_globs_for_rule(pattern).into_iter().any(|glob| {
+        Glob::new(&glob)
+            .map(|compiled| compiled.compile_matcher().is_match(path))
+            .unwrap_or(false)
+    })
+}
+
+fn build_internal_rule_index(
+    rules: &[Rule],
+) -> Result<(GlobSet, Vec<InternalRuleMatch>), ParseError> {
+    let mut builder = GlobSetBuilder::new();
+    let mut entries = Vec::new();
+
+    for (rule_idx, rule) in rules.iter().enumerate() {
+        if rule.action.allows_visible_descendants() {
+            for ancestor in ancestor_globs_for_rule(&rule.pattern) {
+                let glob = Glob::new(&ancestor)
+                    .map_err(|e| ParseError::BadGlob(rule.pattern.clone(), e.to_string()))?;
+                builder.add(glob);
+                entries.push(InternalRuleMatch {
+                    original_rule_index: rule_idx,
+                    kind: InternalRuleKind::ImplicitAncestor,
+                });
+            }
+        }
+
+        for explicit in explicit_globs_for_rule(&rule.pattern) {
+            let glob = Glob::new(&explicit)
+                .map_err(|e| ParseError::BadGlob(rule.pattern.clone(), e.to_string()))?;
+            builder.add(glob);
+            entries.push(InternalRuleMatch {
+                original_rule_index: rule_idx,
+                kind: InternalRuleKind::Explicit,
+            });
+        }
+    }
+
+    let globset = builder
+        .build()
+        .map_err(|e| ParseError::BadGlob("<internal>".to_owned(), e.to_string()))?;
+    Ok((globset, entries))
 }
 
 fn parse_environ(raw: Vec<u8>) -> HashMap<String, String> {
@@ -1217,6 +1322,41 @@ mod tests {
         assert_eq!(
             p.evaluate(Path::new("/home/user/repo/.git/COMMIT_EDITMSG"), &ctx),
             Some(Action::ReadWrite)
+        );
+    }
+
+    #[test]
+    fn implicit_ancestor_from_descendant_rule_beats_later_deny_on_same_parent() {
+        let resolver = MockExeResolver::new(&[("git", "/usr/bin/git")]);
+        let p = parse_with_exe(
+            "~/**/.git/COMMIT_EDITMSG rw\n~/**/.git rw when exe=git\n~/**/.git deny\n",
+            &resolver,
+        );
+        let env = HashMap::new();
+        let fs = MockFsCheck::new(&["/home/user/repo/.git"]);
+
+        let ctx_no_git = EvalContext {
+            exe: None,
+            env: &env,
+            fs: &fs,
+        };
+        assert_eq!(
+            p.visibility(Path::new("/home/user/repo/.git"), &ctx_no_git),
+            Visibility::ImplicitAncestor
+        );
+        assert_eq!(
+            p.access_errno(Path::new("/home/user/repo/.git"), &ctx_no_git),
+            None
+        );
+
+        let ctx_git = EvalContext {
+            exe: Some(Path::new("/usr/bin/git")),
+            env: &env,
+            fs: &fs,
+        };
+        assert_eq!(
+            p.visibility(Path::new("/home/user/repo/.git"), &ctx_git),
+            Visibility::Action(Action::ReadWrite)
         );
     }
 

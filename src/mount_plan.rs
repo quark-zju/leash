@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use log::debug;
 
-use crate::profile::{Action, Condition, Profile, Rule};
+use crate::profile::{Action, Condition, Profile, Rule, pattern_matches_implicit_ancestor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MountPlanEntry {
@@ -56,7 +56,7 @@ fn append_tmp_mount(rules: &[Rule], plan: &mut Vec<MountPlanEntry>) -> Result<()
             bail!("{}: rule conflicts with /tmp bind fast path", rule.pattern);
         }
         if matches!(rule.action, Action::ReadOnly | Action::ReadWrite)
-            && rule.ancestor_glob.is_match(tmp)
+            && pattern_matches_implicit_ancestor(&rule.pattern, tmp)
         {
             bail!(
                 "{}: implicit ancestor visibility conflicts with /tmp bind fast path",
