@@ -19,6 +19,7 @@ const DISPATCH_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 pub enum EventKind {
     LookupMiss,
     OpenDenied,
+    MutationDenied,
     Lock,
 }
 
@@ -27,6 +28,7 @@ impl EventKind {
         match self {
             Self::LookupMiss => "lookup-miss",
             Self::OpenDenied => "open-denied",
+            Self::MutationDenied => "mutation-denied",
             Self::Lock => "lock",
         }
     }
@@ -35,6 +37,7 @@ impl EventKind {
         match raw {
             "lookup-miss" => Some(Self::LookupMiss),
             "open-denied" => Some(Self::OpenDenied),
+            "mutation-denied" => Some(Self::MutationDenied),
             "lock" => Some(Self::Lock),
             _ => None,
         }
@@ -224,6 +227,7 @@ impl Filter {
             kinds: [
                 EventKind::LookupMiss,
                 EventKind::OpenDenied,
+                EventKind::MutationDenied,
                 EventKind::Lock,
             ]
             .into_iter()
@@ -245,6 +249,7 @@ mod tests {
         let all = parse_filter("").expect("empty filter");
         assert!(all.matches(EventKind::LookupMiss));
         assert!(all.matches(EventKind::OpenDenied));
+        assert!(all.matches(EventKind::MutationDenied));
         assert!(all.matches(EventKind::Lock));
 
         let filtered = parse_filter("kinds=lookup-miss,lock").expect("kind filter");

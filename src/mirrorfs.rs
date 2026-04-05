@@ -1069,9 +1069,16 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
                 None => Err(std::io::Error::from_raw_os_error(ENOENT).into()),
             },
         };
+        let path_for_event = fs.path_for_ino(ino.0).map(Path::to_path_buf);
         match result {
             Ok(attr) => reply.attr(&TTL, &attr),
-            Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
+            Err(err) => {
+                let errno = io_errno(&err);
+                if is_access_denied_errno(errno) {
+                    fs.emit_tail_event(EventKind::OpenDenied, path_for_event, Some(errno), None);
+                }
+                reply.error(Errno::from_i32(errno));
+            }
         }
     }
 
@@ -1090,6 +1097,14 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             return;
         };
         if let Some(errno) = fs.authorize_errno(&caller, &path, Operation::ReadDir) {
+            if is_access_denied_errno(errno) {
+                fs.emit_tail_event(
+                    EventKind::OpenDenied,
+                    Some(path.clone()),
+                    Some(errno),
+                    Some("op=opendir".to_owned()),
+                );
+            }
             reply.error(Errno::from_i32(errno));
             return;
         }
@@ -1237,7 +1252,18 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
                 FileHandle(fh),
                 FopenFlags::empty(),
             ),
-            Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
+            Err(err) => {
+                let errno = io_errno(&err);
+                if is_access_denied_errno(errno) {
+                    fs.emit_tail_event(
+                        EventKind::MutationDenied,
+                        Some(parent_path.join(name)),
+                        Some(errno),
+                        Some("op=create".to_owned()),
+                    );
+                }
+                reply.error(Errno::from_i32(errno));
+            }
         }
     }
 
@@ -1255,9 +1281,21 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
     ) {
         let caller = caller_from_request(req);
         let mut fs = self.inner.lock().unwrap();
+        let path_for_event = fs.path_for_ino(ino.0).map(Path::to_path_buf);
         match fs.write_handle(&caller, ino.0, fh.0, offset as i64, data) {
             Ok(len) => reply.written(len),
-            Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
+            Err(err) => {
+                let errno = io_errno(&err);
+                if is_access_denied_errno(errno) {
+                    fs.emit_tail_event(
+                        EventKind::MutationDenied,
+                        path_for_event,
+                        Some(errno),
+                        Some("op=write".to_owned()),
+                    );
+                }
+                reply.error(Errno::from_i32(errno));
+            }
         }
     }
 
@@ -1354,6 +1392,14 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
         };
         let path = parent_path.join(name);
         if let Some(errno) = fs.create_errno(&caller, &path, Operation::Mkdir) {
+            if is_access_denied_errno(errno) {
+                fs.emit_tail_event(
+                    EventKind::MutationDenied,
+                    Some(path),
+                    Some(errno),
+                    Some("op=mkdir".to_owned()),
+                );
+            }
             reply.error(Errno::from_i32(errno));
             return;
         }
@@ -1376,6 +1422,14 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             return;
         };
         if let Some(errno) = fs.authorize_errno(&caller, &path, Operation::Unlink) {
+            if is_access_denied_errno(errno) {
+                fs.emit_tail_event(
+                    EventKind::MutationDenied,
+                    Some(path.clone()),
+                    Some(errno),
+                    Some("op=unlink".to_owned()),
+                );
+            }
             reply.error(Errno::from_i32(errno));
             return;
         }
@@ -1396,6 +1450,14 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             return;
         };
         if let Some(errno) = fs.authorize_errno(&caller, &path, Operation::Rmdir) {
+            if is_access_denied_errno(errno) {
+                fs.emit_tail_event(
+                    EventKind::MutationDenied,
+                    Some(path.clone()),
+                    Some(errno),
+                    Some("op=rmdir".to_owned()),
+                );
+            }
             reply.error(Errno::from_i32(errno));
             return;
         }
@@ -1420,6 +1482,14 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             return;
         };
         if let Some(errno) = fs.authorize_errno(&caller, &path, Operation::Symlink) {
+            if is_access_denied_errno(errno) {
+                fs.emit_tail_event(
+                    EventKind::MutationDenied,
+                    Some(path.clone()),
+                    Some(errno),
+                    Some("op=symlink".to_owned()),
+                );
+            }
             reply.error(Errno::from_i32(errno));
             return;
         }
@@ -1446,9 +1516,21 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             reply.error(Errno::ENOENT);
             return;
         };
+        let target = newparent_path.join(newname);
         match fs.link_for_test(&caller, ino.0, &newparent_path, newname) {
             Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
-            Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
+            Err(err) => {
+                let errno = io_errno(&err);
+                if is_access_denied_errno(errno) {
+                    fs.emit_tail_event(
+                        EventKind::MutationDenied,
+                        Some(target),
+                        Some(errno),
+                        Some("op=link".to_owned()),
+                    );
+                }
+                reply.error(Errno::from_i32(errno));
+            }
         }
     }
 
@@ -1474,7 +1556,18 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
         };
         match fs.rename_for_test(&caller, &from, &to) {
             Ok(()) => reply.ok(),
-            Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
+            Err(err) => {
+                let errno = io_errno(&err);
+                if is_access_denied_errno(errno) {
+                    fs.emit_tail_event(
+                        EventKind::MutationDenied,
+                        Some(from),
+                        Some(errno),
+                        Some(format!("op=rename to={}", to.display())),
+                    );
+                }
+                reply.error(Errno::from_i32(errno));
+            }
         }
     }
 
@@ -1508,7 +1601,18 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
         };
         match fs.setattr_for_test(&caller, &path, size, mode, atime, mtime) {
             Ok(attr) => reply.attr(&TTL, &attr),
-            Err(err) => reply.error(Errno::from_i32(io_errno(&err))),
+            Err(err) => {
+                let errno = io_errno(&err);
+                if is_access_denied_errno(errno) {
+                    fs.emit_tail_event(
+                        EventKind::MutationDenied,
+                        Some(path),
+                        Some(errno),
+                        Some("op=setattr".to_owned()),
+                    );
+                }
+                reply.error(Errno::from_i32(errno));
+            }
         }
     }
 
@@ -2357,4 +2461,8 @@ fn io_errno(err: &anyhow::Error) -> i32 {
         };
     }
     EIO
+}
+
+fn is_access_denied_errno(errno: i32) -> bool {
+    matches!(errno, libc::EACCES | libc::EPERM)
 }

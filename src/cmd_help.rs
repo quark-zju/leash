@@ -34,7 +34,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "USAGE:\n",
             "  leash tail [--kinds <list>]\n\n",
             "OPTIONS:\n",
-            "  --kinds <list>        Comma-separated event kinds: lookup-miss,open-denied,lock\n",
+            "  --kinds <list>        Comma-separated event kinds: lookup-miss,open-denied,mutation-denied,lock\n",
         )
         .to_string(),
         HelpTopic::Profile => concat!(

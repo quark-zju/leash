@@ -25,7 +25,8 @@ queue and broadcasts matching events to subscribed clients.
 Current kinds:
 
 - `lookup-miss`: lookup returns `ENOENT`
-- `open-denied`: open denied by policy (`EACCES`/`EPERM`)
+- `open-denied`: read/open-style access denied (`open`, `stat/getattr`, `opendir/readdir`)
+- `mutation-denied`: mutation denied by policy (`mkdir`, `create`, `write`, `rename`, etc.)
 - `lock`: file lock operations (`getlk`/`setlk`, success or failure)
 
 ## Client Protocol
@@ -33,7 +34,7 @@ Current kinds:
 After connecting to the Unix socket, client sends one line:
 
 - empty line: subscribe all kinds
-- `kinds=lookup-miss,open-denied,lock`: subscribe selected kinds
+- `kinds=lookup-miss,open-denied,mutation-denied,lock`: subscribe selected kinds
 
 Server responds by streaming newline-delimited event lines:
 
@@ -47,6 +48,7 @@ Examples:
 
 - `leash tail`
 - `leash tail --kinds lookup-miss,open-denied`
+- `leash tail --kinds mutation-denied`
 - `leash tail --kinds lock`
 
 ## Backpressure Behavior
