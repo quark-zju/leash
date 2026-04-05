@@ -518,7 +518,6 @@ fn run_pid_namespace_init_and_exec(
 }
 
 fn reap_pid_namespace(worker_pid: libc::pid_t) -> Result<i32> {
-    let mut worker_status = None;
     loop {
         let mut status: libc::c_int = 0;
         let rc = unsafe { libc::waitpid(-1, &mut status, 0) };
@@ -526,15 +525,28 @@ fn reap_pid_namespace(worker_pid: libc::pid_t) -> Result<i32> {
             let err = std::io::Error::last_os_error();
             match err.raw_os_error() {
                 Some(libc::EINTR) => continue,
-                Some(libc::ECHILD) => break,
+                Some(libc::ECHILD) => return Ok(1),
                 _ => return Err(err).context("waitpid(-1) failed in pidns init"),
             }
         }
         if rc == worker_pid {
-            worker_status = Some(status);
+            terminate_remaining_pid_namespace_processes();
+            return Ok(wait_status_to_exit_code(status));
         }
     }
-    Ok(worker_status.map(wait_status_to_exit_code).unwrap_or(1))
+}
+
+fn terminate_remaining_pid_namespace_processes() {
+    // In the pid namespace, kill(-1, SIGTERM) asks every process except pid 1
+    // to terminate. pid 1 then exits so the kernel tears down any survivors.
+    debug!("userns-run: syscall kill(-1, SIGTERM) before exiting pidns init");
+    let rc = unsafe { libc::kill(-1, libc::SIGTERM) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::ESRCH) {
+            debug!("userns-run: kill(-1, SIGTERM) failed: {err}");
+        }
+    }
 }
 
 fn fork_process(label: &str) -> Result<libc::pid_t> {
