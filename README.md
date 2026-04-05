@@ -17,73 +17,18 @@
 
 ```bash
 cargo install --path .
-leash run bash
-```
-
-`leash run ...` 会按需启动一个共享 FUSE daemon，加载默认 profile，然后在
-新的 user/mount/pid/ipc namespace 里运行命令。
-
-常用例子：
-
-```bash
-leash run bash
-leash run codex
-leash run opencode
+leash run bash  # or codex, opencode, etc
 ```
 
 ## Profiles
 
-查看当前默认 profile：
+[Profile](docs/PROFILE.md) decides what paths can be accessed.
 
 ```bash
-leash profile show
+leash profile show  # show rules
+leash profile edit  # edit rules
 ```
 
-修改默认 profile：
+## More docs
 
-```bash
-leash profile edit
-```
-
-`profile show` 会标明当前使用的是文件系统里的 profile，还是 builtin 默认
-profile；`profile edit` 保存空白内容时会删除用户 profile 文件并回退到
-builtin 默认配置。
-
-Profile 语法和默认规则说明见
-[`docs/PROFILE.md`](docs/PROFILE.md)。
-
-## Low-Level Commands
-
-这些命令主要用于调试：
-
-- `leash _fuse`
-  - 前台运行共享 FUSE daemon
-- `leash _kill`
-  - 停掉共享 FUSE daemon，并清理共享 mount
-
-调试 `run -v` 时，`_fuse` 的日志会写到：
-
-- `${XDG_RUNTIME_DIR}/leash/fuse.log`
-- 或 fallback 的 `/run/user/<uid>/leash/fuse.log`
-
-## More Docs
-
-- Profile guide: [`docs/PROFILE.md`](docs/PROFILE.md)
-- Locking design: [`docs/LOCKING.md`](docs/LOCKING.md)
-- Technical overview: [`docs/TECHNICAL_OVERVIEW.md`](docs/TECHNICAL_OVERVIEW.md)
-- Runtime layout: [`docs/RUNTIME_LAYOUT.md`](docs/RUNTIME_LAYOUT.md)
-- Privilege model: [`docs/PRIVILEGE_MODEL.md`](docs/PRIVILEGE_MODEL.md)
-- Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
-
-## Status
-
-The current codebase already supports:
-
-- one shared per-user FUSE mirror mount
-- profile-driven access control
-- rootless `run` based on Linux namespaces
-- host-visible `flock` and broker-backed POSIX range locks
-- profile reload through `SIGHUP`
-
-It is still Linux-only, and compatibility is being tuned against real coding
-agent workloads.
+See `docs/` for more docs.
