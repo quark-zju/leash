@@ -113,6 +113,7 @@ The dedicated lock design is documented separately in
 
 ## See Also
 
+- [`docs/PROFILE.md`](PROFILE.md)
 - [`docs/RUNTIME_LAYOUT.md`](RUNTIME_LAYOUT.md)
 - [`docs/PRIVILEGE_MODEL.md`](PRIVILEGE_MODEL.md)
 - [`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
