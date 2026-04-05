@@ -32,16 +32,18 @@ const BASIC_PROFILE_SOURCE: &str = "\
 /lib ro
 /lib64 ro
 /etc ro
+/proc rw
+
 /dev/full rw
 /dev/null rw
 /dev/ptmx rw
 /dev/pts rw
-/dev/random ro
+/dev/random rw
 /dev/stderr rw
-/dev/stdin ro
+/dev/stdin rw
 /dev/stdout rw
 /dev/tty rw
-/dev/urandom ro
+/dev/urandom rw
 /dev/zero rw
 ";
 
