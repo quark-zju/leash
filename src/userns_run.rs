@@ -490,7 +490,8 @@ fn run_pid_namespace_init_and_exec(
 
     set_process_name("leash-init")?;
     apply_mount_plan_in_pid_namespace_init(&config.fuse_mount_root, &config.mount_plan)?;
-    pivot_root_into(&config.fuse_mount_root)?;
+    // Temporarily disable pivot_root for debugging mount visibility differences.
+    // pivot_root_into(&config.fuse_mount_root)?;
     drop_to_target_ids(uid, gid)?;
     chdir_or_root(&config.cwd)?;
 
