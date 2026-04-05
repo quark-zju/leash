@@ -68,6 +68,7 @@ fn run_namespace_supervisor(
     unshare_run_namespaces()?;
     write_current_user_namespace_maps(uid, gid)?;
     make_mounts_private()?;
+    ensure_pivot_root_mountpoint(&config.fuse_mount_root)?;
     apply_mount_plan_before_pid_namespace_init(&config.fuse_mount_root, &config.mount_plan)?;
     run_pid_namespace_init_and_exec(config, uid, gid)
 }
@@ -274,6 +275,15 @@ fn bind_mount(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
+fn ensure_pivot_root_mountpoint(new_root: &Path) -> Result<()> {
+    bind_mount(new_root, new_root).with_context(|| {
+        format!(
+            "self bind mount failed before applying mount plan: {}",
+            new_root.display()
+        )
+    })
+}
+
 fn remount_bind_read_only(target: &Path) -> Result<()> {
     let target_c = c_path(target).context("bind remount target path contains interior NUL byte")?;
     let flags = readonly_bind_remount_flags(target)?;
@@ -401,12 +411,6 @@ fn remount_read_only(target: &Path) -> Result<()> {
 }
 
 fn pivot_root_into(new_root: &Path) -> Result<()> {
-    bind_mount(new_root, new_root).with_context(|| {
-        format!(
-            "self bind mount failed before pivot_root: {}",
-            new_root.display()
-        )
-    })?;
     let old_root = fs::File::open("/").context("open old root before pivot_root failed")?;
     let new_root_c = c_path(new_root).context("pivot_root path contains interior NUL byte")?;
     let dot = CString::new(".").expect("literal '.' cannot contain NUL");
