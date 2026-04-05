@@ -71,11 +71,11 @@ fn root_help_text(verbose: bool) -> String {
         "  leash <subcommand> [options]\n\n",
         "COMMON:\n",
         "  leash run [-v|--verbose] command ...\n\n",
-        "TAIL:\n",
-        "  leash tail [--kinds <list>]\n\n",
         "RULES:\n",
         "  leash rules edit\n",
         "  leash rules show\n",
+        "\nTAIL:\n",
+        "  leash tail [--kinds <list>]\n",
     ));
     if verbose {
         out.push_str(concat!(
@@ -109,6 +109,14 @@ mod tests {
     fn verbose_root_help_lists_low_level_commands() {
         let text = help_text(HelpTopic::Root, true);
         assert!(text.contains("leash _fuse"));
+    }
+
+    #[test]
+    fn root_help_lists_rules_before_tail() {
+        let text = help_text(HelpTopic::Root, false);
+        let rules_pos = text.find("RULES:").expect("RULES section");
+        let tail_pos = text.find("TAIL:").expect("TAIL section");
+        assert!(rules_pos < tail_pos, "{text}");
     }
 
     #[test]
