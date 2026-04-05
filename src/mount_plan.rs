@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn missing_dev_bind_source_is_skipped() {
-        let profile = profile_from("/dev/leash2-definitely-missing-node rw\n/proc ro\n");
+        let profile = profile_from("/dev/leash-definitely-missing-node rw\n/proc ro\n");
         assert_eq!(
             build_mount_plan(&profile).expect("plan"),
             vec![MountPlanEntry::Proc { read_only: true }]

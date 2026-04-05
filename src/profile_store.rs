@@ -5,7 +5,7 @@ use fs_err as fs;
 
 use crate::profile::{IncludeResolver, PathExeResolver, Profile, parse};
 
-const CONFIG_DIR_NAME: &str = "leash2";
+const CONFIG_DIR_NAME: &str = "leash";
 const DEFAULT_PROFILE_NAME: &str = "profile";
 
 const DEFAULT_PROFILE_SOURCE: &str = "\
@@ -319,7 +319,7 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let home = tempdir.path().join("home");
         fs::create_dir_all(&home).expect("home");
-        let store = ProfileStore::new(home.join(".config/leash2"));
+        let store = ProfileStore::new(home.join(".config/leash"));
         let source = store
             .load_default_profile_source()
             .expect("load default profile");
@@ -340,10 +340,10 @@ mod tests {
     fn default_profile_file_overrides_builtin_profile() {
         let tempdir = tempdir().expect("tempdir");
         let config_dir = tempdir.path().join("config");
-        fs::create_dir_all(config_dir.join("leash2")).expect("config dir");
-        fs::write(config_dir.join("leash2/profile"), "/tmp rw\n").expect("profile");
+        fs::create_dir_all(config_dir.join("leash")).expect("config dir");
+        fs::write(config_dir.join("leash/profile"), "/tmp rw\n").expect("profile");
 
-        let store = ProfileStore::new(config_dir.join("leash2"));
+        let store = ProfileStore::new(config_dir.join("leash"));
         let source = store
             .load_default_profile_source()
             .expect("load default profile");
@@ -378,7 +378,7 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let home = tempdir.path().join("home");
         fs::create_dir_all(&home).expect("home");
-        let store = ProfileStore::new(home.join(".config/leash2"));
+        let store = ProfileStore::new(home.join(".config/leash"));
         let source = store
             .load_default_profile_source()
             .expect("load default profile");
@@ -398,7 +398,7 @@ mod tests {
     fn render_default_profile_source_for_show_expands_includes_as_comments() {
         let tempdir = tempdir().expect("tempdir");
         let home = tempdir.path().join("home");
-        let store = ProfileStore::new(home.join(".config/leash2"));
+        let store = ProfileStore::new(home.join(".config/leash"));
         let mut stack = Vec::new();
 
         let text =
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn load_default_profile_source_with_origin_reports_builtin_fallback() {
         let tempdir = tempdir().expect("tempdir");
-        let store = ProfileStore::new(tempdir.path().join("config/leash2"));
+        let store = ProfileStore::new(tempdir.path().join("config/leash"));
 
         let loaded = store
             .load_default_profile_source_with_origin()
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn render_default_profile_source_for_show_includes_source_comment() {
         let tempdir = tempdir().expect("tempdir");
-        let store = ProfileStore::new(tempdir.path().join("config/leash2"));
+        let store = ProfileStore::new(tempdir.path().join("config/leash"));
 
         let builtin_text = render_default_profile_source_for_show_from_store(&store)
             .expect("render builtin profile");
@@ -451,7 +451,7 @@ mod tests {
     fn save_default_profile_source_validates_before_write() {
         let tempdir = tempdir().expect("tempdir");
         let home = tempdir.path().join("home");
-        let store = ProfileStore::new(home.join(".config/leash2"));
+        let store = ProfileStore::new(home.join(".config/leash"));
 
         store
             .save_default_profile_source("/tmp rw\n")
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn remove_default_profile_source_restores_builtin_fallback() {
         let tempdir = tempdir().expect("tempdir");
-        let store = ProfileStore::new(tempdir.path().join("config/leash2"));
+        let store = ProfileStore::new(tempdir.path().join("config/leash"));
         store
             .save_default_profile_source("/tmp rw\n")
             .expect("save profile");

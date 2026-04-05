@@ -1,4 +1,4 @@
-# leash2
+# leash
 
 Experimental rewrite of `leash` focused on a single global FUSE mirror filesystem with pluggable access control.
 

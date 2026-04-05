@@ -1,13 +1,13 @@
 # Runtime Layout
 
-This document explains where `leash2` keeps config and runtime artifacts.
+This document explains where `leash` keeps config and runtime artifacts.
 
 ## Config Root
 
 Default profile path:
 
-- `$XDG_CONFIG_HOME/leash2/profile` when `XDG_CONFIG_HOME` is set
-- fallback: `~/.config/leash2/profile`
+- `$XDG_CONFIG_HOME/leash/profile` when `XDG_CONFIG_HOME` is set
+- fallback: `~/.config/leash/profile`
 
 If the profile file does not exist, `profile show` and `_fuse` use the built-in
 default profile source.
@@ -16,11 +16,11 @@ default profile source.
 
 Shared runtime root:
 
-- `${XDG_RUNTIME_DIR}/leash2` when `XDG_RUNTIME_DIR` is set
-- fallback: `/run/user/<uid>/leash2`
+- `${XDG_RUNTIME_DIR}/leash` when `XDG_RUNTIME_DIR` is set
+- fallback: `/run/user/<uid>/leash`
 
 If `XDG_RUNTIME_DIR` is unset and the fallback `/run/user/<uid>` directory must
-be created, `leash2` sets that fallback runtime directory to mode `0700`.
+be created, `leash` sets that fallback runtime directory to mode `0700`.
 
 ## Runtime Files
 
@@ -38,7 +38,7 @@ mount per profile.
 `run`:
 
 - ensures the shared mountpoint exists
-- checks whether the mountpoint is already a live `leash2` FUSE mount
+- checks whether the mountpoint is already a live `leash` FUSE mount
 - lazily unmounts stale disconnected FUSE mounts with `fusermount -u -z`
 - starts `_fuse` if the mount is absent
 - executes the command in a fresh namespace setup rooted at the shared mount

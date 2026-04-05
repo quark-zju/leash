@@ -85,7 +85,7 @@ fn temp_profile_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system clock before unix epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("leash2-profile-{}-{nonce}.tmp", std::process::id()))
+    std::env::temp_dir().join(format!("leash-profile-{}-{nonce}.tmp", std::process::id()))
 }
 
 #[cfg(test)]

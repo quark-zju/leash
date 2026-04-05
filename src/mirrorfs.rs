@@ -1003,7 +1003,7 @@ impl LockMode {
 }
 
 fn fuse_mount_options() -> Vec<MountOption> {
-    vec![MountOption::FSName("leash2-mirror".to_owned())]
+    vec![MountOption::FSName("leash-mirror".to_owned())]
 }
 
 impl<P: AccessController> Filesystem for FuseMirrorFs<P> {

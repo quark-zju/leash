@@ -1,7 +1,7 @@
 # Privilege Model
 
 This document describes the current privilege and namespace transitions in
-`leash2`.
+`leash`.
 
 ## Goals
 
@@ -12,13 +12,13 @@ This document describes the current privilege and namespace transitions in
 
 ## Command Roles
 
-`leash2 _fuse`:
+`leash _fuse`:
 
 - runs as the invoking user
 - mounts the shared global FUSE mirror under the per-user runtime directory
 - reloads the default profile on `SIGHUP`
 
-`leash2 run`:
+`leash run`:
 
 - starts `_fuse` on demand if the shared mount is not alive
 - creates new user, mount, IPC, and PID namespaces
@@ -27,7 +27,7 @@ This document describes the current privilege and namespace transitions in
 - executes the user command in a worker process while PID 1 remains a child
   reaper
 
-`leash2 profile show|edit`:
+`leash profile show|edit`:
 
 - operates on the default profile file as the invoking user
 - `edit` validates the profile before writing it back and signals `_fuse` with
@@ -63,7 +63,7 @@ The PID namespace init process does:
 2. `pivot_root` into the shared FUSE mount
 3. switch to the mapped uid/gid with `setresuid` / `setresgid`
 4. `chdir` to the original working directory, or `/` as a fallback
-5. set its process name to `leash2-init`
+5. set its process name to `leash-init`
 6. fork the worker command
 7. reap all children and exit with the worker's status
 
@@ -71,7 +71,7 @@ The worker process closes inherited file descriptors `>= 3` before `exec()`.
 
 ## Non-Goals
 
-`leash2` is not a full process sandbox yet. It currently does not provide:
+`leash` is not a full process sandbox yet. It currently does not provide:
 
 - a network namespace
 - seccomp filtering

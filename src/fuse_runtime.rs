@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use fs_err as fs;
 use log::debug;
 
-const RUNTIME_DIR_NAME: &str = "leash2";
+const RUNTIME_DIR_NAME: &str = "leash";
 const MOUNT_DIR_NAME: &str = "mount";
 const FUSE_LOG_FILE_NAME: &str = "fuse.log";
 const PID_FILE_NAME: &str = "fuse.pid";
@@ -305,7 +305,7 @@ mod tests {
 
         let mount_dir = ensure_global_mountpoint_under(&runtime_dir).expect("mountpoint");
 
-        assert_eq!(mount_dir, runtime_dir.join("leash2/mount"));
+        assert_eq!(mount_dir, runtime_dir.join("leash/mount"));
         assert!(mount_dir.is_dir());
     }
 
@@ -316,7 +316,7 @@ mod tests {
 
         let mount_dir = ensure_global_mountpoint_in(&runtime_dir, true).expect("mountpoint");
 
-        assert_eq!(mount_dir, runtime_dir.join("leash2/mount"));
+        assert_eq!(mount_dir, runtime_dir.join("leash/mount"));
         assert_eq!(
             fs::metadata(&runtime_dir).expect("runtime metadata").mode() & 0o777,
             0o700
@@ -340,12 +340,12 @@ mod tests {
         let mountinfo = tempdir.path().join("mountinfo");
         fs::write(
             &mountinfo,
-            "41 29 0:45 / /run/user/1000/leash2/mount rw,nosuid,nodev - fuse.leash leash rw\n",
+            "41 29 0:45 / /run/user/1000/leash/mount rw,nosuid,nodev - fuse.leash leash rw\n",
         )
         .expect("write mountinfo");
 
         assert_eq!(
-            read_mount_state_from(Path::new("/run/user/1000/leash2/mount"), &mountinfo)
+            read_mount_state_from(Path::new("/run/user/1000/leash/mount"), &mountinfo)
                 .expect("read mount state"),
             MountState::Fuse {
                 fs_type: "fuse.leash".to_owned(),
@@ -404,7 +404,7 @@ mod tests {
 
         let path = global_fuse_log_path_under(&runtime_dir).expect("fuse log path");
 
-        assert_eq!(path, runtime_dir.join("leash2/fuse.log"));
+        assert_eq!(path, runtime_dir.join("leash/fuse.log"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Locking Semantics
 
-This document describes the current `flock` / `fcntl` lock design in `leash2`,
+This document describes the current `flock` / `fcntl` lock design in `leash`,
 why SQLite compatibility matters, and the known semantic gaps.
 
 ## Why SQLite Compatibility Matters
@@ -10,7 +10,7 @@ session metadata, tool caches, and indexing state. In practice, the same agent
 or helper process may access those database files through the FUSE mount, while
 another process on the host accesses the backing path directly.
 
-That means `leash2` cannot treat locks as "mount-local only" if SQLite-backed
+That means `leash` cannot treat locks as "mount-local only" if SQLite-backed
 tools are expected to work reliably. There must be at least some host-visible
 synchronization between processes inside the FUSE mount and processes operating
 on the backing files outside the mount.
@@ -64,14 +64,14 @@ request is exactly a SHARED read lock on the SHARED byte range.
 Without `SQLITE_ENABLE_SETLK_TIMEOUT`, SQLite's Unix VFS maps its normal lock
 wrapper directly to `F_SETLK`.
 
-This is why `leash2` currently prioritizes correctness for non-blocking
+This is why `leash` currently prioritizes correctness for non-blocking
 `F_SETLK/F_GETLK/F_UNLCK` and rejects `F_SETLKW` explicitly.
 
 ## Current Design
 
 ### `flock`
 
-`leash2` requests `FUSE_FLOCK_LOCKS` and forwards whole-file lock requests to
+`leash` requests `FUSE_FLOCK_LOCKS` and forwards whole-file lock requests to
 host `flock` on the backing file descriptor.
 
 For `F_GETLK`-style probing on that path, `flock` cannot report an owner PID or
@@ -80,7 +80,7 @@ approximate whole-file conflict with `pid = 0`.
 
 ### POSIX `fcntl` Range Locks
 
-`leash2` requests `FUSE_POSIX_LOCKS` and handles non-whole-file byte-range
+`leash` requests `FUSE_POSIX_LOCKS` and handles non-whole-file byte-range
 locks in userspace.
 
 The in-memory lock state is maintained per inode:
@@ -112,7 +112,7 @@ POSIX locks are tracked by process and inode. If the daemon process itself held
 those locks, then closing any unrelated file descriptor for the same inode in
 the daemon could unexpectedly release the process's host locks.
 
-To avoid that, `leash2` forks a broker process that only:
+To avoid that, `leash` forks a broker process that only:
 
 - keeps stable backing-file descriptors open for projected locks
 - applies and removes host `fcntl` byte-range locks

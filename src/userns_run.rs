@@ -49,7 +49,7 @@ pub fn run_in_user_namespace(config: &UsernsRunConfig) -> Result<i32> {
         let status = match run_namespace_supervisor(config, uid, gid) {
             Ok(status) => status,
             Err(err) => {
-                eprintln!("leash2 userns run failed: {err:#}");
+                eprintln!("leash userns run failed: {err:#}");
                 125
             }
         };
@@ -488,7 +488,7 @@ fn run_pid_namespace_init_and_exec(
         return wait_for_specific_child(init_pid);
     }
 
-    set_process_name("leash2-init")?;
+    set_process_name("leash-init")?;
     apply_mount_plan_in_pid_namespace_init(&config.fuse_mount_root, &config.mount_plan)?;
     pivot_root_into(&config.fuse_mount_root)?;
     drop_to_target_ids(uid, gid)?;
@@ -500,7 +500,7 @@ fn run_pid_namespace_init_and_exec(
         let err = ProcessCommand::new(&config.program)
             .args(&config.args)
             .exec();
-        eprintln!("leash2 exec failed: {err}");
+        eprintln!("leash exec failed: {err}");
         unsafe { libc::_exit(127) }
     }
 
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn mount_target_for_entry_maps_proc_sys_and_bind_paths_under_fuse_root() {
-        let mount_root = Path::new("/run/user/1000/leash2/mount");
+        let mount_root = Path::new("/run/user/1000/leash/mount");
 
         assert_eq!(
             mount_target_for_entry(mount_root, &MountPlanEntry::Proc { read_only: true })

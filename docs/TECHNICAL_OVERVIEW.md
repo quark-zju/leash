@@ -5,7 +5,7 @@ short in `README.md`.
 
 ## Scope
 
-`leash2` currently focuses on a single shared mirror-style FUSE filesystem plus
+`leash` currently focuses on a single shared mirror-style FUSE filesystem plus
 profile-based access control.
 
 Implemented areas:
