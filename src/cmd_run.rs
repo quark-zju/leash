@@ -1,4 +1,6 @@
+use std::fs::File;
 use std::fs::OpenOptions;
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command as ProcessCommand, Stdio};
@@ -55,9 +57,60 @@ fn ensure_fuse_daemon_running(verbose: bool) -> Result<std::path::PathBuf> {
         MountState::Unmounted => {}
     }
 
+    let _startup_lock = acquire_fuse_start_lock(&mountpoint)?;
+    match fuse_runtime::read_global_mount_state(&mountpoint)? {
+        MountState::Fuse { fs_type } => {
+            debug!(
+                "run: shared mirrorfs already mounted at {} as {} after waiting for startup lock",
+                mountpoint.display(),
+                fs_type
+            );
+            return Ok(mountpoint);
+        }
+        MountState::Other { fs_type } => {
+            bail!(
+                "shared mountpoint {} is occupied by non-FUSE filesystem {}",
+                mountpoint.display(),
+                fs_type
+            );
+        }
+        MountState::Unmounted => {}
+    }
+
     let mut child = spawn_fuse_daemon(verbose)?;
     wait_for_fuse_mount(&mountpoint, &mut child)?;
     Ok(mountpoint)
+}
+
+struct FuseStartLock {
+    file: File,
+}
+
+impl Drop for FuseStartLock {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn acquire_fuse_start_lock(mountpoint: &Path) -> Result<FuseStartLock> {
+    let lock_dir = mountpoint.parent().with_context(|| {
+        format!(
+            "mountpoint {} has no parent directory",
+            mountpoint.display()
+        )
+    })?;
+    let lock_path = lock_dir.join("fuse.start.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("failed to open startup lock {}", lock_path.display()))?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("failed to acquire startup lock {}", lock_path.display()));
+    }
+    Ok(FuseStartLock { file })
 }
 
 fn spawn_fuse_daemon(verbose: bool) -> Result<Child> {
