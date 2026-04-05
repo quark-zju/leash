@@ -429,11 +429,12 @@ fn pivot_root_into(new_root: &Path) -> Result<()> {
             .context("fchdir(old_root) failed after pivot_root");
     }
 
-    debug!("userns-run: syscall umount2(., MNT_DETACH)");
-    if unsafe { libc::umount2(dot.as_ptr(), libc::MNT_DETACH) } != 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("umount2('.', MNT_DETACH) failed after pivot_root");
-    }
+    // Temporarily keep old root mounted for debugging pivot_root side effects.
+    // debug!("userns-run: syscall umount2(., MNT_DETACH)");
+    // if unsafe { libc::umount2(dot.as_ptr(), libc::MNT_DETACH) } != 0 {
+    //     return Err(std::io::Error::last_os_error())
+    //         .context("umount2('.', MNT_DETACH) failed after pivot_root");
+    // }
 
     debug!("userns-run: syscall chdir(/)");
     if unsafe { libc::chdir(root.as_ptr()) } != 0 {
@@ -490,8 +491,7 @@ fn run_pid_namespace_init_and_exec(
 
     set_process_name("leash-init")?;
     apply_mount_plan_in_pid_namespace_init(&config.fuse_mount_root, &config.mount_plan)?;
-    // Temporarily disable pivot_root for debugging mount visibility differences.
-    // pivot_root_into(&config.fuse_mount_root)?;
+    pivot_root_into(&config.fuse_mount_root)?;
     drop_to_target_ids(uid, gid)?;
     chdir_or_root(&config.cwd)?;
 
