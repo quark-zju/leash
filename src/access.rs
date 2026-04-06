@@ -77,11 +77,19 @@ pub struct AccessRequest<'a> {
 
 pub trait AccessController: Send + Sync + 'static {
     fn check(&self, request: &AccessRequest<'_>) -> AccessDecision;
+
+    fn should_cache_readdir(&self, _path: &Path) -> bool {
+        true
+    }
 }
 
 impl<T: AccessController + ?Sized> AccessController for Arc<T> {
     fn check(&self, request: &AccessRequest<'_>) -> AccessDecision {
         (**self).check(request)
+    }
+
+    fn should_cache_readdir(&self, path: &Path) -> bool {
+        (**self).should_cache_readdir(path)
     }
 }
 

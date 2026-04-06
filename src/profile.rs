@@ -261,6 +261,29 @@ struct InternalRuleMatch {
     kind: InternalRuleKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleMatchKind {
+    ImplicitAncestor,
+    Explicit,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuleMatchReportEntry {
+    pub rule_index: usize,
+    pub pattern: String,
+    pub action: Action,
+    pub kind: RuleMatchKind,
+    pub conditions_matched: bool,
+    pub has_exe_condition: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuleMatchReport {
+    pub visibility: Visibility,
+    pub effective_action: Action,
+    pub entries: Vec<RuleMatchReportEntry>,
+}
+
 impl Profile {
     pub fn rules(&self) -> &[Rule] {
         &self.rules
@@ -343,6 +366,84 @@ impl Profile {
 
     pub fn effective_action(&self, path: &Path, ctx: &EvalContext<'_>) -> Action {
         self.evaluate(path, ctx).unwrap_or(Action::Hide)
+    }
+
+    pub fn should_cache_readdir(&self, path: &Path) -> bool {
+        for matched_idx in self.match_globset.matches(path) {
+            let matched = &self.match_entries[matched_idx];
+            if self.rules[matched.original_rule_index].has_exe_condition() {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn rule_match_report(&self, path: &Path, ctx: &EvalContext<'_>) -> RuleMatchReport {
+        let mut runtime = StaticRuntimeEvalContext { ctx };
+        let mut implicit_ancestor_visible = false;
+        let mut cached_conditions = vec![None; self.rules.len()];
+        let mut entries = Vec::new();
+
+        for matched_idx in self.match_globset.matches(path) {
+            let matched = &self.match_entries[matched_idx];
+            let rule_idx = matched.original_rule_index;
+            let rule = &self.rules[rule_idx];
+            let conditions_matched =
+                self.rule_conditions_match(rule_idx, path, &mut runtime, &mut cached_conditions);
+
+            let kind = match matched.kind {
+                InternalRuleKind::ImplicitAncestor => RuleMatchKind::ImplicitAncestor,
+                InternalRuleKind::Explicit => RuleMatchKind::Explicit,
+            };
+            entries.push(RuleMatchReportEntry {
+                rule_index: rule_idx,
+                pattern: rule.pattern.clone(),
+                action: rule.action,
+                kind,
+                conditions_matched,
+                has_exe_condition: rule.has_exe_condition(),
+            });
+
+            if !conditions_matched {
+                continue;
+            }
+            match matched.kind {
+                InternalRuleKind::ImplicitAncestor => {
+                    implicit_ancestor_visible = true;
+                }
+                InternalRuleKind::Explicit => {
+                    let visibility = if matches!(rule.action, Action::Hide | Action::Deny)
+                        && implicit_ancestor_visible
+                    {
+                        Visibility::ImplicitAncestor
+                    } else {
+                        Visibility::Action(rule.action)
+                    };
+                    return RuleMatchReport {
+                        visibility,
+                        effective_action: match visibility {
+                            Visibility::Action(action) => action,
+                            Visibility::ImplicitAncestor | Visibility::Hidden => Action::Hide,
+                        },
+                        entries,
+                    };
+                }
+            }
+        }
+
+        let visibility = if implicit_ancestor_visible {
+            Visibility::ImplicitAncestor
+        } else {
+            Visibility::Hidden
+        };
+        RuleMatchReport {
+            visibility,
+            effective_action: match visibility {
+                Visibility::Action(action) => action,
+                Visibility::ImplicitAncestor | Visibility::Hidden => Action::Hide,
+            },
+            entries,
+        }
     }
 
     pub fn access_errno(&self, path: &Path, ctx: &EvalContext<'_>) -> Option<i32> {
@@ -457,6 +558,12 @@ impl RuntimeEvalContext for StaticRuntimeEvalContext<'_, '_> {
 impl Rule {
     fn conditions_match(&self, path: &Path, ctx: &mut dyn RuntimeEvalContext) -> bool {
         self.conditions.iter().all(|c| c.matches(path, ctx))
+    }
+
+    fn has_exe_condition(&self) -> bool {
+        self.conditions
+            .iter()
+            .any(|condition| matches!(condition, Condition::Exe(_)))
     }
 }
 
@@ -971,6 +1078,11 @@ impl<F: FsCheck + Send + Sync + 'static, C: CallerDataSource + Send + Sync + 'st
             None => AccessDecision::Allow,
             Some(errno) => AccessDecision::Deny(errno),
         }
+    }
+
+    fn should_cache_readdir(&self, path: &Path) -> bool {
+        let profile = self.profile.load();
+        profile.should_cache_readdir(path)
     }
 }
 
@@ -1808,6 +1920,41 @@ mod tests {
                 .contains("relative pattern './subdir' is not supported"),
             "{err:#}"
         );
+    }
+
+    #[test]
+    fn readdir_cache_disabled_when_path_may_match_exe_condition_rule() {
+        let p = parse_simple("/repo/.git rw when exe=git\n/repo ro\n");
+        assert!(!p.should_cache_readdir(Path::new("/repo")));
+        assert!(!p.should_cache_readdir(Path::new("/repo/.git")));
+    }
+
+    #[test]
+    fn readdir_cache_enabled_without_exe_condition_candidates() {
+        let p = parse_simple("/repo ro\n");
+        assert!(p.should_cache_readdir(Path::new("/repo")));
+    }
+
+    #[test]
+    fn rule_match_report_contains_condition_status() {
+        let p = parse_simple("/repo rw when env=ALLOW\n/repo ro\n");
+        let env = HashMap::new();
+        let fs = MockFsCheck::empty();
+        let ctx = EvalContext {
+            exe: None,
+            env: &env,
+            fs: &fs,
+        };
+        let report = p.rule_match_report(Path::new("/repo/file"), &ctx);
+        assert_eq!(report.visibility, Visibility::Action(Action::ReadOnly));
+        let explicit: Vec<&RuleMatchReportEntry> = report
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == RuleMatchKind::Explicit)
+            .collect();
+        assert!(explicit.len() >= 2);
+        assert!(explicit.iter().any(|entry| !entry.conditions_matched));
+        assert!(explicit.iter().any(|entry| entry.conditions_matched));
     }
 
     // ── Parse errors ─────────────────────────────────────────────────────────

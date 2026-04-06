@@ -1238,10 +1238,12 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             return;
         }
 
-        reply.opened(
-            FileHandle(0),
-            FopenFlags::FOPEN_KEEP_CACHE | FopenFlags::FOPEN_CACHE_DIR,
-        );
+        let flags = if fs.policy.should_cache_readdir(&path) {
+            FopenFlags::FOPEN_KEEP_CACHE | FopenFlags::FOPEN_CACHE_DIR
+        } else {
+            FopenFlags::empty()
+        };
+        reply.opened(FileHandle(0), flags);
     }
 
     fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
