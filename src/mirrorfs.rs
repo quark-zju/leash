@@ -456,9 +456,9 @@ impl<P: AccessController> MirrorFs<P> {
             if self.authorize_errno(caller, &path, Operation::Lookup) == Some(ENOENT) {
                 continue;
             }
-            let metadata = entry.metadata()?;
+            let file_type = entry.file_type()?;
             let ino = self.ensure_ino(&path);
-            out.push((ino, filetype_from_metadata(&metadata), entry.file_name()));
+            out.push((ino, filetype_from_std(file_type), entry.file_name()));
         }
         Ok(out)
     }
@@ -1936,7 +1936,10 @@ fn read_process_name(pid: u32) -> Option<String> {
 }
 
 fn filetype_from_metadata(metadata: &Metadata) -> FileType {
-    let kind = metadata.file_type();
+    filetype_from_std(metadata.file_type())
+}
+
+fn filetype_from_std(kind: std::fs::FileType) -> FileType {
     if kind.is_dir() {
         FileType::Directory
     } else if kind.is_symlink() {
