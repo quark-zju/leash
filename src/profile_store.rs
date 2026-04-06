@@ -69,10 +69,10 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 
 # programming language package, environment management
 ~/.bun rw
-~/.cargo ro
-~/.npm ro
-~/.pyenv ro
-~/.rustup ro
+~/.cargo rw
+~/.npm rw
+~/.pyenv rw
+~/.rustup rw
 
 # bin
 ~/.local/bin ro
@@ -85,7 +85,7 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 # nvim
 ~/.cache/nvim rw
 ~/.config/nvim ro
-~/.local/share/nvim ro
+~/.local/share/nvim rw
 ~/.local/state/nvim rw
 ";
 
