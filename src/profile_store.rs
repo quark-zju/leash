@@ -87,6 +87,18 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 ~/.config/nvim ro
 ~/.local/share/nvim rw
 ~/.local/state/nvim rw
+
+# shell config
+~/.bashrc* ro
+~/.config/zsh ro
+~/.zshrc* ro
+
+# shell, misc history
+~/.bash_history rw
+~/.local/share/autojump rw
+~/.python_history rw
+~/.zdirs rw
+~/.zsh_history rw
 ";
 
 const HOME_HIDE: &str = "\
