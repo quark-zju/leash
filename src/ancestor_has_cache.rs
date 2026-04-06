@@ -1,6 +1,4 @@
-use std::collections::BTreeMap;
-use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const DEFAULT_TTL: Duration = Duration::from_secs(1);
@@ -12,53 +10,11 @@ struct CacheEntry {
     expires_at: Instant,
 }
 
-#[derive(Debug, Clone, Default)]
-struct CacheNode {
-    entry: Option<CacheEntry>,
-    children: BTreeMap<OsString, CacheNode>,
-}
-
-impl CacheNode {
-    fn insert(&mut self, path: &Path, entry: CacheEntry) {
-        let mut node = self;
-        for component in path.components() {
-            let std::path::Component::Normal(value) = component else {
-                continue;
-            };
-            node = node.children.entry(value.to_os_string()).or_default();
-        }
-        node.entry = Some(entry);
-    }
-
-    fn lookup(&self, path: &Path, now: Instant) -> Option<bool> {
-        let mut node = self;
-        let mut candidate = node
-            .entry
-            .as_ref()
-            .filter(|entry| entry.expires_at > now)
-            .map(|entry| entry.value);
-
-        for component in path.components() {
-            let std::path::Component::Normal(value) = component else {
-                continue;
-            };
-            let Some(next) = node.children.get(value) else {
-                break;
-            };
-            node = next;
-            if let Some(entry) = node.entry.as_ref().filter(|entry| entry.expires_at > now) {
-                candidate = Some(entry.value);
-            }
-        }
-        candidate
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AncestorHasCache {
     ttl: Duration,
     negative_depth: usize,
-    entries: BTreeMap<String, CacheNode>,
+    entries: papaya::HashMap<String, papaya::HashMap<PathBuf, CacheEntry>>,
 }
 
 impl Default for AncestorHasCache {
@@ -72,7 +28,7 @@ impl AncestorHasCache {
         Self {
             ttl,
             negative_depth,
-            entries: BTreeMap::new(),
+            entries: papaya::HashMap::new(),
         }
     }
 
@@ -93,12 +49,24 @@ impl AncestorHasCache {
     /// - `None` when no usable cache entry exists.
     pub fn lookup(&self, name: &str, path: &Path, now: Instant) -> Option<bool> {
         let parent = path.parent()?;
-        let root = self.entries.get(name)?;
-        root.lookup(parent, now)
+        let names = self.entries.pin();
+        let per_name = names.get(name)?;
+        let per_name = per_name.pin();
+
+        let mut current = Some(parent);
+        while let Some(dir) = current {
+            if let Some(entry) = per_name.get(dir) {
+                if entry.expires_at > now {
+                    return Some(entry.value);
+                }
+            }
+            current = dir.parent();
+        }
+        None
     }
 
     /// Records that `<ancestor>/<name>` exists.
-    pub fn record_positive(&mut self, name: &str, ancestor: &Path, now: Instant) {
+    pub fn record_positive(&self, name: &str, ancestor: &Path, now: Instant) {
         self.insert(name, ancestor, true, now);
     }
 
@@ -108,7 +76,7 @@ impl AncestorHasCache {
     /// - `start_dir`
     /// - `start_dir.parent()`
     /// - `start_dir.parent().parent()`
-    pub fn record_negative(&mut self, name: &str, start_dir: &Path, now: Instant) {
+    pub fn record_negative(&self, name: &str, start_dir: &Path, now: Instant) {
         if self.negative_depth == 0 {
             return;
         }
@@ -123,13 +91,12 @@ impl AncestorHasCache {
         }
     }
 
-    fn insert(&mut self, name: &str, path: &Path, value: bool, now: Instant) {
+    fn insert(&self, name: &str, path: &Path, value: bool, now: Instant) {
         let expires_at = now + self.ttl;
         let entry = CacheEntry { value, expires_at };
-        self.entries
-            .entry(name.to_owned())
-            .or_default()
-            .insert(path, entry);
+        let names = self.entries.pin();
+        let per_name = names.get_or_insert_with(name.to_owned(), papaya::HashMap::new);
+        per_name.pin().insert(path.to_path_buf(), entry);
     }
 }
 
