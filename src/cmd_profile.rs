@@ -85,6 +85,9 @@ fn write_temp_profile(content: &str) -> Result<PathBuf> {
 }
 
 fn test_profile_path(path: &Path, exe: Option<&str>) -> Result<()> {
+    if !path.is_absolute() {
+        bail!("rules test PATH must be an absolute path");
+    }
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let profile = profile_store::load_default_profile(&cwd)?;
     let fs = RealFsCheck;
@@ -182,5 +185,15 @@ mod tests {
         let text = fs::read_to_string(&path).expect("read temp profile");
         assert_eq!(text, "/tmp rw\n");
         fs::remove_file(path).expect("cleanup temp profile");
+    }
+
+    #[test]
+    fn rules_test_rejects_relative_path() {
+        let err = test_profile_path(Path::new("relative/path"), None).expect_err("must fail");
+        assert!(
+            err.to_string()
+                .contains("rules test PATH must be an absolute path"),
+            "{err:#}"
+        );
     }
 }
