@@ -221,6 +221,7 @@ dependencies = [
  "log",
  "memmap2",
  "papaya",
+ "parking_lot",
  "pico-args",
  "tempfile",
  "thiserror",
