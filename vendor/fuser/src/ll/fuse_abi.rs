@@ -182,6 +182,7 @@ pub(crate) enum fuse_notify_code {
     FUSE_NOTIFY_STORE = 4,
     FUSE_NOTIFY_RETRIEVE = 5,
     FUSE_NOTIFY_DELETE = 6,
+    FUSE_NOTIFY_INC_EPOCH = 8,
 }
 
 #[repr(C)]

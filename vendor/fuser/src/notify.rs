@@ -65,6 +65,14 @@ impl Notifier {
         self.send(notify_code::FUSE_POLL, &notif)
     }
 
+    /// Invalidate directory-entry cache by incrementing the FUSE epoch.
+    /// # Errors
+    /// Returns an error if the kernel rejects the notification.
+    pub fn increment_epoch(&self) -> io::Result<()> {
+        let notif = Notification::new_increment_epoch();
+        self.send(notify_code::FUSE_NOTIFY_INC_EPOCH, &notif)
+    }
+
     /// Invalidate the kernel cache for a given directory entry
     /// # Errors
     /// Returns an error if the notification data is too large.

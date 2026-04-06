@@ -175,7 +175,7 @@ impl<P: AccessController> MirrorFs<P> {
         let mut config = Config::default();
         config.mount_options = options;
         config.n_threads = Some(fuse_worker_threads());
-        fuser::mount2(FuseMirrorFs::new(self), mountpoint, &config).with_context(|| {
+        fuser::mount(FuseMirrorFs::new(self), mountpoint, &config).with_context(|| {
             format!(
                 "failed to mount mirror filesystem at {}",
                 mountpoint.display()
@@ -188,7 +188,7 @@ impl<P: AccessController> MirrorFs<P> {
         let mut config = Config::default();
         config.mount_options = options;
         config.n_threads = Some(fuse_worker_threads());
-        fuser::spawn_mount2(FuseMirrorFs::new(self), mountpoint, &config).with_context(|| {
+        fuser::spawn_mount(FuseMirrorFs::new(self), mountpoint, &config).with_context(|| {
             format!(
                 "failed to mount mirror filesystem in background at {}",
                 mountpoint.display()

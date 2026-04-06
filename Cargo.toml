@@ -11,7 +11,7 @@ harness = false
 anyhow = "1"
 arc-swap = "1"
 thiserror = "2"
-fuser = { version = "0.17.0", features = ["abi-7-40"] }
+fuser = { path = "vendor/fuser" }
 fs-err = "3"
 globset = "0.4"
 libc = "0.2"

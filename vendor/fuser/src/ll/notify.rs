@@ -119,6 +119,10 @@ impl<'a> Notification<'a> {
         Self::from_struct(&r)
     }
 
+    pub(crate) fn new_increment_epoch() -> Self {
+        Self::Bare(NotificationBuf::new())
+    }
+
     fn from_struct<T: IntoBytes + Immutable + ?Sized>(data: &T) -> Self {
         Self::Bare(data.as_bytes().into())
     }
@@ -209,6 +213,18 @@ mod test {
         let expected = vec![
             0x18, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x21, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(n, expected);
+    }
+
+    #[test]
+    fn increment_epoch() {
+        let n = Notification::new_increment_epoch()
+            .with_iovec(abi::fuse_notify_code::FUSE_NOTIFY_INC_EPOCH, ioslice_to_vec)
+            .unwrap();
+        let expected = vec![
+            0x10, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
         ];
         assert_eq!(n, expected);
     }
