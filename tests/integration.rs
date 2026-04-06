@@ -160,6 +160,11 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
+    if !Path::new("/dev/fuse").exists() {
+        eprintln!("skipping integration tests: /dev/fuse not found");
+        return Ok(());
+    }
+
     let suite = MountedSuite::new()?;
     let mut failures = Vec::new();
 
