@@ -126,7 +126,7 @@ impl Drop for DaemonPidFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::access::{AccessController, AccessRequest, Caller, Operation};
+    use crate::access::{AccessController, AccessRequest, Caller, Operation, ProcCallerCondition};
     use crate::profile::{NoIncludes, PathExeResolver, parse};
 
     #[test]
@@ -150,7 +150,8 @@ mod tests {
                     caller: &Caller::with_process_name(None, None),
                     path: Path::new("/tmp/file.txt"),
                     operation: Operation::Lookup,
-                }
+                },
+                &mut ProcCallerCondition::from_pid(None)
             ),
             crate::access::AccessDecision::Allow
         );

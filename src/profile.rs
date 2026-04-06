@@ -33,7 +33,7 @@ use libc::{EACCES, ENOENT, EPERM};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
-use crate::access::{AccessController, AccessDecision, AccessRequest};
+use crate::access::{AccessController, AccessDecision, AccessRequest, CallerCondition};
 use crate::ancestor_has_cache::AncestorHasCache;
 
 // ── Actions ───────────────────────────────────────────────────────────────────
@@ -578,11 +578,6 @@ pub struct EvalContext<'a> {
     pub fs: &'a dyn FsCheck,
 }
 
-pub trait CallerCondition {
-    fn exe_match(&mut self, expected: &Path) -> bool;
-    fn env_match(&mut self, name: &str) -> bool;
-}
-
 trait RuntimeEvalContext {
     fn exe_match(&mut self, expected: &Path) -> bool;
     fn env_match(&mut self, name: &str) -> bool;
@@ -1031,66 +1026,6 @@ fn build_internal_rule_index(
     Ok((globset, entries))
 }
 
-fn parse_environ(raw: Vec<u8>) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    for pair in raw.split(|byte| *byte == 0) {
-        if pair.is_empty() {
-            continue;
-        }
-        let Some(eq) = pair.iter().position(|byte| *byte == b'=') else {
-            continue;
-        };
-        let key = String::from_utf8_lossy(&pair[..eq]).into_owned();
-        let value = String::from_utf8_lossy(&pair[eq + 1..]).into_owned();
-        out.insert(key, value);
-    }
-    out
-}
-
-pub struct ProcCallerCondition {
-    pid: Option<u32>,
-    exe_loaded: bool,
-    exe: Option<PathBuf>,
-    env_loaded: bool,
-    env: HashMap<String, String>,
-}
-
-impl ProcCallerCondition {
-    fn from_pid(pid: Option<u32>) -> Self {
-        Self {
-            pid,
-            exe_loaded: false,
-            exe: None,
-            env_loaded: false,
-            env: HashMap::new(),
-        }
-    }
-}
-
-impl CallerCondition for ProcCallerCondition {
-    fn exe_match(&mut self, expected: &Path) -> bool {
-        if !self.exe_loaded {
-            self.exe = self
-                .pid
-                .and_then(|pid| std::fs::read_link(format!("/proc/{pid}/exe")).ok());
-            self.exe_loaded = true;
-        }
-        self.exe.as_deref() == Some(expected)
-    }
-
-    fn env_match(&mut self, name: &str) -> bool {
-        if !self.env_loaded {
-            self.env = self
-                .pid
-                .and_then(|pid| std::fs::read(format!("/proc/{pid}/environ")).ok())
-                .map(parse_environ)
-                .unwrap_or_default();
-            self.env_loaded = true;
-        }
-        self.env.contains_key(name)
-    }
-}
-
 pub struct ProfileController<F = RealFsCheck> {
     profile: ArcSwap<Profile>,
     fs: F,
@@ -1121,7 +1056,7 @@ impl<F: FsCheck> ProfileController<F> {
         self.profile.store(Arc::new(profile));
     }
 
-    pub fn check<C: CallerCondition>(
+    pub fn check<C: CallerCondition + ?Sized>(
         &self,
         request: &AccessRequest<'_>,
         caller_condition: &mut C,
@@ -1153,9 +1088,12 @@ impl<F: FsCheck> ProfileController<F> {
 }
 
 impl<F: FsCheck + Send + Sync + 'static> AccessController for ProfileController<F> {
-    fn check(&self, request: &AccessRequest<'_>) -> AccessDecision {
-        let mut caller_condition = ProcCallerCondition::from_pid(request.caller.pid);
-        Self::check(self, request, &mut caller_condition)
+    fn check(
+        &self,
+        request: &AccessRequest<'_>,
+        caller_condition: &mut dyn CallerCondition,
+    ) -> AccessDecision {
+        Self::check(self, request, caller_condition)
     }
 
     fn should_cache_readdir(&self, path: &Path) -> bool {
@@ -1164,13 +1102,15 @@ impl<F: FsCheck + Send + Sync + 'static> AccessController for ProfileController<
     }
 }
 
-struct LazyRuntimeEvalContext<'a, F, C> {
+struct LazyRuntimeEvalContext<'a, F, C: ?Sized> {
     fs: &'a F,
     caller_condition: &'a mut C,
     ancestor_has_cache: &'a AncestorHasCache,
 }
 
-impl<F: FsCheck, C: CallerCondition> RuntimeEvalContext for LazyRuntimeEvalContext<'_, F, C> {
+impl<F: FsCheck, C: CallerCondition + ?Sized> RuntimeEvalContext
+    for LazyRuntimeEvalContext<'_, F, C>
+{
     fn exe_match(&mut self, expected: &Path) -> bool {
         self.caller_condition.exe_match(expected)
     }

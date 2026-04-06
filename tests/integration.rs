@@ -30,7 +30,7 @@ use fs_err as fs;
 use memmap2::{Mmap, MmapMut};
 use tempfile::TempDir;
 
-use access::{AccessController, AccessDecision, AccessRequest, Operation};
+use access::{AccessController, AccessDecision, AccessRequest, CallerCondition, Operation};
 use mirrorfs::MirrorFs;
 use profile::{NoIncludes, PathExeResolver, ProfileController};
 
@@ -62,7 +62,11 @@ impl IntegrationPolicy {
 }
 
 impl AccessController for IntegrationPolicy {
-    fn check(&self, request: &AccessRequest<'_>) -> AccessDecision {
+    fn check(
+        &self,
+        request: &AccessRequest<'_>,
+        _caller_condition: &mut dyn CallerCondition,
+    ) -> AccessDecision {
         if request.operation.is_write()
             && request.caller.process_name() != Some(self.allowed_writer.as_str())
         {

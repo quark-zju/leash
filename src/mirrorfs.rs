@@ -22,7 +22,9 @@ use fuser::{
 use libc::{EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR};
 use log::{debug, warn};
 
-use crate::access::{AccessController, AccessDecision, AccessRequest, Caller, Operation};
+use crate::access::{
+    AccessController, AccessDecision, AccessRequest, Caller, Operation, ProcCallerCondition,
+};
 use crate::process_name::set_process_name;
 use crate::tail_ipc::{self, EventKind};
 
@@ -333,22 +335,30 @@ impl<P: AccessController> MirrorFs<P> {
     }
 
     fn authorize(&self, caller: &Caller, path: &Path, operation: Operation) -> Result<()> {
-        match self.policy.check(&AccessRequest {
-            caller,
-            path,
-            operation,
-        }) {
+        let mut caller_condition = ProcCallerCondition::from_pid(caller.pid);
+        match self.policy.check(
+            &AccessRequest {
+                caller,
+                path,
+                operation,
+            },
+            &mut caller_condition,
+        ) {
             AccessDecision::Allow => Ok(()),
             AccessDecision::Deny(errno) => Err(std::io::Error::from_raw_os_error(errno).into()),
         }
     }
 
     fn authorize_errno(&self, caller: &Caller, path: &Path, operation: Operation) -> Option<i32> {
-        match self.policy.check(&AccessRequest {
-            caller,
-            path,
-            operation,
-        }) {
+        let mut caller_condition = ProcCallerCondition::from_pid(caller.pid);
+        match self.policy.check(
+            &AccessRequest {
+                caller,
+                path,
+                operation,
+            },
+            &mut caller_condition,
+        ) {
             AccessDecision::Allow => None,
             AccessDecision::Deny(errno) => Some(errno),
         }

@@ -1,7 +1,73 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 pub type ProcessNameGetter = fn(u32) -> Option<String>;
+
+pub trait CallerCondition {
+    fn exe_match(&mut self, expected: &Path) -> bool;
+    fn env_match(&mut self, name: &str) -> bool;
+}
+
+pub struct ProcCallerCondition {
+    pid: Option<u32>,
+    exe_loaded: bool,
+    exe: Option<std::path::PathBuf>,
+    env_loaded: bool,
+    env: HashMap<String, String>,
+}
+
+impl ProcCallerCondition {
+    pub fn from_pid(pid: Option<u32>) -> Self {
+        Self {
+            pid,
+            exe_loaded: false,
+            exe: None,
+            env_loaded: false,
+            env: HashMap::new(),
+        }
+    }
+}
+
+impl CallerCondition for ProcCallerCondition {
+    fn exe_match(&mut self, expected: &Path) -> bool {
+        if !self.exe_loaded {
+            self.exe = self
+                .pid
+                .and_then(|pid| std::fs::read_link(format!("/proc/{pid}/exe")).ok());
+            self.exe_loaded = true;
+        }
+        self.exe.as_deref() == Some(expected)
+    }
+
+    fn env_match(&mut self, name: &str) -> bool {
+        if !self.env_loaded {
+            self.env = self
+                .pid
+                .and_then(|pid| std::fs::read(format!("/proc/{pid}/environ")).ok())
+                .map(parse_environ)
+                .unwrap_or_default();
+            self.env_loaded = true;
+        }
+        self.env.contains_key(name)
+    }
+}
+
+fn parse_environ(raw: Vec<u8>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for pair in raw.split(|byte| *byte == 0) {
+        if pair.is_empty() {
+            continue;
+        }
+        let Some(eq) = pair.iter().position(|byte| *byte == b'=') else {
+            continue;
+        };
+        let key = String::from_utf8_lossy(&pair[..eq]).into_owned();
+        let value = String::from_utf8_lossy(&pair[eq + 1..]).into_owned();
+        out.insert(key, value);
+    }
+    out
+}
 
 #[derive(Debug)]
 pub struct Caller {
@@ -100,7 +166,11 @@ pub struct AccessRequest<'a> {
 }
 
 pub trait AccessController: Send + Sync + 'static {
-    fn check(&self, request: &AccessRequest<'_>) -> AccessDecision;
+    fn check(
+        &self,
+        request: &AccessRequest<'_>,
+        caller_condition: &mut dyn CallerCondition,
+    ) -> AccessDecision;
 
     fn should_cache_readdir(&self, _path: &Path) -> bool {
         true
@@ -108,8 +178,12 @@ pub trait AccessController: Send + Sync + 'static {
 }
 
 impl<T: AccessController + ?Sized> AccessController for Arc<T> {
-    fn check(&self, request: &AccessRequest<'_>) -> AccessDecision {
-        (**self).check(request)
+    fn check(
+        &self,
+        request: &AccessRequest<'_>,
+        caller_condition: &mut dyn CallerCondition,
+    ) -> AccessDecision {
+        (**self).check(request, caller_condition)
     }
 
     fn should_cache_readdir(&self, path: &Path) -> bool {
@@ -121,7 +195,11 @@ impl<T: AccessController + ?Sized> AccessController for Arc<T> {
 pub struct AllowAll;
 
 impl AccessController for AllowAll {
-    fn check(&self, _request: &AccessRequest<'_>) -> AccessDecision {
+    fn check(
+        &self,
+        _request: &AccessRequest<'_>,
+        _caller_condition: &mut dyn CallerCondition,
+    ) -> AccessDecision {
         AccessDecision::Allow
     }
 }
