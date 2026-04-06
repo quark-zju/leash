@@ -1218,6 +1218,32 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
         reply.ok();
     }
 
+    fn opendir(&self, req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+        let caller = caller_from_request(req);
+        let mut fs = self.inner.lock().unwrap();
+        let Some(path) = fs.path_for_ino(ino.0).map(Path::to_path_buf) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+        if let Some(errno) = fs.authorize_errno(&caller, &path, Operation::ReadDir) {
+            if is_access_denied_errno(errno) {
+                fs.emit_tail_event(
+                    EventKind::OpenDenied,
+                    Some(path),
+                    Some(errno),
+                    Some("op=opendir".to_owned()),
+                );
+            }
+            reply.error(Errno::from_i32(errno));
+            return;
+        }
+
+        reply.opened(
+            FileHandle(0),
+            FopenFlags::FOPEN_KEEP_CACHE | FopenFlags::FOPEN_CACHE_DIR,
+        );
+    }
+
     fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let caller = caller_from_request(req);
         let mut fs = self.inner.lock().unwrap();
