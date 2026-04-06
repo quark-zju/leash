@@ -36,6 +36,10 @@ const BASIC_PROFILE_SOURCE: &str = "\
 /sbin ro
 /usr ro
 
+# systemd-resolved, symlinked by /etc/resolv.conf
+/run/systemd/resolve/*.conf ro
+
+# dev devices
 /dev/full rw
 /dev/null rw
 /dev/ptmx rw
