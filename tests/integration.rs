@@ -189,10 +189,13 @@ fn main() -> ExitCode {
 }
 
 fn parse_cli_options() -> Result<CliOptions> {
-    let mut quiet = false;
+    // Keep this harness quiet by default so `cargo test -q` and plain
+    // `cargo test` do not emit per-subtest progress lines.
+    let mut quiet = true;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "-q" | "--quiet" => quiet = true,
+            "-v" | "--verbose" => quiet = false,
             "--nocapture" => {}
             "--" => {}
             other => bail!("unknown integration test option: {other}"),
