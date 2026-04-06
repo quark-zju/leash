@@ -166,7 +166,7 @@ impl<P: AccessController> MirrorFs<P> {
         let options = fuse_mount_options();
         let mut config = Config::default();
         config.mount_options = options;
-        config.n_threads = Some(2);
+        config.n_threads = Some(fuse_worker_threads());
         fuser::mount2(FuseMirrorFs::new(self), mountpoint, &config).with_context(|| {
             format!(
                 "failed to mount mirror filesystem at {}",
@@ -179,7 +179,7 @@ impl<P: AccessController> MirrorFs<P> {
         let options = fuse_mount_options();
         let mut config = Config::default();
         config.mount_options = options;
-        config.n_threads = Some(2);
+        config.n_threads = Some(fuse_worker_threads());
         fuser::spawn_mount2(FuseMirrorFs::new(self), mountpoint, &config).with_context(|| {
             format!(
                 "failed to mount mirror filesystem in background at {}",
@@ -1094,6 +1094,13 @@ impl LockMode {
 
 fn fuse_mount_options() -> Vec<MountOption> {
     vec![MountOption::FSName("leash-mirror".to_owned())]
+}
+
+fn fuse_worker_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .clamp(1, 4)
 }
 
 impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
