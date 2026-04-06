@@ -4,16 +4,26 @@ use anyhow::{Context, Result, bail};
 use fs_err as fs;
 use log::{debug, warn};
 
-pub fn set_process_name(name: &str) -> Result<()> {
-    let name_c = CString::new(name).context("process name contains interior NUL byte")?;
-    debug!("process-name: syscall prctl(PR_SET_NAME, {name})");
-    let rc = unsafe { libc::prctl(libc::PR_SET_NAME, name_c.as_ptr() as libc::c_ulong, 0, 0, 0) };
+pub fn set_process_name(short_name: &str) -> Result<()> {
+    let prctl_name = format!("leash-{short_name}");
+    let prctl_name_c =
+        CString::new(prctl_name.as_str()).context("process name contains interior NUL byte")?;
+    debug!("process-name: syscall prctl(PR_SET_NAME, {prctl_name})");
+    let rc = unsafe {
+        libc::prctl(
+            libc::PR_SET_NAME,
+            prctl_name_c.as_ptr() as libc::c_ulong,
+            0,
+            0,
+            0,
+        )
+    };
     if rc != 0 {
         return Err(std::io::Error::last_os_error()).context("prctl(PR_SET_NAME) failed");
     }
 
-    if let Err(err) = try_rewrite_argv0_in_place(name) {
-        warn!("process-name: failed to rewrite argv[0] for {name}: {err:#}");
+    if let Err(err) = try_rewrite_argv0_in_place(short_name) {
+        warn!("process-name: failed to rewrite argv[0] for {short_name}: {err:#}");
     }
 
     Ok(())

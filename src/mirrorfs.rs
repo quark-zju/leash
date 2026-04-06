@@ -2246,7 +2246,7 @@ impl LockBroker {
         }
         if pid == 0 {
             drop(parent);
-            if let Err(err) = set_process_name("leash-lock-broker") {
+            if let Err(err) = set_process_name("lock-broker") {
                 warn!("lock broker failed to set process name: {err:#}");
             }
             if let Err(err) = arm_broker_parent_death_signal() {

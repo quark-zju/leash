@@ -492,7 +492,7 @@ fn run_pid_namespace_init_and_exec(
         return wait_for_specific_child(init_pid);
     }
 
-    set_process_name("leash-init")?;
+    set_process_name("init")?;
     set_no_new_privs("pidns init")?;
     apply_mount_plan_in_pid_namespace_init(&config.fuse_mount_root, &config.mount_plan)?;
     pivot_root_into(&config.fuse_mount_root)?;
