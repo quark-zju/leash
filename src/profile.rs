@@ -115,8 +115,9 @@ impl ExeResolver for PathExeResolver {
     fn resolve(&self, name: &str) -> Option<PathBuf> {
         let path_var = std::env::var("PATH").ok()?;
         for dir in path_var.split(':') {
-            let candidate = PathBuf::from(dir).join(name);
+            let candidate = Path::new(dir).join(name);
             if candidate.is_file() {
+                let candidate = candidate.canonicalize().unwrap_or(candidate);
                 return Some(candidate);
             }
         }
