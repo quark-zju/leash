@@ -373,10 +373,10 @@ impl Profile {
             return false;
         }
         // Conservative: without a direct-child glob introspection API, treat any
-        // exe-conditioned hide rule under this directory as potentially changing
-        // readdir results for this directory.
+        // caller-conditioned hide rule under this directory as potentially
+        // changing readdir results for this directory.
         !self.rules.iter().any(|rule| {
-            rule.has_exe_condition()
+            rule.has_caller_condition()
                 && rule.action == Action::Hide
                 && pattern_matches_implicit_ancestor(&rule.pattern, path)
         })
@@ -400,7 +400,7 @@ impl Profile {
             }
             last_rule_index = Some(rule_index);
             let rule = &self.rules[rule_index];
-            if rule.has_exe_condition() {
+            if rule.has_caller_condition() {
                 if matches!(rule.action, Action::Hide | Action::Deny) {
                     return false;
                 }
@@ -607,6 +607,12 @@ impl Rule {
         self.conditions
             .iter()
             .any(|condition| matches!(condition, Condition::Exe(_)))
+    }
+
+    fn has_caller_condition(&self) -> bool {
+        self.conditions
+            .iter()
+            .any(|condition| matches!(condition, Condition::Exe(_) | Condition::Env(_)))
     }
 }
 
@@ -1982,6 +1988,13 @@ mod tests {
         // NOTE: keeping descendant behavior conservative for now; without a
         // direct-child glob introspection API we may disable caching for paths
         // such as /a/.git/objects more often than strictly necessary.
+
+        let case5 = parse_simple("/a/foo hide when env=SECRET\n/a ro\n");
+        assert!(!case5.should_cache_readdir(Path::new("/a")));
+
+        let case6 = parse_simple("/a/b deny when env=SECRET\n/a ro\n");
+        assert!(case6.should_cache_readdir(Path::new("/a")));
+        assert!(!case6.should_cache_readdir(Path::new("/a/b")));
     }
 
     #[test]
