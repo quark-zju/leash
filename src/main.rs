@@ -10,6 +10,7 @@ mod cmd_tail;
 mod fuse_runtime;
 mod mirrorfs;
 mod mount_plan;
+mod process_name;
 mod profile;
 mod profile_store;
 mod tail_ipc;

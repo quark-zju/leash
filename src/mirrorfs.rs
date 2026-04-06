@@ -20,9 +20,10 @@ use fuser::{
     ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use libc::{EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR};
-use log::debug;
+use log::{debug, warn};
 
 use crate::access::{AccessController, AccessDecision, AccessRequest, Caller, Operation};
+use crate::process_name::set_process_name;
 use crate::tail_ipc::{self, EventKind};
 
 const TTL: Duration = Duration::ZERO;
@@ -2245,6 +2246,9 @@ impl LockBroker {
         }
         if pid == 0 {
             drop(parent);
+            if let Err(err) = set_process_name("leash-lock-broker") {
+                warn!("lock broker failed to set process name: {err:#}");
+            }
             if let Err(err) = arm_broker_parent_death_signal() {
                 eprintln!("lock broker failed to arm parent-death signal: {err}");
                 unsafe { libc::_exit(1) }

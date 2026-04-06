@@ -11,6 +11,7 @@ use fs_err as fs;
 use log::{debug, warn};
 
 use crate::mount_plan::MountPlanEntry;
+use crate::process_name::set_process_name;
 
 const MOUNTINFO_PATH: &str = "/proc/self/mountinfo";
 
@@ -552,16 +553,6 @@ fn fork_process(label: &str) -> Result<libc::pid_t> {
             .with_context(|| format!("fork failed for {label}"));
     }
     Ok(pid)
-}
-
-fn set_process_name(name: &str) -> Result<()> {
-    let name_c = CString::new(name).context("process name contains interior NUL byte")?;
-    debug!("userns-run: syscall prctl(PR_SET_NAME, {name})");
-    let rc = unsafe { libc::prctl(libc::PR_SET_NAME, name_c.as_ptr() as libc::c_ulong, 0, 0, 0) };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error()).context("prctl(PR_SET_NAME) failed");
-    }
-    Ok(())
 }
 
 fn set_no_new_privs(label: &str) -> Result<()> {
