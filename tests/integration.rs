@@ -22,6 +22,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -213,6 +214,10 @@ fn run_profile_policy_tests() -> Result<()> {
     eprintln!("test profile_symlink_target_policy_blocks_open_and_setattr ...");
     profile_symlink_target_policy_blocks_open_and_setattr()?;
     eprintln!("test profile_symlink_target_policy_blocks_open_and_setattr ... ok");
+
+    eprintln!("test profile_readdir_cache_can_show_newly_hidden_path_after_reload ...");
+    profile_readdir_cache_can_show_newly_hidden_path_after_reload()?;
+    eprintln!("test profile_readdir_cache_can_show_newly_hidden_path_after_reload ... ok");
     Ok(())
 }
 
@@ -926,6 +931,57 @@ fn profile_symlink_target_policy_blocks_open_and_setattr() -> Result<()> {
     )
     .unwrap_err();
     assert_eq!(chmod_err.kind(), ErrorKind::PermissionDenied);
+    Ok(())
+}
+
+fn profile_readdir_cache_can_show_newly_hidden_path_after_reload() -> Result<()> {
+    let mut policy = None;
+    let suite = MountedSuite::with_policy_factory(|backing_root| {
+        let initial_profile_src = format!("{} ro\n", backing_root.display());
+        let profile = profile::parse(
+            &initial_profile_src,
+            Path::new("/tmp"),
+            Path::new("/tmp"),
+            &NoIncludes,
+            &PathExeResolver,
+        )?;
+        let controller = Arc::new(ProfileController::new(profile));
+        policy = Some(controller.clone());
+        Ok(controller)
+    })?;
+    let policy = policy.context("missing profile controller")?;
+
+    fs::create_dir_all(suite.backing_root.join("bucket"))?;
+    fs::write(suite.backing_root.join("bucket/keep.txt"), b"keep")?;
+    fs::write(suite.backing_root.join("bucket/flip.txt"), b"flip")?;
+    wait_for_path(&suite.mount_root.join("bucket"))?;
+
+    let bucket = suite.mount_root.join("bucket");
+    let before_reload = read_dir_names(&bucket)?;
+    assert!(before_reload.contains(Path::new("keep.txt")));
+    assert!(before_reload.contains(Path::new("flip.txt")));
+
+    let reloaded_profile_src = format!(
+        "{} hide\n{} ro\n",
+        suite.backing_root.join("bucket/flip.txt").display(),
+        suite.backing_root.display()
+    );
+    let reloaded_profile = profile::parse(
+        &reloaded_profile_src,
+        Path::new("/tmp"),
+        Path::new("/tmp"),
+        &NoIncludes,
+        &PathExeResolver,
+    )?;
+    policy.replace_profile(reloaded_profile);
+
+    // No explicit lookup between reload and readdir: rely on cached directory view.
+    let after_reload = read_dir_names(&bucket)?;
+    assert!(
+        after_reload.contains(Path::new("flip.txt")),
+        "expected readdir cache to keep showing flip.txt after profile reload; entries={after_reload:?}"
+    );
+
     Ok(())
 }
 
