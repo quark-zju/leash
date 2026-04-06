@@ -151,13 +151,27 @@ struct TestContext {
     fuse_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CliOptions {
+    quiet: bool,
+}
+
 fn main() -> ExitCode {
+    let options = match parse_cli_options() {
+        Ok(options) => options,
+        Err(err) => {
+            eprintln!("{err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
     // Common `RUST_LOG` settings for this harness:
     // - `RUST_LOG=integration=debug` enables only this test crate's logs.
     // - `RUST_LOG=integration=debug,fuser=off` enables this crate and silences fuser.
     // - `RUST_LOG=debug` enables all logs, including fuser internals.
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info")).try_init();
-    match run() {
+    let default_log_level = if options.quiet { "error" } else { "info" };
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or(default_log_level))
+        .try_init();
+    match run(options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("integration test run failed: {err:#}");
@@ -166,7 +180,20 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<()> {
+fn parse_cli_options() -> Result<CliOptions> {
+    let mut quiet = false;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "-q" | "--quiet" => quiet = true,
+            "--nocapture" => {}
+            "--" => {}
+            other => bail!("unknown integration test option: {other}"),
+        }
+    }
+    Ok(CliOptions { quiet })
+}
+
+fn run(options: CliOptions) -> Result<()> {
     if !Path::new("/dev/fuse").exists() {
         eprintln!("skipping integration tests: /dev/fuse not found");
         return Ok(());
@@ -177,9 +204,15 @@ fn run() -> Result<()> {
 
     for case in test_cases() {
         let ctx = suite.context(case.name)?;
-        eprintln!("test {} ...", case.name);
+        if !options.quiet {
+            eprintln!("test {} ...", case.name);
+        }
         match catch_unwind(AssertUnwindSafe(|| (case.func)(&ctx))) {
-            Ok(Ok(())) => eprintln!("test {} ... ok", case.name),
+            Ok(Ok(())) => {
+                if !options.quiet {
+                    eprintln!("test {} ... ok", case.name);
+                }
+            }
             Ok(Err(err)) => {
                 eprintln!("test {} ... FAILED\n{err:#}", case.name);
                 failures.push(case.name);
@@ -192,7 +225,7 @@ fn run() -> Result<()> {
     }
 
     if failures.is_empty() {
-        run_profile_policy_tests()
+        run_profile_policy_tests(options)
     } else {
         bail!(
             "{} integration subtests failed: {}",
@@ -202,22 +235,38 @@ fn run() -> Result<()> {
     }
 }
 
-fn run_profile_policy_tests() -> Result<()> {
-    eprintln!("test profile_policy_hide_and_implicit_ancestor_visibility ...");
+fn run_profile_policy_tests(options: CliOptions) -> Result<()> {
+    if !options.quiet {
+        eprintln!("test profile_policy_hide_and_implicit_ancestor_visibility ...");
+    }
     profile_policy_hide_and_implicit_ancestor_visibility()?;
-    eprintln!("test profile_policy_hide_and_implicit_ancestor_visibility ... ok");
+    if !options.quiet {
+        eprintln!("test profile_policy_hide_and_implicit_ancestor_visibility ... ok");
+    }
 
-    eprintln!("test profile_mkdir_prefers_eexist_for_visible_existing_directory ...");
+    if !options.quiet {
+        eprintln!("test profile_mkdir_prefers_eexist_for_visible_existing_directory ...");
+    }
     profile_mkdir_prefers_eexist_for_visible_existing_directory()?;
-    eprintln!("test profile_mkdir_prefers_eexist_for_visible_existing_directory ... ok");
+    if !options.quiet {
+        eprintln!("test profile_mkdir_prefers_eexist_for_visible_existing_directory ... ok");
+    }
 
-    eprintln!("test profile_symlink_target_policy_blocks_open_and_setattr ...");
+    if !options.quiet {
+        eprintln!("test profile_symlink_target_policy_blocks_open_and_setattr ...");
+    }
     profile_symlink_target_policy_blocks_open_and_setattr()?;
-    eprintln!("test profile_symlink_target_policy_blocks_open_and_setattr ... ok");
+    if !options.quiet {
+        eprintln!("test profile_symlink_target_policy_blocks_open_and_setattr ... ok");
+    }
 
-    eprintln!("test profile_epoch_bump_refreshes_readdir_cache_after_reload ...");
+    if !options.quiet {
+        eprintln!("test profile_epoch_bump_refreshes_readdir_cache_after_reload ...");
+    }
     profile_epoch_bump_refreshes_readdir_cache_after_reload()?;
-    eprintln!("test profile_epoch_bump_refreshes_readdir_cache_after_reload ... ok");
+    if !options.quiet {
+        eprintln!("test profile_epoch_bump_refreshes_readdir_cache_after_reload ... ok");
+    }
     Ok(())
 }
 
