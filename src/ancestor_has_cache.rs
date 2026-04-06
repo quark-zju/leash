@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::ffi::OsString;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 const DEFAULT_TTL: Duration = Duration::from_secs(1);
@@ -11,11 +12,53 @@ struct CacheEntry {
     expires_at: Instant,
 }
 
+#[derive(Debug, Clone, Default)]
+struct CacheNode {
+    entry: Option<CacheEntry>,
+    children: BTreeMap<OsString, CacheNode>,
+}
+
+impl CacheNode {
+    fn insert(&mut self, path: &Path, entry: CacheEntry) {
+        let mut node = self;
+        for component in path.components() {
+            let std::path::Component::Normal(value) = component else {
+                continue;
+            };
+            node = node.children.entry(value.to_os_string()).or_default();
+        }
+        node.entry = Some(entry);
+    }
+
+    fn lookup(&self, path: &Path, now: Instant) -> Option<bool> {
+        let mut node = self;
+        let mut candidate = node
+            .entry
+            .as_ref()
+            .filter(|entry| entry.expires_at > now)
+            .map(|entry| entry.value);
+
+        for component in path.components() {
+            let std::path::Component::Normal(value) = component else {
+                continue;
+            };
+            let Some(next) = node.children.get(value) else {
+                break;
+            };
+            node = next;
+            if let Some(entry) = node.entry.as_ref().filter(|entry| entry.expires_at > now) {
+                candidate = Some(entry.value);
+            }
+        }
+        candidate
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AncestorHasCache {
     ttl: Duration,
     negative_depth: usize,
-    entries: BTreeMap<String, BTreeMap<PathBuf, CacheEntry>>,
+    entries: BTreeMap<String, CacheNode>,
 }
 
 impl Default for AncestorHasCache {
@@ -50,19 +93,8 @@ impl AncestorHasCache {
     /// - `None` when no usable cache entry exists.
     pub fn lookup(&self, name: &str, path: &Path, now: Instant) -> Option<bool> {
         let parent = path.parent()?;
-        let per_name = self.entries.get(name)?;
-        let upper = parent.to_path_buf();
-
-        for (candidate, entry) in per_name.range(..=upper).rev() {
-            if !parent.starts_with(candidate) {
-                continue;
-            }
-            if entry.expires_at <= now {
-                continue;
-            }
-            return Some(entry.value);
-        }
-        None
+        let root = self.entries.get(name)?;
+        root.lookup(parent, now)
     }
 
     /// Records that `<ancestor>/<name>` exists.
@@ -93,10 +125,11 @@ impl AncestorHasCache {
 
     fn insert(&mut self, name: &str, path: &Path, value: bool, now: Instant) {
         let expires_at = now + self.ttl;
+        let entry = CacheEntry { value, expires_at };
         self.entries
             .entry(name.to_owned())
             .or_default()
-            .insert(path.to_path_buf(), CacheEntry { value, expires_at });
+            .insert(path, entry);
     }
 }
 
@@ -180,6 +213,19 @@ mod tests {
         assert_eq!(
             cache.lookup(".git", Path::new("/repo/src/main.rs"), now),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn root_ancestor_entry_can_match_any_absolute_descendant() {
+        let mut cache = AncestorHasCache::new(Duration::from_secs(10), 3);
+        let now = t0();
+
+        cache.record_positive(".marker", Path::new("/"), now);
+
+        assert_eq!(
+            cache.lookup(".marker", Path::new("/any/deep/path/file"), now),
+            Some(true)
         );
     }
 }
