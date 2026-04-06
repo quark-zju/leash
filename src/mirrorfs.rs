@@ -333,9 +333,11 @@ impl<P: AccessController> MirrorFs<P> {
     }
 
     fn authorize(&self, caller: &Caller, path: &Path, operation: Operation) -> Result<()> {
-        let caller_for_policy = caller_for_policy(caller, operation);
+        if operation.is_write() {
+            let _ = caller.process_name_or_init(|| caller.pid.and_then(read_process_name));
+        }
         match self.policy.check(&AccessRequest {
-            caller: caller_for_policy,
+            caller,
             path,
             operation,
         }) {
@@ -345,9 +347,11 @@ impl<P: AccessController> MirrorFs<P> {
     }
 
     fn authorize_errno(&self, caller: &Caller, path: &Path, operation: Operation) -> Option<i32> {
-        let caller_for_policy = caller_for_policy(caller, operation);
+        if operation.is_write() {
+            let _ = caller.process_name_or_init(|| caller.pid.and_then(read_process_name));
+        }
         match self.policy.check(&AccessRequest {
-            caller: caller_for_policy,
+            caller,
             path,
             operation,
         }) {
@@ -1960,13 +1964,6 @@ fn caller_from_request(req: &Request) -> Caller {
     debug!("mirrorfs request pid={}", pid);
     // Defer process-name probing from the request hot path.
     Caller::new(Some(pid), None)
-}
-
-fn caller_for_policy(caller: &Caller, operation: Operation) -> &Caller {
-    if operation.is_write() {
-        let _ = caller.process_name_or_init(|| caller.pid.and_then(read_process_name));
-    }
-    caller
 }
 
 fn read_process_name(pid: u32) -> Option<String> {
