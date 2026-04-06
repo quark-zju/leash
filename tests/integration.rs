@@ -156,6 +156,14 @@ struct CliOptions {
     quiet: bool,
 }
 
+macro_rules! qlog {
+    ($quiet:expr, $($arg:tt)*) => {
+        if !$quiet {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 fn main() -> ExitCode {
     let options = match parse_cli_options() {
         Ok(options) => options,
@@ -204,15 +212,9 @@ fn run(options: CliOptions) -> Result<()> {
 
     for case in test_cases() {
         let ctx = suite.context(case.name)?;
-        if !options.quiet {
-            eprintln!("test {} ...", case.name);
-        }
+        qlog!(options.quiet, "test {} ...", case.name);
         match catch_unwind(AssertUnwindSafe(|| (case.func)(&ctx))) {
-            Ok(Ok(())) => {
-                if !options.quiet {
-                    eprintln!("test {} ... ok", case.name);
-                }
-            }
+            Ok(Ok(())) => qlog!(options.quiet, "test {} ... ok", case.name),
             Ok(Err(err)) => {
                 eprintln!("test {} ... FAILED\n{err:#}", case.name);
                 failures.push(case.name);
@@ -236,37 +238,45 @@ fn run(options: CliOptions) -> Result<()> {
 }
 
 fn run_profile_policy_tests(options: CliOptions) -> Result<()> {
-    if !options.quiet {
-        eprintln!("test profile_policy_hide_and_implicit_ancestor_visibility ...");
-    }
+    qlog!(
+        options.quiet,
+        "test profile_policy_hide_and_implicit_ancestor_visibility ..."
+    );
     profile_policy_hide_and_implicit_ancestor_visibility()?;
-    if !options.quiet {
-        eprintln!("test profile_policy_hide_and_implicit_ancestor_visibility ... ok");
-    }
+    qlog!(
+        options.quiet,
+        "test profile_policy_hide_and_implicit_ancestor_visibility ... ok"
+    );
 
-    if !options.quiet {
-        eprintln!("test profile_mkdir_prefers_eexist_for_visible_existing_directory ...");
-    }
+    qlog!(
+        options.quiet,
+        "test profile_mkdir_prefers_eexist_for_visible_existing_directory ..."
+    );
     profile_mkdir_prefers_eexist_for_visible_existing_directory()?;
-    if !options.quiet {
-        eprintln!("test profile_mkdir_prefers_eexist_for_visible_existing_directory ... ok");
-    }
+    qlog!(
+        options.quiet,
+        "test profile_mkdir_prefers_eexist_for_visible_existing_directory ... ok"
+    );
 
-    if !options.quiet {
-        eprintln!("test profile_symlink_target_policy_blocks_open_and_setattr ...");
-    }
+    qlog!(
+        options.quiet,
+        "test profile_symlink_target_policy_blocks_open_and_setattr ..."
+    );
     profile_symlink_target_policy_blocks_open_and_setattr()?;
-    if !options.quiet {
-        eprintln!("test profile_symlink_target_policy_blocks_open_and_setattr ... ok");
-    }
+    qlog!(
+        options.quiet,
+        "test profile_symlink_target_policy_blocks_open_and_setattr ... ok"
+    );
 
-    if !options.quiet {
-        eprintln!("test profile_epoch_bump_refreshes_readdir_cache_after_reload ...");
-    }
+    qlog!(
+        options.quiet,
+        "test profile_epoch_bump_refreshes_readdir_cache_after_reload ..."
+    );
     profile_epoch_bump_refreshes_readdir_cache_after_reload()?;
-    if !options.quiet {
-        eprintln!("test profile_epoch_bump_refreshes_readdir_cache_after_reload ... ok");
-    }
+    qlog!(
+        options.quiet,
+        "test profile_epoch_bump_refreshes_readdir_cache_after_reload ... ok"
+    );
     Ok(())
 }
 
