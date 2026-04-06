@@ -15,6 +15,9 @@
 //! - `ancestor-has=name`   — some ancestor directory of the accessed path
 //!                           contains an entry named `name`
 //! - `env=VAR`             — environment variable `VAR` is set in the caller
+//! - `os.id=name`          — current host OS ID from `/etc/os-release`
+//!                           matches at profile load time; non-matching rules
+//!                           are skipped before runtime
 //!
 //! **directives**:
 //! - `%include name`       — inline another named profile
@@ -24,8 +27,9 @@
 //! Paths that do not match any rule are hidden by default.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
@@ -120,6 +124,72 @@ impl ExeResolver for PathExeResolver {
     }
 }
 
+// ── OsIdResolver ─────────────────────────────────────────────────────────────
+
+/// Resolves host OS ID from `/etc/os-release` for `os.id=` conditions.
+pub trait OsIdResolver {
+    fn os_id(&self) -> Option<String>;
+}
+
+pub struct EtcOsReleaseResolver;
+
+static HOST_OS_ID: LazyLock<Option<String>> = LazyLock::new(load_host_os_id);
+
+impl OsIdResolver for EtcOsReleaseResolver {
+    fn os_id(&self) -> Option<String> {
+        (*HOST_OS_ID).clone()
+    }
+}
+
+fn load_host_os_id() -> Option<String> {
+    let source = fs::read_to_string("/etc/os-release").ok()?;
+    parse_os_release_id(&source)
+}
+
+fn parse_os_release_id(source: &str) -> Option<String> {
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some(raw_value) = line.strip_prefix("ID=") else {
+            continue;
+        };
+        let value = parse_os_release_value(raw_value)?;
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn parse_os_release_value(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
+        let inner = &value[1..value.len() - 1];
+        let mut out = String::with_capacity(inner.len());
+        let mut escaped = false;
+        for ch in inner.chars() {
+            if escaped {
+                out.push(ch);
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else {
+                out.push(ch);
+            }
+        }
+        if escaped {
+            return None;
+        }
+        return Some(out);
+    }
+    if value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2 {
+        return Some(value[1..value.len() - 1].to_owned());
+    }
+    Some(value.to_owned())
+}
+
 // ── FsCheck ───────────────────────────────────────────────────────────────────
 
 /// Checks whether a filesystem path exists, used by `ancestor-has=` at eval time.
@@ -167,11 +237,17 @@ pub enum Condition {
 
 // ── RawCondition (pre-compilation) ───────────────────────────────────────────
 
+enum CompiledCondition {
+    Runtime(Condition),
+    LoadTimeOnly(bool),
+}
+
 #[derive(Debug, Clone)]
 enum RawCondition {
     Exe(String),
     AncestorHas(String),
     Env(String),
+    OsId(String),
 }
 
 impl RawCondition {
@@ -182,19 +258,34 @@ impl RawCondition {
             Ok(Self::AncestorHas(rest.to_owned()))
         } else if let Some(rest) = token.strip_prefix("env=") {
             Ok(Self::Env(rest.to_owned()))
+        } else if let Some(rest) = token.strip_prefix("os.id=") {
+            Ok(Self::OsId(rest.to_owned()))
         } else {
             Err(ParseError::UnknownCondition(token.to_owned()))
         }
     }
 
-    fn compile(&self, exe_resolver: &dyn ExeResolver) -> Result<Condition, ParseError> {
+    fn compile(
+        &self,
+        exe_resolver: &dyn ExeResolver,
+        os_id_resolver: &dyn OsIdResolver,
+    ) -> Result<CompiledCondition, ParseError> {
         match self {
             RawCondition::Exe(value) => {
                 let resolved = resolve_exe(value, exe_resolver)?;
-                Ok(Condition::Exe(resolved))
+                Ok(CompiledCondition::Runtime(Condition::Exe(resolved)))
             }
-            RawCondition::AncestorHas(name) => Ok(Condition::AncestorHas(name.clone())),
-            RawCondition::Env(var) => Ok(Condition::Env(var.clone())),
+            RawCondition::AncestorHas(name) => Ok(CompiledCondition::Runtime(
+                Condition::AncestorHas(name.clone()),
+            )),
+            RawCondition::Env(var) => Ok(CompiledCondition::Runtime(Condition::Env(var.clone()))),
+            RawCondition::OsId(expected) => {
+                if expected.is_empty() {
+                    return Err(ParseError::InvalidOsId(expected.clone()));
+                }
+                let matched = os_id_resolver.os_id().as_deref() == Some(expected.as_str());
+                Ok(CompiledCondition::LoadTimeOnly(matched))
+            }
         }
     }
 
@@ -203,6 +294,7 @@ impl RawCondition {
             Self::Exe(value) => format!("exe={value}"),
             Self::AncestorHas(name) => format!("ancestor-has={name}"),
             Self::Env(var) => format!("env={var}"),
+            Self::OsId(value) => format!("os.id={value}"),
         }
     }
 }
@@ -686,6 +778,9 @@ pub enum ParseError {
     #[error("invalid exe= value '{0}': must be a bare name or an absolute path")]
     InvalidExe(String),
 
+    #[error("invalid os.id= value '{0}': must be a non-empty ID")]
+    InvalidOsId(String),
+
     #[error("%include cycle: {0}")]
     IncludeCycle(String),
 
@@ -725,12 +820,32 @@ impl IncludeResolver for NoIncludes {
 ///   so daemon-side profile reload does not depend on a process working directory.
 /// - `include_resolver`: handles `%include` directives.
 /// - `exe_resolver`: resolves bare executable names in `exe=` conditions.
+/// - `os.id=` conditions are resolved once from `/etc/os-release` and applied
+///   at profile load time.
 pub fn parse(
     source: &str,
     home: &Path,
     cwd: &Path,
     include_resolver: &dyn IncludeResolver,
     exe_resolver: &dyn ExeResolver,
+) -> Result<Profile, ParseError> {
+    parse_with_os_id_resolver(
+        source,
+        home,
+        cwd,
+        include_resolver,
+        exe_resolver,
+        &EtcOsReleaseResolver,
+    )
+}
+
+fn parse_with_os_id_resolver(
+    source: &str,
+    home: &Path,
+    cwd: &Path,
+    include_resolver: &dyn IncludeResolver,
+    exe_resolver: &dyn ExeResolver,
+    os_id_resolver: &dyn OsIdResolver,
 ) -> Result<Profile, ParseError> {
     let mut rules = Vec::new();
     let include_stack: Vec<String> = Vec::new();
@@ -740,6 +855,7 @@ pub fn parse(
         cwd,
         include_resolver,
         exe_resolver,
+        os_id_resolver,
         &include_stack,
         &mut rules,
     )?;
@@ -757,6 +873,7 @@ fn parse_lines(
     cwd: &Path,
     include_resolver: &dyn IncludeResolver,
     exe_resolver: &dyn ExeResolver,
+    os_id_resolver: &dyn OsIdResolver,
     include_stack: &[String],
     out: &mut Vec<Rule>,
 ) -> Result<(), ParseError> {
@@ -776,14 +893,17 @@ fn parse_lines(
                 cwd,
                 include_resolver,
                 exe_resolver,
+                os_id_resolver,
                 include_stack,
                 out,
             )?;
             continue;
         }
 
-        let rule = parse_rule_line(line, lineno, home, cwd, exe_resolver)?;
-        out.push(rule);
+        if let Some(rule) = parse_rule_line(line, lineno, home, cwd, exe_resolver, os_id_resolver)?
+        {
+            out.push(rule);
+        }
     }
     Ok(())
 }
@@ -795,6 +915,7 @@ fn parse_directive(
     cwd: &Path,
     include_resolver: &dyn IncludeResolver,
     exe_resolver: &dyn ExeResolver,
+    os_id_resolver: &dyn OsIdResolver,
     include_stack: &[String],
     out: &mut Vec<Rule>,
 ) -> Result<(), ParseError> {
@@ -818,6 +939,7 @@ fn parse_directive(
                         cwd,
                         include_resolver,
                         exe_resolver,
+                        os_id_resolver,
                         &new_stack,
                         out,
                     )?;
@@ -845,7 +967,8 @@ fn parse_rule_line(
     home: &Path,
     cwd: &Path,
     exe_resolver: &dyn ExeResolver,
-) -> Result<Rule, ParseError> {
+    os_id_resolver: &dyn OsIdResolver,
+) -> Result<Option<Rule>, ParseError> {
     let mut tokens = line.split_whitespace();
 
     let pattern_tok = tokens
@@ -883,20 +1006,24 @@ fn parse_rule_line(
         }
     };
 
-    let conditions: Vec<Condition> = raw_conditions
-        .iter()
-        .map(|c| c.compile(exe_resolver))
-        .collect::<Result<_, _>>()?;
+    let mut conditions = Vec::new();
+    for condition in &raw_conditions {
+        match condition.compile(exe_resolver, os_id_resolver)? {
+            CompiledCondition::Runtime(condition) => conditions.push(condition),
+            CompiledCondition::LoadTimeOnly(true) => {}
+            CompiledCondition::LoadTimeOnly(false) => return Ok(None),
+        }
+    }
     let raw_conditions: Vec<String> = raw_conditions.iter().map(RawCondition::to_source).collect();
 
     let abs_pattern = expand_pattern(pattern_tok, home, cwd, lineno)?;
     validate_pattern_globs(&abs_pattern)?;
-    Ok(Rule {
+    Ok(Some(Rule {
         pattern: abs_pattern,
         action,
         conditions,
         raw_conditions,
-    })
+    }))
 }
 
 // ── Pattern normalisation ─────────────────────────────────────────────────────
@@ -1201,6 +1328,24 @@ mod tests {
         }
     }
 
+    struct MockOsIdResolver(Option<String>);
+
+    impl MockOsIdResolver {
+        fn some(value: &str) -> Self {
+            Self(Some(value.to_owned()))
+        }
+
+        fn none() -> Self {
+            Self(None)
+        }
+    }
+
+    impl OsIdResolver for MockOsIdResolver {
+        fn os_id(&self) -> Option<String> {
+            self.0.clone()
+        }
+    }
+
     /// [`FsCheck`] backed by an explicit set of paths that "exist".
     struct MockFsCheck(HashSet<PathBuf>);
 
@@ -1280,6 +1425,22 @@ mod tests {
     /// Convenience: parse with a custom ExeResolver.
     fn parse_with_exe(src: &str, exe_resolver: &dyn ExeResolver) -> Profile {
         parse(src, &home(), &cwd(), &NoIncludes, exe_resolver).unwrap()
+    }
+
+    fn parse_with_exe_and_os(
+        src: &str,
+        exe_resolver: &dyn ExeResolver,
+        os_id_resolver: &dyn OsIdResolver,
+    ) -> Profile {
+        parse_with_os_id_resolver(
+            src,
+            &home(),
+            &cwd(),
+            &NoIncludes,
+            exe_resolver,
+            os_id_resolver,
+        )
+        .unwrap()
     }
 
     fn eval_with_fs(
@@ -1773,6 +1934,70 @@ mod tests {
             Some(Action::ReadWrite)
         );
         assert_eq!(eval(&p, "/debug/log", None, &[]), Some(Action::ReadOnly));
+    }
+
+    // ── condition: os.id= (load-time) ────────────────────────────────────────
+
+    #[test]
+    fn os_id_condition_keeps_rule_when_matching() {
+        let p = parse_with_exe_and_os(
+            "/etc rw when os.id=arch\n/etc ro\n",
+            &MockExeResolver::empty(),
+            &MockOsIdResolver::some("arch"),
+        );
+        assert_eq!(eval(&p, "/etc/hosts", None, &[]), Some(Action::ReadWrite));
+    }
+
+    #[test]
+    fn os_id_condition_drops_rule_when_not_matching() {
+        let p = parse_with_exe_and_os(
+            "/etc rw when os.id=arch\n/etc ro\n",
+            &MockExeResolver::empty(),
+            &MockOsIdResolver::some("debian"),
+        );
+        assert_eq!(eval(&p, "/etc/hosts", None, &[]), Some(Action::ReadOnly));
+        assert_eq!(p.rules().len(), 1);
+    }
+
+    #[test]
+    fn os_id_condition_none_drops_rule() {
+        let p = parse_with_exe_and_os(
+            "/etc rw when os.id=arch\n/etc ro\n",
+            &MockExeResolver::empty(),
+            &MockOsIdResolver::none(),
+        );
+        assert_eq!(eval(&p, "/etc/hosts", None, &[]), Some(Action::ReadOnly));
+    }
+
+    #[test]
+    fn os_id_condition_is_anded_with_runtime_conditions() {
+        let p = parse_with_exe_and_os(
+            "/workspace rw when os.id=arch,env=DEBUG\n/workspace ro\n",
+            &MockExeResolver::empty(),
+            &MockOsIdResolver::some("arch"),
+        );
+        assert_eq!(
+            eval(&p, "/workspace/file", None, &[("DEBUG", "1")]),
+            Some(Action::ReadWrite)
+        );
+        assert_eq!(
+            eval(&p, "/workspace/file", None, &[]),
+            Some(Action::ReadOnly)
+        );
+    }
+
+    #[test]
+    fn empty_os_id_value_is_parse_error() {
+        let err = parse_with_os_id_resolver(
+            "/workspace rw when os.id=\n",
+            &home(),
+            &cwd(),
+            &NoIncludes,
+            &MockExeResolver::empty(),
+            &MockOsIdResolver::some("arch"),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ParseError::InvalidOsId(_)), "got: {err:?}");
     }
 
     // ── condition: ancestor-has= ──────────────────────────────────────────────
