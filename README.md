@@ -2,16 +2,21 @@
 
 `leash` is a Linux filesystem safety layer for coding agents.
 
-- blocks reads of sensitive files such as `~/.ssh` and browser profiles
-- controls what can be written, such as `/tmp`, agent state, and git working
-  copies
-- protects `.git` metadata so normal writes do not silently corrupt a repo
+## Design goals / 设计宗旨
+
+- configurable deny rules for sensitive reads, e.g. `~/.ssh` keys
+- safer recovery after accidental code deletion
+  - in git repos, working files are writable so you can recover with git; `.git` metadata is writable only via `git`
+  - in non-git repos, writes are blocked by default
+- default policy favors practical day-to-day use, not a strict guarantee that every deletion scenario is recoverable
+
+- 可配置地禁止读取敏感文件（如 `~/.ssh` 密钥）
+- 误删代码后尽量可恢复
+  - 在 git 仓库中，工作区可写，便于用 git 恢复；`.git` 元数据仅允许通过 `git` 写入
+  - 在非 git 仓库中，默认不可写
+- 默认配置侧重“实用可用”，并不严格保证所有误删场景都能恢复
 
 `leash` 主要面向 Codex、OpenCode、Claude Code 等 AI 编码工具。
-
-- 阻止读取敏感文件，如 `~/.ssh`、浏览器配置及部分系统密钥
-- 控制写入范围，只允许 `/tmp`、agent 状态目录、git 工作区等路径可写
-- 保护 `.git` 元数据，防止普通写入操作意外破坏代码仓库
 
 ## Quick Start
 
