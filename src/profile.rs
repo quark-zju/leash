@@ -197,6 +197,14 @@ impl RawCondition {
             RawCondition::Env(var) => Ok(Condition::Env(var.clone())),
         }
     }
+
+    fn to_source(&self) -> String {
+        match self {
+            Self::Exe(value) => format!("exe={value}"),
+            Self::AncestorHas(name) => format!("ancestor-has={name}"),
+            Self::Env(var) => format!("env={var}"),
+        }
+    }
 }
 
 /// Resolve an `exe=` value at parse time.
@@ -228,6 +236,7 @@ pub struct Rule {
     pub action: Action,
     /// All conditions (AND semantics).
     pub conditions: Vec<Condition>,
+    raw_conditions: Vec<String>,
 }
 
 impl std::fmt::Debug for Rule {
@@ -274,7 +283,7 @@ pub struct RuleMatchReportEntry {
     pub action: Action,
     pub kind: RuleMatchKind,
     pub conditions_matched: bool,
-    pub has_exe_condition: bool,
+    pub when_clause: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -446,7 +455,7 @@ impl Profile {
                 action: rule.action,
                 kind,
                 conditions_matched,
-                has_exe_condition: rule.has_exe_condition(),
+                when_clause: rule.when_clause(),
             });
 
             if !conditions_matched {
@@ -605,16 +614,18 @@ impl Rule {
         self.conditions.iter().all(|c| c.matches(path, ctx))
     }
 
-    fn has_exe_condition(&self) -> bool {
-        self.conditions
-            .iter()
-            .any(|condition| matches!(condition, Condition::Exe(_)))
-    }
-
     fn has_caller_condition(&self) -> bool {
         self.conditions
             .iter()
             .any(|condition| matches!(condition, Condition::Exe(_) | Condition::Env(_)))
+    }
+
+    fn when_clause(&self) -> Option<String> {
+        if self.raw_conditions.is_empty() {
+            None
+        } else {
+            Some(self.raw_conditions.join(","))
+        }
     }
 }
 
@@ -871,6 +882,7 @@ fn parse_rule_line(
         .iter()
         .map(|c| c.compile(exe_resolver))
         .collect::<Result<_, _>>()?;
+    let raw_conditions: Vec<String> = raw_conditions.iter().map(RawCondition::to_source).collect();
 
     let abs_pattern = expand_pattern(pattern_tok, home, cwd, lineno)?;
     validate_pattern_globs(&abs_pattern)?;
@@ -878,6 +890,7 @@ fn parse_rule_line(
         pattern: abs_pattern,
         action,
         conditions,
+        raw_conditions,
     })
 }
 

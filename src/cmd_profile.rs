@@ -129,13 +129,13 @@ fn test_profile_path(path: &Path, exe: Option<&str>) -> Result<()> {
             "conditions-failed"
         };
         println!(
-            "  [rule {}] {} {} kind={} status={} exe_condition={}",
+            "  [rule {}] {} {} kind={} status={} when={}",
             entry.rule_index + 1,
             entry.pattern,
             entry.action,
             kind,
             status,
-            entry.has_exe_condition
+            entry.when_clause.as_deref().unwrap_or("<none>")
         );
     }
 
