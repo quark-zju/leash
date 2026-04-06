@@ -11,6 +11,8 @@ pub enum MountPlanEntry {
     Bind { path: PathBuf, read_only: bool },
     Proc { read_only: bool },
     Sys { read_only: bool },
+    DevPts { path: PathBuf, read_only: bool },
+    DevPtmx { path: PathBuf, read_only: bool },
 }
 
 pub fn build_mount_plan(profile: &Profile) -> Result<Vec<MountPlanEntry>> {
@@ -30,8 +32,26 @@ pub fn build_mount_plan(profile: &Profile) -> Result<Vec<MountPlanEntry>> {
     append_tmp_mount(rules, &mut plan)?;
 
     retain_existing_bind_sources(&mut plan)?;
+    reorder_pty_mounts(&mut plan);
     validate_mount_conflicts(&plan, rules)?;
     Ok(plan)
+}
+
+fn reorder_pty_mounts(plan: &mut Vec<MountPlanEntry>) {
+    let mut first_ptmx = None;
+    let mut first_pts = None;
+    for (idx, entry) in plan.iter().enumerate() {
+        match entry {
+            MountPlanEntry::DevPts { .. } if first_pts.is_none() => first_pts = Some(idx),
+            MountPlanEntry::DevPtmx { .. } if first_ptmx.is_none() => first_ptmx = Some(idx),
+            _ => {}
+        }
+    }
+    if let (Some(ptmx), Some(pts)) = (first_ptmx, first_pts)
+        && pts > ptmx
+    {
+        plan.swap(pts, ptmx);
+    }
 }
 
 fn append_tmp_mount(rules: &[Rule], plan: &mut Vec<MountPlanEntry>) -> Result<()> {
@@ -123,10 +143,14 @@ fn append_dev_mount(rule: &Rule, plan: &mut Vec<MountPlanEntry>) -> Result<()> {
         Action::Deny | Action::Hide => bail!("{}: /dev only supports ro/rw", rule.pattern),
     };
 
-    plan.push(MountPlanEntry::Bind {
-        path: PathBuf::from(&rule.pattern),
-        read_only,
-    });
+    let path = PathBuf::from(&rule.pattern);
+    if path == Path::new("/dev/pts") {
+        plan.push(MountPlanEntry::DevPts { path, read_only });
+    } else if path == Path::new("/dev/ptmx") {
+        plan.push(MountPlanEntry::DevPtmx { path, read_only });
+    } else {
+        plan.push(MountPlanEntry::Bind { path, read_only });
+    }
     Ok(())
 }
 
@@ -166,9 +190,14 @@ fn validate_mount_conflicts(plan: &[MountPlanEntry], rules: &[Rule]) -> Result<(
 fn retain_existing_bind_sources(plan: &mut Vec<MountPlanEntry>) -> Result<()> {
     let mut retained = Vec::with_capacity(plan.len());
     for entry in plan.drain(..) {
-        let MountPlanEntry::Bind { path, read_only } = entry else {
-            retained.push(entry);
-            continue;
+        let (path, read_only, entry_kind) = match entry {
+            MountPlanEntry::Bind { path, read_only } => (path, read_only, 0),
+            MountPlanEntry::DevPts { path, read_only } => (path, read_only, 1),
+            MountPlanEntry::DevPtmx { path, read_only } => (path, read_only, 2),
+            other => {
+                retained.push(other);
+                continue;
+            }
         };
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
@@ -182,12 +211,16 @@ fn retain_existing_bind_sources(plan: &mut Vec<MountPlanEntry>) -> Result<()> {
                 });
             }
         };
-        let kind = metadata.file_type();
-        if !kind.is_char_device() && !kind.is_dir() {
+        let file_type = metadata.file_type();
+        if !file_type.is_char_device() && !file_type.is_dir() {
             debug!("mount-plan: skip non-bindable source {}", path.display());
             continue;
         }
-        retained.push(MountPlanEntry::Bind { path, read_only });
+        match entry_kind {
+            0 => retained.push(MountPlanEntry::Bind { path, read_only }),
+            1 => retained.push(MountPlanEntry::DevPts { path, read_only }),
+            _ => retained.push(MountPlanEntry::DevPtmx { path, read_only }),
+        }
     }
     *plan = retained;
     Ok(())
@@ -200,7 +233,9 @@ fn has_glob_syntax(value: &str) -> bool {
 impl MountPlanEntry {
     pub fn path(&self) -> Option<&Path> {
         match self {
-            Self::Bind { path, .. } => Some(path),
+            Self::Bind { path, .. } | Self::DevPts { path, .. } | Self::DevPtmx { path, .. } => {
+                Some(path)
+            }
             Self::Proc { .. } => Some(Path::new("/proc")),
             Self::Sys { .. } => Some(Path::new("/sys")),
         }
@@ -208,9 +243,11 @@ impl MountPlanEntry {
 
     pub fn read_only(&self) -> bool {
         match self {
-            Self::Bind { read_only, .. } | Self::Proc { read_only } | Self::Sys { read_only } => {
-                *read_only
-            }
+            Self::Bind { read_only, .. }
+            | Self::DevPts { read_only, .. }
+            | Self::DevPtmx { read_only, .. }
+            | Self::Proc { read_only }
+            | Self::Sys { read_only } => *read_only,
         }
     }
 }
@@ -268,10 +305,28 @@ mod tests {
         let profile = profile_from("/dev/pts rw\n");
         assert_eq!(
             build_mount_plan(&profile).expect("plan"),
-            vec![MountPlanEntry::Bind {
+            vec![MountPlanEntry::DevPts {
                 path: PathBuf::from("/dev/pts"),
                 read_only: false,
             }]
+        );
+    }
+
+    #[test]
+    fn dev_pts_and_ptmx_rules_use_special_mount_entries_in_order() {
+        let profile = profile_from("/dev/ptmx rw\n/dev/pts rw\n");
+        assert_eq!(
+            build_mount_plan(&profile).expect("plan"),
+            vec![
+                MountPlanEntry::DevPts {
+                    path: PathBuf::from("/dev/pts"),
+                    read_only: false,
+                },
+                MountPlanEntry::DevPtmx {
+                    path: PathBuf::from("/dev/ptmx"),
+                    read_only: false,
+                },
+            ]
         );
     }
 

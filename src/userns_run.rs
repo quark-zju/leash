@@ -163,9 +163,10 @@ enum MountPhase {
 
 fn mount_phase_for_entry(entry: &MountPlanEntry) -> MountPhase {
     match entry {
-        MountPlanEntry::Bind { .. } | MountPlanEntry::Sys { .. } => {
-            MountPhase::BeforePidNamespaceInit
-        }
+        MountPlanEntry::Bind { .. }
+        | MountPlanEntry::Sys { .. }
+        | MountPlanEntry::DevPts { .. }
+        | MountPlanEntry::DevPtmx { .. } => MountPhase::BeforePidNamespaceInit,
         MountPlanEntry::Proc { .. } => MountPhase::InPidNamespaceInit,
     }
 }
@@ -196,6 +197,20 @@ fn apply_mount_plan_entry(fuse_mount_root: &Path, entry: &MountPlanEntry) -> Res
         MountPlanEntry::Sys { read_only } => {
             ensure_mount_target_type(Path::new("/sys"), &target)?;
             bind_mount(Path::new("/sys"), &target)?;
+            if *read_only {
+                remount_bind_read_only(&target)?;
+            }
+        }
+        MountPlanEntry::DevPts { read_only, .. } => {
+            ensure_mount_target_type(Path::new("/dev/pts"), &target)?;
+            mount_devpts(&target)?;
+            if *read_only {
+                remount_read_only(&target)?;
+            }
+        }
+        MountPlanEntry::DevPtmx { read_only, .. } => {
+            ensure_mount_target_type(Path::new("/dev/ptmx"), &target)?;
+            bind_mount(&fuse_mount_root.join("dev/pts/ptmx"), &target)?;
             if *read_only {
                 remount_bind_read_only(&target)?;
             }
@@ -378,6 +393,32 @@ fn mount_virtual_fs(source: &str, fstype: &str, target: &Path) -> Result<()> {
     if rc != 0 {
         return Err(std::io::Error::last_os_error())
             .with_context(|| format!("mount {fstype} failed at {}", target.display()));
+    }
+    Ok(())
+}
+
+fn mount_devpts(target: &Path) -> Result<()> {
+    let source_c = CString::new("devpts").expect("literal source does not contain NUL");
+    let fstype_c = CString::new("devpts").expect("literal fstype does not contain NUL");
+    let target_c = c_path(target).context("devpts target path contains interior NUL byte")?;
+    let opts = CString::new("newinstance,ptmxmode=666,mode=620,gid=5")
+        .expect("literal devpts options do not contain NUL");
+    debug!(
+        "userns-run: syscall mount(devpts, {}, devpts, 0, newinstance,ptmxmode=666,mode=620,gid=5)",
+        target.display()
+    );
+    let rc = unsafe {
+        libc::mount(
+            source_c.as_ptr(),
+            target_c.as_ptr(),
+            fstype_c.as_ptr(),
+            0,
+            opts.as_ptr().cast(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("mount devpts failed at {}", target.display()));
     }
     Ok(())
 }
@@ -692,6 +733,28 @@ mod tests {
             )
             .expect("bind target"),
             mount_root.join("dev/null")
+        );
+        assert_eq!(
+            mount_target_for_entry(
+                mount_root,
+                &MountPlanEntry::DevPts {
+                    path: PathBuf::from("/dev/pts"),
+                    read_only: false,
+                },
+            )
+            .expect("devpts target"),
+            mount_root.join("dev/pts")
+        );
+        assert_eq!(
+            mount_target_for_entry(
+                mount_root,
+                &MountPlanEntry::DevPtmx {
+                    path: PathBuf::from("/dev/ptmx"),
+                    read_only: false,
+                },
+            )
+            .expect("devptmx target"),
+            mount_root.join("dev/ptmx")
         );
     }
 
