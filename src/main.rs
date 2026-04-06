@@ -1,5 +1,6 @@
 #![allow(unused)]
 mod access;
+mod ancestor_has_cache;
 mod cli;
 mod cmd_fuse;
 mod cmd_help;
