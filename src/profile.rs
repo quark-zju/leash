@@ -369,11 +369,52 @@ impl Profile {
     }
 
     pub fn should_cache_readdir(&self, path: &Path) -> bool {
+        if !self.readdir_self_visibility_is_exe_stable(path) {
+            return false;
+        }
+        // Conservative: without a direct-child glob introspection API, treat any
+        // exe-conditioned hide rule under this directory as potentially changing
+        // readdir results for this directory.
+        !self.rules.iter().any(|rule| {
+            rule.has_exe_condition()
+                && rule.action == Action::Hide
+                && pattern_matches_implicit_ancestor(&rule.pattern, path)
+        })
+    }
+
+    fn readdir_self_visibility_is_exe_stable(&self, path: &Path) -> bool {
+        let mut seen = vec![false; self.rules.len()];
+        let mut explicit_rule_indices = Vec::new();
         for matched_idx in self.match_globset.matches(path) {
             let matched = &self.match_entries[matched_idx];
-            if self.rules[matched.original_rule_index].has_exe_condition() {
-                return false;
+            if matched.kind != InternalRuleKind::Explicit || seen[matched.original_rule_index] {
+                continue;
             }
+            seen[matched.original_rule_index] = true;
+            explicit_rule_indices.push(matched.original_rule_index);
+        }
+
+        let mut has_exe_visible_rule = false;
+        let mut first_non_exe_action = None;
+        for rule_index in explicit_rule_indices {
+            let rule = &self.rules[rule_index];
+            if rule.has_exe_condition() {
+                if matches!(rule.action, Action::Hide | Action::Deny) {
+                    return false;
+                }
+                if rule.action.allows_visible_descendants() {
+                    has_exe_visible_rule = true;
+                }
+                continue;
+            }
+            first_non_exe_action = Some(rule.action);
+            break;
+        }
+
+        if has_exe_visible_rule {
+            return first_non_exe_action
+                .map(Action::allows_visible_descendants)
+                .unwrap_or(false);
         }
         true
     }
@@ -1923,16 +1964,22 @@ mod tests {
     }
 
     #[test]
-    fn readdir_cache_disabled_when_path_may_match_exe_condition_rule() {
-        let p = parse_simple("/repo/.git rw when exe=git\n/repo ro\n");
-        assert!(!p.should_cache_readdir(Path::new("/repo")));
-        assert!(!p.should_cache_readdir(Path::new("/repo/.git")));
-    }
+    fn readdir_cache_policy_examples() {
+        let case1 = parse_simple("/a/foo hide when exe=bar\n/a ro\n");
+        assert!(!case1.should_cache_readdir(Path::new("/a")));
 
-    #[test]
-    fn readdir_cache_enabled_without_exe_condition_candidates() {
-        let p = parse_simple("/repo ro\n");
-        assert!(p.should_cache_readdir(Path::new("/repo")));
+        let case2 = parse_simple("/a/b deny when exe=bar\n/a ro\n");
+        assert!(case2.should_cache_readdir(Path::new("/a")));
+        assert!(!case2.should_cache_readdir(Path::new("/a/b")));
+
+        let case3 = parse_simple("/a/**/foo rw when exe=bar\n/a ro\n");
+        assert!(case3.should_cache_readdir(Path::new("/a")));
+
+        let case4 = parse_simple("/**/.git rw when exe=git\n/**/.git deny\n");
+        assert!(!case4.should_cache_readdir(Path::new("/a/.git")));
+        // NOTE: keeping descendant behavior conservative for now; without a
+        // direct-child glob introspection API we may disable caching for paths
+        // such as /a/.git/objects more often than strictly necessary.
     }
 
     #[test]
