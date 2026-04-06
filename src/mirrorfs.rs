@@ -26,7 +26,7 @@ use crate::access::{AccessController, AccessDecision, AccessRequest, Caller, Ope
 use crate::process_name::set_process_name;
 use crate::tail_ipc::{self, EventKind};
 
-const TTL: Duration = Duration::ZERO;
+const TTL: Duration = Duration::from_secs(60);
 const ROOT_INO: u64 = 1;
 
 pub struct MirrorFs<P> {
