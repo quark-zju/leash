@@ -22,9 +22,7 @@ use fuser::{
 use libc::{EACCES, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSYS, ENOTDIR};
 use log::{debug, warn};
 
-use crate::access::{
-    AccessController, AccessDecision, AccessRequest, Caller, Operation, ProcCallerCondition,
-};
+use crate::access::{AccessController, AccessDecision, AccessRequest, Caller, Operation};
 use crate::process_name::set_process_name;
 use crate::tail_ipc::{self, EventKind};
 
@@ -335,7 +333,7 @@ impl<P: AccessController> MirrorFs<P> {
     }
 
     fn authorize(&self, caller: &Caller, path: &Path, operation: Operation) -> Result<()> {
-        let mut caller_condition = ProcCallerCondition::from_pid(caller.pid);
+        let mut caller_condition = caller;
         match self.policy.check(
             &AccessRequest {
                 caller,
@@ -350,7 +348,7 @@ impl<P: AccessController> MirrorFs<P> {
     }
 
     fn authorize_errno(&self, caller: &Caller, path: &Path, operation: Operation) -> Option<i32> {
-        let mut caller_condition = ProcCallerCondition::from_pid(caller.pid);
+        let mut caller_condition = caller;
         match self.policy.check(
             &AccessRequest {
                 caller,

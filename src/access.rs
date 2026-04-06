@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 pub type ProcessNameGetter = fn(u32) -> Option<String>;
@@ -7,50 +7,6 @@ pub type ProcessNameGetter = fn(u32) -> Option<String>;
 pub trait CallerCondition {
     fn exe_match(&mut self, expected: &Path) -> bool;
     fn env_match(&mut self, name: &str) -> bool;
-}
-
-pub struct ProcCallerCondition {
-    pid: Option<u32>,
-    exe_loaded: bool,
-    exe: Option<std::path::PathBuf>,
-    env_loaded: bool,
-    env: HashMap<String, String>,
-}
-
-impl ProcCallerCondition {
-    pub fn from_pid(pid: Option<u32>) -> Self {
-        Self {
-            pid,
-            exe_loaded: false,
-            exe: None,
-            env_loaded: false,
-            env: HashMap::new(),
-        }
-    }
-}
-
-impl CallerCondition for ProcCallerCondition {
-    fn exe_match(&mut self, expected: &Path) -> bool {
-        if !self.exe_loaded {
-            self.exe = self
-                .pid
-                .and_then(|pid| std::fs::read_link(format!("/proc/{pid}/exe")).ok());
-            self.exe_loaded = true;
-        }
-        self.exe.as_deref() == Some(expected)
-    }
-
-    fn env_match(&mut self, name: &str) -> bool {
-        if !self.env_loaded {
-            self.env = self
-                .pid
-                .and_then(|pid| std::fs::read(format!("/proc/{pid}/environ")).ok())
-                .map(parse_environ)
-                .unwrap_or_default();
-            self.env_loaded = true;
-        }
-        self.env.contains_key(name)
-    }
 }
 
 fn parse_environ(raw: Vec<u8>) -> HashMap<String, String> {
@@ -73,6 +29,8 @@ fn parse_environ(raw: Vec<u8>) -> HashMap<String, String> {
 pub struct Caller {
     pub pid: Option<u32>,
     process_name: OnceLock<Option<String>>,
+    exe: OnceLock<Option<PathBuf>>,
+    env: OnceLock<Box<HashMap<String, String>>>,
     get_name: ProcessNameGetter,
 }
 
@@ -81,6 +39,8 @@ impl Caller {
         Self {
             pid,
             process_name: OnceLock::new(),
+            exe: OnceLock::new(),
+            env: OnceLock::new(),
             get_name,
         }
     }
@@ -91,15 +51,68 @@ impl Caller {
         Self {
             pid,
             process_name: process_name_cell,
+            exe: OnceLock::new(),
+            env: OnceLock::new(),
             get_name: |_| None,
         }
     }
 
     pub fn process_name(&self) -> Option<&str> {
         let pid = self.pid?;
-        self.process_name
+        let loaded = self
+            .process_name
             .get_or_init(|| (self.get_name)(pid))
+            .as_deref();
+        if let Some(name) = loaded {
+            let candidate = PathBuf::from(name);
+            if candidate.is_absolute() {
+                let _ = self.exe.set(Some(candidate));
+            }
+        }
+        loaded
+    }
+
+    pub fn process_name_cached(&self) -> Option<&str> {
+        self.process_name.get().and_then(|name| name.as_deref())
+    }
+
+    fn exe(&self) -> Option<&Path> {
+        let pid = self.pid?;
+        self.exe
+            .get_or_init(|| {
+                if let Some(process_name) = self.process_name_cached() {
+                    let candidate = PathBuf::from(process_name);
+                    if candidate.is_absolute() {
+                        return Some(candidate);
+                    }
+                }
+                std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+            })
             .as_deref()
+    }
+
+    fn has_env(&self, name: &str) -> bool {
+        let Some(pid) = self.pid else {
+            return false;
+        };
+        let env = self.env.get_or_init(|| {
+            Box::new(
+                std::fs::read(format!("/proc/{pid}/environ"))
+                    .map(parse_environ)
+                    .unwrap_or_default(),
+            )
+        });
+        env.contains_key(name)
+    }
+}
+
+impl CallerCondition for &Caller {
+    fn exe_match(&mut self, expected: &Path) -> bool {
+        self.exe() == Some(expected)
+    }
+
+    fn env_match(&mut self, name: &str) -> bool {
+        self.has_env(name)
     }
 }
 
@@ -201,5 +214,31 @@ impl AccessController for AllowAll {
         _caller_condition: &mut dyn CallerCondition,
     ) -> AccessDecision {
         AccessDecision::Allow
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static PROCESS_NAME_READS: AtomicUsize = AtomicUsize::new(0);
+
+    fn counting_process_name_getter(_pid: u32) -> Option<String> {
+        PROCESS_NAME_READS.fetch_add(1, Ordering::Relaxed);
+        Some("/usr/bin/leash-test".to_owned())
+    }
+
+    #[test]
+    fn caller_condition_reuses_loaded_process_name_for_exe_match() {
+        PROCESS_NAME_READS.store(0, Ordering::Relaxed);
+        let caller = Caller::new(Some(42), counting_process_name_getter);
+        assert_eq!(caller.process_name(), Some("/usr/bin/leash-test"));
+        assert_eq!(PROCESS_NAME_READS.load(Ordering::Relaxed), 1);
+
+        let mut caller_condition = &caller;
+        assert!(caller_condition.exe_match(Path::new("/usr/bin/leash-test")));
+        assert!(caller_condition.exe_match(Path::new("/usr/bin/leash-test")));
+        assert_eq!(PROCESS_NAME_READS.load(Ordering::Relaxed), 1);
     }
 }
