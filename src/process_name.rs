@@ -24,30 +24,14 @@ fn try_rewrite_argv0_in_place(name: &str) -> Result<()> {
     if arg_end <= arg_start {
         bail!("invalid argv bounds in /proc/self/stat: arg_start={arg_start} arg_end={arg_end}");
     }
-
-    let cmdline = fs::read("/proc/self/cmdline").context("read /proc/self/cmdline failed")?;
-    if cmdline.is_empty() {
-        bail!("/proc/self/cmdline is empty");
-    }
-    let first_nul = cmdline
-        .iter()
-        .position(|byte| *byte == 0)
-        .context("/proc/self/cmdline is missing argv[0] terminator")?;
-    if first_nul == 0 {
-        bail!("argv[0] is empty");
-    }
+    let capacity = arg_end - arg_start;
 
     let rewritten = format!("leash[{name}]");
-    if rewritten.len() > first_nul {
+    if rewritten.len() + 1 > capacity {
         bail!(
-            "argv[0] buffer too small: need {} bytes, have {} bytes",
+            "argv buffer too small: need {} bytes, have {} bytes",
             rewritten.len(),
-            first_nul
-        );
-    }
-    if arg_start + first_nul >= arg_end {
-        bail!(
-            "argv[0] range out of bounds: arg_start={arg_start} first_nul={first_nul} arg_end={arg_end}"
+            capacity.saturating_sub(1)
         );
     }
 
@@ -59,7 +43,7 @@ fn try_rewrite_argv0_in_place(name: &str) -> Result<()> {
         std::ptr::write_bytes(
             dst.add(rewritten_bytes.len()),
             0,
-            first_nul - rewritten_bytes.len() + 1,
+            capacity - rewritten_bytes.len(),
         );
     }
     Ok(())
