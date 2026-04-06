@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use fuser::Notifier;
 use log::{info, warn};
 
 use crate::cli::LowLevelFuseCommand;
@@ -41,17 +42,21 @@ pub(crate) fn fuse_command(_command: LowLevelFuseCommand) -> Result<()> {
 
     let profile = profile_store::load_default_profile(Path::new("/"))?;
     let controller = Arc::new(ProfileController::new(profile));
-    let _reload_thread = spawn_profile_reload_thread(Arc::clone(&controller))?;
     let (tail_sink, _tail_server_guard) = tail_ipc::start_global_server()?;
-    let fs = MirrorFs::new_with_tail(PathBuf::from("/"), controller, Some(tail_sink));
+    let fs = MirrorFs::new_with_tail(PathBuf::from("/"), Arc::clone(&controller), Some(tail_sink));
     let _pid_file = DaemonPidFile::write()?;
 
     info!("mounting shared mirrorfs at {}", mountpoint.display());
-    fs.mount(Path::new(&mountpoint))
+    let session = unsafe { fs.mount_background(Path::new(&mountpoint))? };
+    let _reload_thread = spawn_profile_reload_thread(Arc::clone(&controller), session.notifier())?;
+    session
+        .join()
+        .context("mirrorfs background session exited unexpectedly")
 }
 
 fn spawn_profile_reload_thread(
     controller: Arc<ProfileController>,
+    notifier: Notifier,
 ) -> Result<thread::JoinHandle<()>> {
     install_sighup_reload_handler()?;
     thread::Builder::new()
@@ -59,7 +64,7 @@ fn spawn_profile_reload_thread(
         .spawn(move || {
             loop {
                 if PROFILE_RELOAD_REQUESTED.swap(false, Ordering::Relaxed) {
-                    reload_default_profile(&controller);
+                    reload_default_profile(&controller, &notifier);
                 }
                 thread::sleep(PROFILE_RELOAD_POLL);
             }
@@ -85,19 +90,27 @@ extern "C" fn handle_sighup_reload(_signal: libc::c_int) {
     PROFILE_RELOAD_REQUESTED.store(true, Ordering::Relaxed);
 }
 
-fn reload_default_profile(controller: &ProfileController) {
-    reload_profile_with(controller, || {
-        profile_store::load_default_profile(Path::new("/"))
-    });
+fn reload_default_profile(controller: &ProfileController, notifier: &Notifier) {
+    reload_profile_with(
+        controller,
+        || profile_store::load_default_profile(Path::new("/")),
+        Some(notifier),
+    );
 }
 
 fn reload_profile_with(
     controller: &ProfileController,
     load_profile: impl FnOnce() -> Result<crate::profile::Profile>,
+    notifier: Option<&Notifier>,
 ) {
     match load_profile() {
         Ok(profile) => {
             controller.replace_profile(profile);
+            if let Some(notifier) = notifier
+                && let Err(err) = notifier.increment_epoch()
+            {
+                warn!("profile reloaded, but failed to increment FUSE epoch: {err}");
+            }
             info!("reloaded default profile after SIGHUP");
         }
         Err(err) => {
@@ -141,7 +154,7 @@ mod tests {
             )
             .expect("parse profile"),
         );
-        reload_profile_with(&controller, || bail!("bad profile syntax"));
+        reload_profile_with(&controller, || bail!("bad profile syntax"), None);
 
         let caller = Caller::with_process_name(None, None);
         let mut caller_condition = &caller;

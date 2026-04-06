@@ -215,9 +215,9 @@ fn run_profile_policy_tests() -> Result<()> {
     profile_symlink_target_policy_blocks_open_and_setattr()?;
     eprintln!("test profile_symlink_target_policy_blocks_open_and_setattr ... ok");
 
-    eprintln!("test profile_readdir_cache_can_show_newly_hidden_path_after_reload ...");
-    profile_readdir_cache_can_show_newly_hidden_path_after_reload()?;
-    eprintln!("test profile_readdir_cache_can_show_newly_hidden_path_after_reload ... ok");
+    eprintln!("test profile_epoch_bump_refreshes_readdir_cache_after_reload ...");
+    profile_epoch_bump_refreshes_readdir_cache_after_reload()?;
+    eprintln!("test profile_epoch_bump_refreshes_readdir_cache_after_reload ... ok");
     Ok(())
 }
 
@@ -934,7 +934,7 @@ fn profile_symlink_target_policy_blocks_open_and_setattr() -> Result<()> {
     Ok(())
 }
 
-fn profile_readdir_cache_can_show_newly_hidden_path_after_reload() -> Result<()> {
+fn profile_epoch_bump_refreshes_readdir_cache_after_reload() -> Result<()> {
     let mut policy = None;
     let suite = MountedSuite::with_policy_factory(|backing_root| {
         let initial_profile_src = format!("{} ro\n", backing_root.display());
@@ -974,12 +974,20 @@ fn profile_readdir_cache_can_show_newly_hidden_path_after_reload() -> Result<()>
         &PathExeResolver,
     )?;
     policy.replace_profile(reloaded_profile);
+    suite
+        .session
+        .as_ref()
+        .context("missing mounted session")?
+        .notifier()
+        .increment_epoch()
+        .context("failed to increment FUSE epoch in integration test")?;
 
-    // No explicit lookup between reload and readdir: rely on cached directory view.
+    // No explicit lookup between reload and readdir: epoch bump should invalidate
+    // cached directory entries from before the rule reload.
     let after_reload = read_dir_names(&bucket)?;
     assert!(
-        after_reload.contains(Path::new("flip.txt")),
-        "expected readdir cache to keep showing flip.txt after profile reload; entries={after_reload:?}"
+        !after_reload.contains(Path::new("flip.txt")),
+        "expected epoch bump to hide flip.txt after profile reload; entries={after_reload:?}"
     );
 
     Ok(())
