@@ -117,6 +117,10 @@ Supported conditions:
 - `ancestor-has=name`
   - matches when some ancestor directory of the accessed path contains an entry
     named `name`
+- `os.id=name`
+  - matches when `/etc/os-release` has `ID=name`
+  - evaluated at profile load time, not per-access at runtime
+  - `/etc/os-release` is loaded lazily and cached once per process
 
 Condition evaluation details:
 
@@ -124,6 +128,7 @@ Condition evaluation details:
 - conditions are only evaluated after the path glob matches
 - caller `exe` and `env` data are loaded lazily from `/proc/<pid>` only when a
   path-matching rule actually needs them
+- rules gated by `os.id` are either included or skipped during profile load
 
 ## Special Mount-Related Rules
 
@@ -149,6 +154,8 @@ Some profile rules are compiled into namespace mounts during `leash run`.
 - rules must use exact paths; no glob syntax
 - rules must be unconditional
 - `ancestor-has`, `exe`, and `env` conditions are rejected
+- `os.id` is resolved at profile load time; matching rules are treated as
+  unconditional and non-matching rules are skipped
 - actions must be `ro` or `rw`
 - existing character-device and directory sources become bind mounts
 - missing, symlink, and other non-bindable sources are skipped

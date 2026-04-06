@@ -12,7 +12,7 @@ Implemented areas:
 
 - host-backed mirror filesystem operations
 - `hide` / `ro` / `rw` / `deny` profile semantics
-- path-conditional rules with `exe` and `env` predicates
+- path-conditional rules with `exe`, `env`, and load-time `os.id` predicates
 - implicit ancestor visibility for hidden directories that contain allowed
   descendants
 - host-visible `flock`
@@ -62,6 +62,8 @@ Important details:
   daemon can reload the profile without a per-command CWD context.
 - `exe` and `env` conditions are loaded lazily from `/proc/<pid>` only when a
   path-matching rule actually needs them.
+- `os.id` conditions are resolved from `/etc/os-release` at profile load time,
+  so non-matching rules are skipped before runtime evaluation.
 
 ## Mount Plan Rules
 
