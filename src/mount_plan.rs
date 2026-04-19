@@ -10,7 +10,6 @@ use crate::profile::{Action, Condition, Profile, Rule, pattern_matches_implicit_
 pub enum MountPlanEntry {
     Bind { path: PathBuf, read_only: bool },
     Proc { read_only: bool },
-    Sys { read_only: bool },
     DevPts { path: PathBuf, read_only: bool },
     DevPtmx { path: PathBuf, read_only: bool },
 }
@@ -237,17 +236,6 @@ impl MountPlanEntry {
                 Some(path)
             }
             Self::Proc { .. } => Some(Path::new("/proc")),
-            Self::Sys { .. } => Some(Path::new("/sys")),
-        }
-    }
-
-    pub fn read_only(&self) -> bool {
-        match self {
-            Self::Bind { read_only, .. }
-            | Self::DevPts { read_only, .. }
-            | Self::DevPtmx { read_only, .. }
-            | Self::Proc { read_only }
-            | Self::Sys { read_only } => *read_only,
         }
     }
 }

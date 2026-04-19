@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-pub type ProcessNameGetter = fn(u32) -> Option<String>;
-
 pub trait CallerCondition {
     fn exe_match(&mut self, expected: &Path) -> bool;
     fn env_match(&mut self, name: &str) -> bool;
@@ -28,66 +26,46 @@ fn parse_environ(raw: Vec<u8>) -> HashMap<String, String> {
 #[derive(Debug)]
 pub struct Caller {
     pub pid: Option<u32>,
-    process_name: OnceLock<Option<String>>,
     exe: OnceLock<Option<PathBuf>>,
     env: OnceLock<Box<HashMap<String, String>>>,
-    get_name: ProcessNameGetter,
 }
 
 impl Caller {
-    pub fn new(pid: Option<u32>, get_name: ProcessNameGetter) -> Self {
+    pub fn new(pid: Option<u32>) -> Self {
         Self {
             pid,
-            process_name: OnceLock::new(),
             exe: OnceLock::new(),
             env: OnceLock::new(),
-            get_name,
         }
     }
 
+    #[cfg(test)]
     pub fn with_process_name(pid: Option<u32>, process_name: Option<String>) -> Self {
-        let process_name_cell = OnceLock::new();
-        let _ = process_name_cell.set(process_name);
+        let exe = OnceLock::new();
+        let process_name = process_name.and_then(|name| {
+            let candidate = PathBuf::from(name);
+            candidate.is_absolute().then_some(candidate)
+        });
+        let _ = exe.set(process_name);
         Self {
             pid,
-            process_name: process_name_cell,
-            exe: OnceLock::new(),
+            exe,
             env: OnceLock::new(),
-            get_name: |_| None,
         }
     }
 
+    #[cfg(test)]
     pub fn process_name(&self) -> Option<&str> {
-        let pid = self.pid?;
-        let loaded = self
-            .process_name
-            .get_or_init(|| (self.get_name)(pid))
-            .as_deref();
-        if let Some(name) = loaded {
-            let candidate = PathBuf::from(name);
-            if candidate.is_absolute() {
-                let _ = self.exe.set(Some(candidate));
-            }
-        }
-        loaded
-    }
-
-    pub fn process_name_cached(&self) -> Option<&str> {
-        self.process_name.get().and_then(|name| name.as_deref())
+        self.exe
+            .get()
+            .and_then(|path| path.as_ref())
+            .and_then(|path| path.to_str())
     }
 
     fn exe(&self) -> Option<&Path> {
         let pid = self.pid?;
         self.exe
-            .get_or_init(|| {
-                if let Some(process_name) = self.process_name_cached() {
-                    let candidate = PathBuf::from(process_name);
-                    if candidate.is_absolute() {
-                        return Some(candidate);
-                    }
-                }
-                std::fs::read_link(format!("/proc/{pid}/exe")).ok()
-            })
+            .get_or_init(|| std::fs::read_link(format!("/proc/{pid}/exe")).ok())
             .as_deref()
     }
 
@@ -204,9 +182,11 @@ impl<T: AccessController + ?Sized> AccessController for Arc<T> {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AllowAll;
 
+#[cfg(test)]
 impl AccessController for AllowAll {
     fn check(
         &self,
@@ -220,25 +200,14 @@ impl AccessController for AllowAll {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static PROCESS_NAME_READS: AtomicUsize = AtomicUsize::new(0);
-
-    fn counting_process_name_getter(_pid: u32) -> Option<String> {
-        PROCESS_NAME_READS.fetch_add(1, Ordering::Relaxed);
-        Some("/usr/bin/leash-test".to_owned())
-    }
 
     #[test]
     fn caller_condition_reuses_loaded_process_name_for_exe_match() {
-        PROCESS_NAME_READS.store(0, Ordering::Relaxed);
-        let caller = Caller::new(Some(42), counting_process_name_getter);
+        let caller = Caller::with_process_name(Some(42), Some("/usr/bin/leash-test".to_owned()));
         assert_eq!(caller.process_name(), Some("/usr/bin/leash-test"));
-        assert_eq!(PROCESS_NAME_READS.load(Ordering::Relaxed), 1);
 
         let mut caller_condition = &caller;
         assert!(caller_condition.exe_match(Path::new("/usr/bin/leash-test")));
         assert!(caller_condition.exe_match(Path::new("/usr/bin/leash-test")));
-        assert_eq!(PROCESS_NAME_READS.load(Ordering::Relaxed), 1);
     }
 }

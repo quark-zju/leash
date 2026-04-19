@@ -116,6 +116,7 @@ pub struct StatFs {
 }
 
 impl<P: AccessController> MirrorFs<P> {
+    #[cfg(test)]
     pub fn new(root: PathBuf, policy: P) -> Self {
         Self::new_with_tail(root, policy, None)
     }
@@ -170,6 +171,7 @@ impl<P: AccessController> MirrorFs<P> {
         }
     }
 
+    #[cfg(test)]
     pub fn mount(self, mountpoint: &Path) -> Result<()> {
         let options = fuse_mount_options();
         let mut config = Config::default();
@@ -461,6 +463,7 @@ impl<P: AccessController> MirrorFs<P> {
         self.open_path(caller, ino, flags)
     }
 
+    #[cfg(test)]
     fn open_path(&mut self, caller: &Caller, ino: u64, flags: i32) -> Result<u64> {
         let path = self
             .path_for_ino(ino)
@@ -526,6 +529,7 @@ impl<P: AccessController> MirrorFs<P> {
         Ok(data.len() as u32)
     }
 
+    #[cfg(test)]
     pub(crate) fn create_for_test(
         &mut self,
         caller: &Caller,
@@ -589,6 +593,7 @@ impl<P: AccessController> MirrorFs<P> {
         self.cleanup_inode_if_forgettable(handle.ino);
     }
 
+    #[cfg(test)]
     pub(crate) fn setlk_for_test(
         &mut self,
         caller: &Caller,
@@ -615,6 +620,7 @@ impl<P: AccessController> MirrorFs<P> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn getlk_for_test(
         &mut self,
         caller: &Caller,
@@ -1179,7 +1185,7 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
 
     fn opendir(&self, req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
         let caller = caller_from_request(req);
-        let mut fs = self.inner.write();
+        let fs = self.inner.write();
         let Some(path) = fs.path_for_ino(ino.0).map(Path::to_path_buf) else {
             reply.error(Errno::ENOENT);
             return;
@@ -1512,7 +1518,7 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
 
     fn rmdir(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let caller = caller_from_request(req);
-        let mut fs = self.inner.write();
+        let fs = self.inner.write();
         let Some(path) = fs.resolve_child(parent.0, name) else {
             reply.error(Errno::ENOENT);
             return;
@@ -1891,14 +1897,7 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
 fn caller_from_request(req: &Request) -> Caller {
     let pid = req.pid();
     debug!("mirrorfs request pid={}", pid);
-    Caller::new(Some(pid), read_process_name)
-}
-
-fn read_process_name(pid: u32) -> Option<String> {
-    let path = PathBuf::from(format!("/proc/{pid}/exe"));
-    let target = fs::read_link(path).ok()?;
-    let exe = target.to_string_lossy().into_owned();
-    if exe.is_empty() { None } else { Some(exe) }
+    Caller::new(Some(pid))
 }
 
 fn filetype_from_metadata(metadata: &Metadata) -> FileType {

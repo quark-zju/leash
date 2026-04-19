@@ -395,11 +395,13 @@ impl Profile {
     ///
     /// `ctx` supplies runtime information needed to evaluate conditions.
     /// Returns `None` when no rule matches.
+    #[cfg(test)]
     pub fn evaluate(&self, path: &Path, ctx: &EvalContext<'_>) -> Option<Action> {
         let mut ctx = StaticRuntimeEvalContext { ctx };
         self.evaluate_with_runtime(path, &mut ctx)
     }
 
+    #[cfg(test)]
     fn evaluate_with_runtime(
         &self,
         path: &Path,
@@ -424,6 +426,7 @@ impl Profile {
         None
     }
 
+    #[cfg(test)]
     pub fn visibility(&self, path: &Path, ctx: &EvalContext<'_>) -> Visibility {
         let mut ctx = StaticRuntimeEvalContext { ctx };
         self.visibility_with_runtime(path, &mut ctx)
@@ -466,6 +469,7 @@ impl Profile {
         Visibility::Hidden
     }
 
+    #[cfg(test)]
     pub fn effective_action(&self, path: &Path, ctx: &EvalContext<'_>) -> Action {
         self.evaluate(path, ctx).unwrap_or(Action::Hide)
     }
@@ -601,6 +605,7 @@ impl Profile {
         }
     }
 
+    #[cfg(test)]
     pub fn access_errno(&self, path: &Path, ctx: &EvalContext<'_>) -> Option<i32> {
         match self.visibility(path, ctx) {
             Visibility::Action(action) => action.access_errno(),
@@ -609,6 +614,7 @@ impl Profile {
         }
     }
 
+    #[cfg(test)]
     pub fn mutation_errno(&self, path: &Path, ctx: &EvalContext<'_>) -> Option<i32> {
         match self.visibility(path, ctx) {
             Visibility::Action(action) => action.mutation_errno(),
@@ -617,11 +623,13 @@ impl Profile {
         }
     }
 
+    #[cfg(test)]
     fn is_implicit_ancestor(&self, path: &Path, ctx: &EvalContext<'_>) -> bool {
         let mut ctx = StaticRuntimeEvalContext { ctx };
         self.is_implicit_ancestor_with_runtime(path, &mut ctx)
     }
 
+    #[cfg(test)]
     fn is_implicit_ancestor_with_runtime(
         &self,
         path: &Path,
@@ -806,8 +814,10 @@ pub trait IncludeResolver {
 }
 
 /// An [`IncludeResolver`] that silently skips every include.
+#[cfg(test)]
 pub struct NoIncludes;
 
+#[cfg(test)]
 impl IncludeResolver for NoIncludes {
     fn resolve(&self, _name: &str) -> Result<Option<String>, String> {
         Ok(None)
@@ -1197,6 +1207,7 @@ impl<F: FsCheck> ProfileController<F> {
         request: &AccessRequest<'_>,
         caller_condition: &mut C,
     ) -> AccessDecision {
+        let _caller_pid = request.caller.pid;
         let mut ctx = LazyRuntimeEvalContext {
             fs: &self.fs,
             caller_condition,

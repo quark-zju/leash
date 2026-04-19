@@ -42,14 +42,17 @@ impl AncestorHasCache {
         }
     }
 
+    #[cfg(test)]
     pub fn ttl(&self) -> Duration {
         self.ttl
     }
 
+    #[cfg(test)]
     pub fn negative_depth(&self) -> usize {
         self.negative_depth
     }
 
+    #[cfg(test)]
     pub fn max_entries(&self) -> usize {
         self.max_entries
     }

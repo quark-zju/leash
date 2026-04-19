@@ -1,4 +1,4 @@
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{CString, OsString};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -172,7 +172,6 @@ enum MountPhase {
 fn mount_phase_for_entry(entry: &MountPlanEntry) -> MountPhase {
     match entry {
         MountPlanEntry::Bind { .. }
-        | MountPlanEntry::Sys { .. }
         | MountPlanEntry::DevPts { .. }
         | MountPlanEntry::DevPtmx { .. } => MountPhase::BeforePidNamespaceInit,
         MountPlanEntry::Proc { .. } => MountPhase::InPidNamespaceInit,
@@ -204,13 +203,6 @@ fn apply_mount_plan_entry(
             mount_virtual_fs("proc", "proc", &target)?;
             if *read_only {
                 remount_read_only(&target)?;
-            }
-        }
-        MountPlanEntry::Sys { read_only } => {
-            ensure_mount_target_type(Path::new("/sys"), &target)?;
-            bind_mount(Path::new("/sys"), &target)?;
-            if *read_only {
-                remount_bind_read_only(&target)?;
             }
         }
         MountPlanEntry::DevPts { read_only, .. } => {
@@ -730,18 +722,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mount_target_for_entry_maps_proc_sys_and_bind_paths_under_fuse_root() {
+    fn mount_target_for_entry_maps_proc_and_bind_paths_under_fuse_root() {
         let mount_root = Path::new("/run/user/1000/leash/mount");
 
         assert_eq!(
             mount_target_for_entry(mount_root, &MountPlanEntry::Proc { read_only: true })
                 .expect("proc target"),
             mount_root.join("proc")
-        );
-        assert_eq!(
-            mount_target_for_entry(mount_root, &MountPlanEntry::Sys { read_only: false })
-                .expect("sys target"),
-            mount_root.join("sys")
         );
         assert_eq!(
             mount_target_for_entry(

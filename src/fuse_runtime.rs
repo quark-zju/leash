@@ -25,6 +25,7 @@ pub fn ensure_global_mountpoint() -> Result<PathBuf> {
     ensure_global_mountpoint_in(&runtime_dir.path, runtime_dir.chmod_runtime_dir_on_create)
 }
 
+#[cfg(test)]
 pub fn ensure_global_mountpoint_under(runtime_dir: &Path) -> Result<PathBuf> {
     ensure_global_mountpoint_in(runtime_dir, false)
 }

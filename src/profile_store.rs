@@ -138,10 +138,6 @@ pub fn load_default_profile(cwd: &Path) -> Result<Profile> {
         .context("failed to parse default profile")
 }
 
-pub fn default_profile_path() -> Result<PathBuf> {
-    Ok(ProfileStore::new(config_dir(&home_dir()?)).default_profile_path())
-}
-
 pub fn load_default_profile_source() -> Result<String> {
     ProfileStore::new(config_dir(&home_dir()?)).load_default_profile_source()
 }

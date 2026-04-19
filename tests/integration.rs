@@ -1,4 +1,3 @@
-#![allow(unused)]
 #[path = "../src/access.rs"]
 mod access;
 #[path = "../src/ancestor_has_cache.rs"]

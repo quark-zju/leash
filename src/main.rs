@@ -1,4 +1,3 @@
-#![allow(unused)]
 mod access;
 mod ancestor_has_cache;
 mod cli;
@@ -17,7 +16,7 @@ mod profile_store;
 mod tail_ipc;
 mod userns_run;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use cli::Command;
 use log::LevelFilter;
 
