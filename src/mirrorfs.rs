@@ -172,6 +172,7 @@ impl<P: AccessController> MirrorFs<P> {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn mount(self, mountpoint: &Path) -> Result<()> {
         let options = fuse_mount_options();
         let mut config = Config::default();
@@ -530,6 +531,7 @@ impl<P: AccessController> MirrorFs<P> {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn create_for_test(
         &mut self,
         caller: &Caller,
@@ -594,6 +596,7 @@ impl<P: AccessController> MirrorFs<P> {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn setlk_for_test(
         &mut self,
         caller: &Caller,
@@ -621,6 +624,7 @@ impl<P: AccessController> MirrorFs<P> {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn getlk_for_test(
         &mut self,
         caller: &Caller,

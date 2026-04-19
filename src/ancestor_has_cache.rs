@@ -43,16 +43,19 @@ impl AncestorHasCache {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn ttl(&self) -> Duration {
         self.ttl
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn negative_depth(&self) -> usize {
         self.negative_depth
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn max_entries(&self) -> usize {
         self.max_entries
     }
@@ -147,7 +150,7 @@ mod tests {
 
     #[test]
     fn positive_cache_matches_descendant_lookup() {
-        let mut cache = AncestorHasCache::default();
+        let cache = AncestorHasCache::default();
         let now = t0();
 
         cache.record_positive(".git", Path::new("/repo"), now);
@@ -160,7 +163,7 @@ mod tests {
 
     #[test]
     fn prefix_check_avoids_false_match_for_similar_paths() {
-        let mut cache = AncestorHasCache::default();
+        let cache = AncestorHasCache::default();
         let now = t0();
 
         cache.record_positive(".git", Path::new("/a/b"), now);
@@ -171,7 +174,7 @@ mod tests {
 
     #[test]
     fn negative_cache_is_bounded_by_depth() {
-        let mut cache = AncestorHasCache::new(Duration::from_secs(10), 2);
+        let cache = AncestorHasCache::new(Duration::from_secs(10), 2);
         let now = t0();
 
         cache.record_negative(".git", Path::new("/a/b/c"), now);
@@ -189,7 +192,7 @@ mod tests {
 
     #[test]
     fn ttl_expiry_discards_entries() {
-        let mut cache = AncestorHasCache::new(Duration::from_secs(1), 3);
+        let cache = AncestorHasCache::new(Duration::from_secs(1), 3);
         let now = t0();
 
         cache.record_positive(".git", Path::new("/repo"), now);
@@ -207,7 +210,7 @@ mod tests {
 
     #[test]
     fn lookup_prefers_deepest_non_expired_ancestor() {
-        let mut cache = AncestorHasCache::new(Duration::from_secs(10), 3);
+        let cache = AncestorHasCache::new(Duration::from_secs(10), 3);
         let now = t0();
 
         cache.record_positive(".git", Path::new("/repo"), now);
@@ -222,7 +225,7 @@ mod tests {
 
     #[test]
     fn root_ancestor_entry_can_match_any_absolute_descendant() {
-        let mut cache = AncestorHasCache::new(Duration::from_secs(10), 3);
+        let cache = AncestorHasCache::new(Duration::from_secs(10), 3);
         let now = t0();
 
         cache.record_positive(".marker", Path::new("/"), now);

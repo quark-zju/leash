@@ -624,12 +624,14 @@ impl Profile {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     fn is_implicit_ancestor(&self, path: &Path, ctx: &EvalContext<'_>) -> bool {
         let mut ctx = StaticRuntimeEvalContext { ctx };
         self.is_implicit_ancestor_with_runtime(path, &mut ctx)
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     fn is_implicit_ancestor_with_runtime(
         &self,
         path: &Path,
