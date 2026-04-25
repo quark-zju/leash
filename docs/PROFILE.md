@@ -108,7 +108,8 @@ Important behavior:
 
 Supported conditions:
 
-- `exe=name`
+- `exe=name[,name...]`
+  - matches when the caller executable equals any listed entry
   - bare names are resolved through `$PATH` at parse time
   - absolute paths are accepted as-is
   - relative values and globs are rejected

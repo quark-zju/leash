@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 pub trait CallerCondition {
-    fn exe_match(&mut self, expected: &Path) -> bool;
+    fn exe_match(&mut self, expected: &HashSet<PathBuf>) -> bool;
     fn env_match(&mut self, name: &str) -> bool;
 }
 
@@ -85,8 +85,8 @@ impl Caller {
 }
 
 impl CallerCondition for &Caller {
-    fn exe_match(&mut self, expected: &Path) -> bool {
-        self.exe() == Some(expected)
+    fn exe_match(&mut self, expected: &HashSet<PathBuf>) -> bool {
+        self.exe().is_some_and(|exe| expected.contains(exe))
     }
 
     fn env_match(&mut self, name: &str) -> bool {
@@ -207,7 +207,8 @@ mod tests {
         assert_eq!(caller.process_name(), Some("/usr/bin/leash-test"));
 
         let mut caller_condition = &caller;
-        assert!(caller_condition.exe_match(Path::new("/usr/bin/leash-test")));
-        assert!(caller_condition.exe_match(Path::new("/usr/bin/leash-test")));
+        let expected = HashSet::from([PathBuf::from("/usr/bin/leash-test")]);
+        assert!(caller_condition.exe_match(&expected));
+        assert!(caller_condition.exe_match(&expected));
     }
 }
