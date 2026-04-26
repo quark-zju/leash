@@ -416,7 +416,6 @@ enum InternalRuleKind {
 struct InternalRuleMatch {
     original_rule_index: usize,
     kind: InternalRuleKind,
-    explicit_is_exact: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -581,9 +580,7 @@ impl Profile {
 
     fn readdir_self_visibility_is_exe_stable(&self, path: &Path) -> bool {
         let mut has_exe_visible_rule = false;
-        let mut has_exe_hide_or_deny_rule = false;
         let mut first_non_exe_action = None;
-        let mut first_non_exe_is_exact = false;
         let mut saw_unconditional_implicit_ancestor_before_first_non_exe = false;
         let mut last_rule_index = None;
         for matched_idx in self.match_globset.matches(path) {
@@ -606,7 +603,7 @@ impl Profile {
 
             if rule.has_caller_condition() {
                 if matches!(rule.action, Action::Hide | Action::Deny) {
-                    has_exe_hide_or_deny_rule = true;
+                    return false;
                 }
                 if rule.action.allows_visible_descendants() {
                     has_exe_visible_rule = true;
@@ -614,30 +611,13 @@ impl Profile {
                 continue;
             }
             first_non_exe_action = Some(rule.action);
-            first_non_exe_is_exact = matched.explicit_is_exact;
             break;
         }
 
-        if has_exe_hide_or_deny_rule {
-            if matches!(first_non_exe_action, Some(Action::Hide | Action::Deny))
-                && saw_unconditional_implicit_ancestor_before_first_non_exe
-                && has_exe_visible_rule
-                && first_non_exe_is_exact
-            {
-                return true;
-            }
-            return false;
-        }
-
         if has_exe_visible_rule {
-            return match first_non_exe_action {
-                Some(Action::Hide | Action::Deny) => {
-                    saw_unconditional_implicit_ancestor_before_first_non_exe
-                        && first_non_exe_is_exact
-                }
-                Some(action) => action.allows_visible_descendants(),
-                None => false,
-            };
+            return first_non_exe_action
+                .map(Action::allows_visible_descendants)
+                .unwrap_or(false);
         }
         if matches!(first_non_exe_action, Some(Action::Hide | Action::Deny)) {
             return saw_unconditional_implicit_ancestor_before_first_non_exe;
@@ -743,8 +723,8 @@ impl Profile {
                 blocked_action: Some(_),
             } if ctx.fs.is_dir(path) => None,
             Visibility::ImplicitAncestor {
-                blocked_action: Some(action),
-            } => action.access_errno(),
+                blocked_action: Some(_),
+            } => Some(ENOENT),
             Visibility::ImplicitAncestor {
                 blocked_action: None,
             } if ctx.fs.is_dir(path) => None,
@@ -763,8 +743,8 @@ impl Profile {
                 blocked_action: Some(_),
             } if ctx.fs.is_dir(path) => None,
             Visibility::ImplicitAncestor {
-                blocked_action: Some(action),
-            } => action.mutation_errno(),
+                blocked_action: Some(_),
+            } => Some(EPERM),
             Visibility::ImplicitAncestor {
                 blocked_action: None,
             } if ctx.fs.is_dir(path) => None,
@@ -1345,22 +1325,17 @@ fn build_internal_rule_index(
                 entries.push(InternalRuleMatch {
                     original_rule_index: rule_idx,
                     kind: InternalRuleKind::ImplicitAncestor,
-                    explicit_is_exact: false,
                 });
             }
         }
 
-        for (explicit_idx, explicit) in explicit_globs_for_rule(&rule.pattern)
-            .into_iter()
-            .enumerate()
-        {
+        for explicit in explicit_globs_for_rule(&rule.pattern) {
             let glob = Glob::new(&explicit)
                 .map_err(|e| ParseError::BadGlob(rule.pattern.clone(), e.to_string()))?;
             builder.add(glob);
             entries.push(InternalRuleMatch {
                 original_rule_index: rule_idx,
                 kind: InternalRuleKind::Explicit,
-                explicit_is_exact: explicit_idx == 0,
             });
         }
     }
@@ -1449,8 +1424,8 @@ impl<F: FsCheck> ProfileController<F> {
                     blocked_action: Some(_),
                 } if ctx.fs().is_dir(request.path) => None,
                 Visibility::ImplicitAncestor {
-                    blocked_action: Some(action),
-                } => action.mutation_errno(),
+                    blocked_action: Some(_),
+                } => Some(EPERM),
                 Visibility::ImplicitAncestor {
                     blocked_action: None,
                 } if ctx.fs().is_dir(request.path) => None,
@@ -1466,8 +1441,8 @@ impl<F: FsCheck> ProfileController<F> {
                     blocked_action: Some(_),
                 } if ctx.fs().is_dir(request.path) => None,
                 Visibility::ImplicitAncestor {
-                    blocked_action: Some(action),
-                } => action.access_errno(),
+                    blocked_action: Some(_),
+                } => Some(ENOENT),
                 Visibility::ImplicitAncestor {
                     blocked_action: None,
                 } if ctx.fs().is_dir(request.path) => None,
@@ -2043,7 +2018,7 @@ mod tests {
     }
 
     #[test]
-    fn git_dir_deny_with_visible_descendant_denies_non_dir_children() {
+    fn git_dir_deny_with_visible_descendant_hides_non_dir_children() {
         let p = parse_simple(
             "/home/user/**/.git/COMMIT_EDITMSG rw\n/home/user/**/.git deny\n/home/user ro\n",
         );
@@ -2069,8 +2044,10 @@ mod tests {
         );
         assert_eq!(
             p.access_errno(Path::new("/home/user/repo/.git/config"), &ctx),
-            Some(EACCES)
+            Some(ENOENT)
         );
+        // A denied parent that is only implicitly visible for traversal still
+        // hides unmatched descendants.
         assert_eq!(
             p.evaluate(Path::new("/home/user/repo/.git/COMMIT_EDITMSG"), &ctx),
             Some(Action::ReadWrite)
@@ -2622,12 +2599,6 @@ mod tests {
 
         let case8 = parse_simple("/a/b ro\n/a hide\n");
         assert!(case8.should_cache_readdir(Path::new("/a")));
-
-        let case9 = parse_simple(
-            "~/**/.git/COMMIT_EDITMSG rw\n~/**/.git rw when exe=git\n~/**/.git deny\n",
-        );
-        assert!(case9.should_cache_readdir(Path::new("/home/user/repo/.git")));
-        assert!(!case9.should_cache_readdir(Path::new("/home/user/repo/.git/refs")));
     }
 
     #[test]
