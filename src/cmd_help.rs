@@ -43,10 +43,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "  leash rules edit\n",
             "  leash rules show\n",
             "  leash rules test [--exe=<name-or-abs-path>] <path>\n",
-            "\nPROFILE exe= MATCHING:\n",
-            "  - bare names (no /) resolve via PATH to a full path, then match exactly\n",
-            "  - /-prefixed values are glob patterns (* stays in one dir, ** may cross dirs)\n",
-            "  - multiple values use | (for example: exe=git|/usr/**/git)\n",
+            "\nSee docs/PROFILE.md for full profile syntax.\n",
         )
         .to_string(),
         HelpTopic::LowLevelFuse => concat!(
