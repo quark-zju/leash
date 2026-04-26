@@ -901,9 +901,9 @@ fn parse_lines(
 ) -> Result<(), ParseError> {
     for (i, raw_line) in source.lines().enumerate() {
         let lineno = i + 1;
-        let line = raw_line.trim();
+        let line = strip_line_comment(raw_line);
 
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() {
             continue;
         }
 
@@ -928,6 +928,28 @@ fn parse_lines(
         }
     }
     Ok(())
+}
+
+fn strip_line_comment(raw_line: &str) -> &str {
+    let mut comment_start = None;
+    for (idx, ch) in raw_line.char_indices() {
+        if ch != '#' {
+            continue;
+        }
+        let starts_comment = idx == 0
+            || raw_line[..idx]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_whitespace);
+        if starts_comment {
+            comment_start = Some(idx);
+            break;
+        }
+    }
+    match comment_start {
+        Some(idx) => raw_line[..idx].trim(),
+        None => raw_line.trim(),
+    }
 }
 
 fn parse_directive(
@@ -2360,6 +2382,18 @@ mod tests {
     #[test]
     fn extra_tokens_after_conditions_is_error() {
         assert!(parse_simple_result("/foo rw when exe=/bin/sh extra\n").is_err());
+    }
+
+    #[test]
+    fn trailing_hash_comment_is_ignored() {
+        let p = parse_simple("/foo ro # comment\n");
+        assert_eq!(eval(&p, "/foo", None, &[]), Some(Action::ReadOnly));
+    }
+
+    #[test]
+    fn hash_inside_token_is_not_treated_as_comment() {
+        let p = parse_simple("/tmp/foo#bar ro\n");
+        assert_eq!(eval(&p, "/tmp/foo#bar", None, &[]), Some(Action::ReadOnly));
     }
 
     fn parse_simple_result(src: &str) -> Result<Profile, ParseError> {

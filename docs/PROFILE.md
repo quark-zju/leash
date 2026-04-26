@@ -61,7 +61,10 @@ Profile files are line-based and evaluated top to bottom with first-match-wins.
 - Rule format: `pattern action`
 - Conditional rule format: `pattern action when cond[,cond...]`
 - Directive format: `%directive ...`
-- Comment: lines starting with `#`
+- Comment:
+  - lines starting with `#`
+  - trailing `# ...` is also treated as comment when `#` appears at line start or
+    after whitespace
 
 Supported directives:
 
