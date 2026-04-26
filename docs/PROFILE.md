@@ -112,10 +112,11 @@ Important behavior:
 Supported conditions:
 
 - `exe=name[|name...]`
-  - matches when the caller executable equals any listed entry
-  - bare names are resolved through `$PATH` at parse time
-  - absolute paths are accepted as-is
-  - relative values and globs are rejected
+  - matches when the caller executable path matches any listed entry
+  - bare names (no `/`) are resolved through `$PATH` at parse time, then matched as exact full paths
+  - `/`-prefixed entries are treated as glob patterns
+  - glob semantics follow `globset`: `*` does not cross `/`, `**` may cross `/`
+  - relative slash forms like `../bin/sh` are rejected
 - `env=VAR`
   - matches when the caller environment contains `VAR`
 - `ancestor-has=name`

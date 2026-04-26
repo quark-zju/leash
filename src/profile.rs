@@ -9,10 +9,11 @@
 //! **action**: `ro` | `rw` | `deny` | `hide`
 //!
 //! **conditions** (all must be true — AND semantics):
-//! - `exe=name[|name...]`  — calling process's executable matches any listed
-//!                           entry: bare names are resolved via PATH at parse
-//!                           time; absolute paths are used as-is. Globs are not
-//!                           supported.
+//! - `exe=name[|pattern...]` — calling process executable matching:
+//!                           - bare names (no `/`) are resolved via PATH to an
+//!                             absolute path, then matched exactly
+//!                           - `/`-prefixed values are matched as glob patterns
+//!                             (`*` does not cross `/`, `**` may cross `/`)
 //! - `ancestor-has=name`   — some ancestor directory of the accessed path
 //!                           contains an entry named `name`
 //! - `env=VAR`             — environment variable `VAR` is set in the caller
@@ -27,7 +28,7 @@
 //! A rule whose conditions are not all satisfied is skipped.
 //! Paths that do not match any rule are hidden by default.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, LazyLock};
@@ -36,7 +37,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use libc::{EACCES, ENOENT, EPERM};
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 
 use crate::access::{AccessController, AccessDecision, AccessRequest, CallerCondition};
 use crate::ancestor_has_cache::AncestorHasCache;
@@ -221,13 +222,8 @@ impl FsCheck for RealFsCheck {
 /// A single compiled condition in a `when` clause.
 #[derive(Debug, Clone)]
 pub enum Condition {
-    /// Calling process executable equals any of these absolute paths.
-    ///
-    /// Resolved at parse time:
-    /// - Bare name (no `/`) → looked up via [`ExeResolver`]; `None` means the
-    ///   name was not found in PATH and this condition will never match.
-    /// - Absolute path → used as-is.
-    Exe(HashSet<PathBuf>),
+    /// Calling process executable path matches this matcher.
+    Exe(ExeMatcher),
 
     /// An ancestor directory of the accessed path contains an entry named
     /// `name` (file or directory).  Checked at eval time via [`FsCheck`].
@@ -235,6 +231,34 @@ pub enum Condition {
 
     /// An environment variable named `var` is set in the caller's environment.
     Env(String),
+}
+
+#[derive(Clone)]
+pub struct ExeMatcher {
+    globset: GlobSet,
+}
+
+impl std::fmt::Debug for ExeMatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExeMatcher").finish_non_exhaustive()
+    }
+}
+
+impl ExeMatcher {
+    fn from_patterns(patterns: &[String]) -> Result<Self, globset::Error> {
+        let mut builder = GlobSetBuilder::new();
+        for pattern in patterns {
+            let glob = GlobBuilder::new(pattern).literal_separator(true).build()?;
+            builder.add(glob);
+        }
+        Ok(Self {
+            globset: builder.build()?,
+        })
+    }
+
+    fn matches(&self, exe: &Path) -> bool {
+        self.globset.is_match(exe)
+    }
 }
 
 // ── RawCondition (pre-compilation) ───────────────────────────────────────────
@@ -301,34 +325,51 @@ impl RawCondition {
     }
 }
 
-/// Resolve an `exe=` value at parse time.
+/// Resolve an `exe=` value at parse time and compile it into a [`GlobSet`].
 ///
-/// Accepted forms:
-/// - Absolute path (starts with `/`) — used as-is.
-/// - Bare name (no `/`) — looked up via `resolver`; missing names are omitted
-///   (an empty set will never match at eval time).
-/// - Pipe-separated lists of absolute paths and bare names, with OR semantics.
+/// Accepted forms (`|` means OR):
+/// - Bare name (no `/`): resolved through [`ExeResolver`], then compiled as an
+///   exact-path glob.
+/// - `/`-prefixed value: compiled directly as a glob pattern.
 ///
-/// Any other form (relative path, glob metacharacters) is a parse error.
-fn resolve_exes(value: &str, resolver: &dyn ExeResolver) -> Result<HashSet<PathBuf>, ParseError> {
-    let mut resolved = HashSet::new();
+/// Any other form (for example `../bin/sh`) is a parse error.
+fn resolve_exes(value: &str, resolver: &dyn ExeResolver) -> Result<ExeMatcher, ParseError> {
+    let mut patterns = Vec::new();
     for entry in value.split('|') {
         if entry.is_empty() {
             return Err(ParseError::InvalidExe(value.to_owned()));
         }
         if entry.starts_with('/') {
-            resolved.insert(PathBuf::from(entry));
+            patterns.push(entry.to_owned());
             continue;
         }
         if entry.contains('/') {
-            // Relative path or glob — not supported.
             return Err(ParseError::InvalidExe(value.to_owned()));
         }
+        // Security motivation: bare names are resolved to absolute paths first,
+        // so a caller cannot bypass policy by running a different same-name
+        // binary from another directory.
         if let Some(path) = resolver.resolve(entry) {
-            resolved.insert(path);
+            patterns.push(glob_escape_literal(
+                path.as_os_str().to_string_lossy().as_ref(),
+            ));
         }
     }
-    Ok(resolved)
+    ExeMatcher::from_patterns(&patterns).map_err(|_| ParseError::InvalidExe(value.to_owned()))
+}
+
+fn glob_escape_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '*' | '?' | '[' | ']' | '{' | '}' | '!' | '\\' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 // ── Rule ──────────────────────────────────────────────────────────────────────
@@ -701,7 +742,7 @@ pub struct EvalContext<'a> {
 }
 
 trait RuntimeEvalContext {
-    fn exe_match(&mut self, expected: &HashSet<PathBuf>) -> bool;
+    fn exe(&mut self) -> Option<&Path>;
     fn env_match(&mut self, name: &str) -> bool;
     fn fs(&self) -> &dyn FsCheck;
     fn ancestor_has(&mut self, path: &Path, name: &str) -> bool;
@@ -712,8 +753,8 @@ struct StaticRuntimeEvalContext<'a, 'b> {
 }
 
 impl RuntimeEvalContext for StaticRuntimeEvalContext<'_, '_> {
-    fn exe_match(&mut self, expected: &HashSet<PathBuf>) -> bool {
-        self.ctx.exe.is_some_and(|exe| expected.contains(exe))
+    fn exe(&mut self) -> Option<&Path> {
+        self.ctx.exe
     }
 
     fn env_match(&mut self, name: &str) -> bool {
@@ -754,7 +795,7 @@ impl Rule {
 impl Condition {
     fn matches(&self, path: &Path, ctx: &mut dyn RuntimeEvalContext) -> bool {
         match self {
-            Condition::Exe(resolved) => ctx.exe_match(resolved),
+            Condition::Exe(matcher) => ctx.exe().is_some_and(|exe| matcher.matches(exe)),
 
             Condition::AncestorHas(name) => ctx.ancestor_has(path, name),
 
@@ -795,7 +836,9 @@ pub enum ParseError {
     #[error("bad glob '{0}': {1}")]
     BadGlob(String, String),
 
-    #[error("invalid exe= value '{0}': must be pipe-separated bare names or absolute paths")]
+    #[error(
+        "invalid exe= value '{0}': must be pipe-separated bare names or /-prefixed glob patterns"
+    )]
     InvalidExe(String),
 
     #[error("invalid os.id= value '{0}': must be a non-empty ID")]
@@ -1291,8 +1334,8 @@ struct LazyRuntimeEvalContext<'a, F, C: ?Sized> {
 impl<F: FsCheck, C: CallerCondition + ?Sized> RuntimeEvalContext
     for LazyRuntimeEvalContext<'_, F, C>
 {
-    fn exe_match(&mut self, expected: &HashSet<PathBuf>) -> bool {
-        self.caller_condition.exe_match(expected)
+    fn exe(&mut self) -> Option<&Path> {
+        self.caller_condition.exe()
     }
 
     fn env_match(&mut self, name: &str) -> bool {
@@ -1451,9 +1494,9 @@ mod tests {
     }
 
     impl CallerCondition for MockCallerCondition {
-        fn exe_match(&mut self, expected: &HashSet<PathBuf>) -> bool {
+        fn exe(&mut self) -> Option<&Path> {
             self.exe_reads.fetch_add(1, Ordering::Relaxed);
-            self.exe.as_ref().is_some_and(|exe| expected.contains(exe))
+            self.exe.as_deref()
         }
 
         fn env_match(&mut self, name: &str) -> bool {
@@ -2015,17 +2058,41 @@ mod tests {
     }
 
     #[test]
-    fn exe_glob_pattern_is_parse_error() {
-        // Glob metacharacters in exe= are not supported.
-        let err = parse(
-            "**/.git rw when exe=**/git\n",
-            &home(),
-            &cwd(),
-            &NoIncludes,
-            &MockExeResolver::empty(),
-        )
-        .unwrap_err();
-        assert!(matches!(err, ParseError::InvalidExe(_)), "got: {err:?}");
+    fn exe_bare_name_with_glob_chars_is_not_treated_as_glob() {
+        let resolver = MockExeResolver::empty();
+        let p = parse_with_exe("/data rw when exe=git*\n/data ro\n", &resolver);
+        assert_eq!(
+            eval(&p, "/data/file", Some("/usr/lib/git-core/git"), &[]),
+            Some(Action::ReadOnly)
+        );
+    }
+
+    #[test]
+    fn exe_absolute_glob_pattern_matches() {
+        let p = parse_simple("/repo rw when exe=/usr/**/git\n/repo ro\n");
+        assert_eq!(
+            eval(&p, "/repo/file", Some("/usr/lib/git-core/git"), &[]),
+            Some(Action::ReadWrite)
+        );
+        assert_eq!(
+            eval(&p, "/repo/file", Some("/opt/git"), &[]),
+            Some(Action::ReadOnly)
+        );
+    }
+
+    #[test]
+    fn exe_glob_star_and_double_star_directory_behavior() {
+        let p = parse_simple("/repo rw when exe=/usr/*/git|/usr/**/git\n/repo ro\n");
+        assert_eq!(
+            eval(&p, "/repo/file", Some("/usr/lib/git"), &[]),
+            Some(Action::ReadWrite),
+            "* should match one directory level"
+        );
+        assert_eq!(
+            eval(&p, "/repo/file", Some("/usr/lib/git-core/git"), &[]),
+            Some(Action::ReadWrite),
+            "** should match multiple directory levels"
+        );
     }
 
     #[test]
