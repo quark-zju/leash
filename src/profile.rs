@@ -401,6 +401,7 @@ pub struct Profile {
     rules: Vec<Rule>,
     match_globset: GlobSet,
     match_entries: Vec<InternalRuleMatch>,
+    caller_conditioned_hide_ancestor_globset: GlobSet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,6 +414,7 @@ enum InternalRuleKind {
 struct InternalRuleMatch {
     original_rule_index: usize,
     kind: InternalRuleKind,
+    explicit_is_exact: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -534,19 +536,16 @@ impl Profile {
         if !self.readdir_self_visibility_is_exe_stable(path) {
             return false;
         }
-        // Conservative: without a direct-child glob introspection API, treat any
-        // caller-conditioned hide rule under this directory as potentially
-        // changing readdir results for this directory.
-        !self.rules.iter().any(|rule| {
-            rule.has_caller_condition()
-                && rule.action == Action::Hide
-                && pattern_matches_implicit_ancestor(&rule.pattern, path)
-        })
+        // Caller-conditioned hide descendants can change visible children based
+        // on caller identity, so those directories are never safe to cache.
+        !self.caller_conditioned_hide_ancestor_globset.is_match(path)
     }
 
     fn readdir_self_visibility_is_exe_stable(&self, path: &Path) -> bool {
         let mut has_exe_visible_rule = false;
+        let mut has_exe_hide_or_deny_rule = false;
         let mut first_non_exe_action = None;
+        let mut first_non_exe_is_exact = false;
         let mut saw_unconditional_implicit_ancestor_before_first_non_exe = false;
         let mut last_rule_index = None;
         for matched_idx in self.match_globset.matches(path) {
@@ -569,7 +568,7 @@ impl Profile {
 
             if rule.has_caller_condition() {
                 if matches!(rule.action, Action::Hide | Action::Deny) {
-                    return false;
+                    has_exe_hide_or_deny_rule = true;
                 }
                 if rule.action.allows_visible_descendants() {
                     has_exe_visible_rule = true;
@@ -577,13 +576,30 @@ impl Profile {
                 continue;
             }
             first_non_exe_action = Some(rule.action);
+            first_non_exe_is_exact = matched.explicit_is_exact;
             break;
         }
 
+        if has_exe_hide_or_deny_rule {
+            if matches!(first_non_exe_action, Some(Action::Hide | Action::Deny))
+                && saw_unconditional_implicit_ancestor_before_first_non_exe
+                && has_exe_visible_rule
+                && first_non_exe_is_exact
+            {
+                return true;
+            }
+            return false;
+        }
+
         if has_exe_visible_rule {
-            return first_non_exe_action
-                .map(Action::allows_visible_descendants)
-                .unwrap_or(false);
+            return match first_non_exe_action {
+                Some(Action::Hide | Action::Deny) => {
+                    saw_unconditional_implicit_ancestor_before_first_non_exe
+                        && first_non_exe_is_exact
+                }
+                Some(action) => action.allows_visible_descendants(),
+                None => false,
+            };
         }
         if matches!(first_non_exe_action, Some(Action::Hide | Action::Deny)) {
             return saw_unconditional_implicit_ancestor_before_first_non_exe;
@@ -967,10 +983,13 @@ fn parse_with_os_id_resolver(
         &mut rules,
     )?;
     let (match_globset, match_entries) = build_internal_rule_index(&rules)?;
+    let caller_conditioned_hide_ancestor_globset =
+        build_caller_conditioned_hide_ancestor_globset(&rules)?;
     Ok(Profile {
         rules,
         match_globset,
         match_entries,
+        caller_conditioned_hide_ancestor_globset,
     })
 }
 
@@ -1269,17 +1288,22 @@ fn build_internal_rule_index(
                 entries.push(InternalRuleMatch {
                     original_rule_index: rule_idx,
                     kind: InternalRuleKind::ImplicitAncestor,
+                    explicit_is_exact: false,
                 });
             }
         }
 
-        for explicit in explicit_globs_for_rule(&rule.pattern) {
+        for (explicit_idx, explicit) in explicit_globs_for_rule(&rule.pattern)
+            .into_iter()
+            .enumerate()
+        {
             let glob = Glob::new(&explicit)
                 .map_err(|e| ParseError::BadGlob(rule.pattern.clone(), e.to_string()))?;
             builder.add(glob);
             entries.push(InternalRuleMatch {
                 original_rule_index: rule_idx,
                 kind: InternalRuleKind::Explicit,
+                explicit_is_exact: explicit_idx == 0,
             });
         }
     }
@@ -1288,6 +1312,25 @@ fn build_internal_rule_index(
         .build()
         .map_err(|e| ParseError::BadGlob("<internal>".to_owned(), e.to_string()))?;
     Ok((globset, entries))
+}
+
+fn build_caller_conditioned_hide_ancestor_globset(rules: &[Rule]) -> Result<GlobSet, ParseError> {
+    let mut builder = GlobSetBuilder::new();
+
+    for rule in rules {
+        if !(rule.has_caller_condition() && rule.action == Action::Hide) {
+            continue;
+        }
+        for ancestor in ancestor_globs_for_rule(&rule.pattern) {
+            let glob = Glob::new(&ancestor)
+                .map_err(|e| ParseError::BadGlob(rule.pattern.clone(), e.to_string()))?;
+            builder.add(glob);
+        }
+    }
+
+    builder
+        .build()
+        .map_err(|e| ParseError::BadGlob("<internal>".to_owned(), e.to_string()))
 }
 
 pub struct ProfileController<F = RealFsCheck> {
@@ -2512,6 +2555,12 @@ mod tests {
 
         let case8 = parse_simple("/a/b ro\n/a hide\n");
         assert!(case8.should_cache_readdir(Path::new("/a")));
+
+        let case9 = parse_simple(
+            "~/**/.git/COMMIT_EDITMSG rw\n~/**/.git rw when exe=git\n~/**/.git deny\n",
+        );
+        assert!(case9.should_cache_readdir(Path::new("/home/user/repo/.git")));
+        assert!(!case9.should_cache_readdir(Path::new("/home/user/repo/.git/refs")));
     }
 
     #[test]
