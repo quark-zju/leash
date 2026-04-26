@@ -43,6 +43,17 @@ still fail mount-plan validation.
 
 ## FUSE/profile debugging
 
+To understand why a path is allowed, denied, or hidden, inspect rule matching
+first:
+
+```bash
+leash rules test /absolute/path
+leash rules test /absolute/path --exe git
+```
+
+The output includes visibility, effective action, readdir cache decision, and
+matched rules with condition status.
+
 Run with verbose logs:
 
 ```bash
@@ -53,6 +64,14 @@ leash _fuse -v
 When `run -v` spawns `_fuse`, the daemon's stdout/stderr go to
 `${XDG_RUNTIME_DIR}/leash/fuse.log` or `/run/user/<uid>/leash/fuse.log`
 instead of the terminal.
+
+Use `RUST_LOG` to control debug output granularity:
+
+```bash
+RUST_LOG=debug leash run /path/to/command
+RUST_LOG=leash=debug leash _fuse
+RUST_LOG=info leash run /path/to/command
+```
 
 Mounted integration tests can also be run with:
 
