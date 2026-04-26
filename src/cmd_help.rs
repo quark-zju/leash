@@ -43,7 +43,7 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
             "  leash rules edit\n",
             "  leash rules show\n",
             "  leash rules test [--exe=<name-or-abs-path>] <path>\n",
-            "\nSee docs/PROFILE.md for full profile syntax.\n",
+            "\nSee docs/RULES.md for full profile syntax.\n",
         )
         .to_string(),
         HelpTopic::LowLevelFuse => concat!(

@@ -1,4 +1,4 @@
-# Profile Guide
+# Rules Guide
 
 This document is the source of truth for profile syntax and default profile
 behavior used by `leash`.

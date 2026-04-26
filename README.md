@@ -33,7 +33,7 @@ leash rules test ~/.ssh/config  # test a path against rules
 leash rules edit                # edit rules
 ```
 
-See [this doc](docs/PROFILE.md) for the syntax of rules.
+See [this doc](docs/RULES.md) for the syntax of rules.
 
 ## More docs
 
