@@ -74,11 +74,11 @@ fn command_verbose(command: &Command) -> bool {
 
 fn init_logging(verbose: bool) {
     let mut builder = env_logger::Builder::from_default_env();
-    builder.filter_level(if verbose {
-        LevelFilter::Debug
-    } else {
-        LevelFilter::Warn
-    });
+    if verbose {
+        builder.filter_level(LevelFilter::Debug);
+    } else if std::env::var_os("RUST_LOG").is_none() {
+        builder.filter_level(LevelFilter::Warn);
+    }
     if verbose {
         builder.filter_module("globset", LevelFilter::Info);
     }
