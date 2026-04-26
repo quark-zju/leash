@@ -1863,6 +1863,39 @@ mod tests {
     }
 
     #[test]
+    fn git_dir_deny_with_visible_descendant_hides_non_dir_children() {
+        let p = parse_simple(
+            "/home/user/**/.git/COMMIT_EDITMSG rw\n/home/user/**/.git deny\n/home/user ro\n",
+        );
+        let env = HashMap::new();
+        // Mark only the .git directory as existing; .git/config is treated as a
+        // non-directory path by this test fs checker.
+        let fs = MockFsCheck::new(&["/home/user/repo/.git"]);
+        let ctx = EvalContext {
+            exe: Some(Path::new("/usr/bin/vim")),
+            env: &env,
+            fs: &fs,
+        };
+
+        assert_eq!(
+            p.visibility(Path::new("/home/user/repo/.git"), &ctx),
+            Visibility::ImplicitAncestor
+        );
+        assert_eq!(
+            p.access_errno(Path::new("/home/user/repo/.git"), &ctx),
+            None
+        );
+        assert_eq!(
+            p.access_errno(Path::new("/home/user/repo/.git/config"), &ctx),
+            Some(ENOENT)
+        );
+        assert_eq!(
+            p.evaluate(Path::new("/home/user/repo/.git/COMMIT_EDITMSG"), &ctx),
+            Some(Action::ReadWrite)
+        );
+    }
+
+    #[test]
     fn implicit_ancestor_from_descendant_rule_beats_later_deny_on_same_parent() {
         let resolver = MockExeResolver::new(&[("git", "/usr/bin/git")]);
         let p = parse_with_exe(
