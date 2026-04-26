@@ -161,7 +161,7 @@ fn resolve_test_exe(exe: Option<&str>) -> Result<Option<PathBuf>> {
 fn format_visibility(visibility: Visibility) -> &'static str {
     match visibility {
         Visibility::Action(_) => "action",
-        Visibility::ImplicitAncestor => "implicit-ancestor",
+        Visibility::ImplicitAncestor { .. } => "implicit-ancestor",
         Visibility::Hidden => "hidden",
     }
 }

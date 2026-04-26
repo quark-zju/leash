@@ -55,7 +55,7 @@ pub enum Action {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
     Action(Action),
-    ImplicitAncestor,
+    ImplicitAncestor { blocked_action: Option<Action> },
     Hidden,
 }
 
@@ -509,14 +509,18 @@ impl Profile {
                     if matches!(rule.action, Action::Hide | Action::Deny)
                         && implicit_ancestor_visible
                     {
-                        return Visibility::ImplicitAncestor;
+                        return Visibility::ImplicitAncestor {
+                            blocked_action: Some(rule.action),
+                        };
                     }
                     return Visibility::Action(rule.action);
                 }
             }
         }
         if implicit_ancestor_visible {
-            return Visibility::ImplicitAncestor;
+            return Visibility::ImplicitAncestor {
+                blocked_action: None,
+            };
         }
         Visibility::Hidden
     }
@@ -626,7 +630,9 @@ impl Profile {
                     let visibility = if matches!(rule.action, Action::Hide | Action::Deny)
                         && implicit_ancestor_visible
                     {
-                        Visibility::ImplicitAncestor
+                        Visibility::ImplicitAncestor {
+                            blocked_action: Some(rule.action),
+                        }
                     } else {
                         Visibility::Action(rule.action)
                     };
@@ -634,7 +640,13 @@ impl Profile {
                         visibility,
                         effective_action: match visibility {
                             Visibility::Action(action) => action,
-                            Visibility::ImplicitAncestor | Visibility::Hidden => Action::Hide,
+                            Visibility::ImplicitAncestor {
+                                blocked_action: Some(action),
+                            } => action,
+                            Visibility::ImplicitAncestor {
+                                blocked_action: None,
+                            }
+                            | Visibility::Hidden => Action::Hide,
                         },
                         entries,
                     };
@@ -643,7 +655,9 @@ impl Profile {
         }
 
         let visibility = if implicit_ancestor_visible {
-            Visibility::ImplicitAncestor
+            Visibility::ImplicitAncestor {
+                blocked_action: None,
+            }
         } else {
             Visibility::Hidden
         };
@@ -651,7 +665,13 @@ impl Profile {
             visibility,
             effective_action: match visibility {
                 Visibility::Action(action) => action,
-                Visibility::ImplicitAncestor | Visibility::Hidden => Action::Hide,
+                Visibility::ImplicitAncestor {
+                    blocked_action: Some(action),
+                } => action,
+                Visibility::ImplicitAncestor {
+                    blocked_action: None,
+                }
+                | Visibility::Hidden => Action::Hide,
             },
             entries,
         }
@@ -661,8 +681,19 @@ impl Profile {
     pub fn access_errno(&self, path: &Path, ctx: &EvalContext<'_>) -> Option<i32> {
         match self.visibility(path, ctx) {
             Visibility::Action(action) => action.access_errno(),
-            Visibility::ImplicitAncestor if ctx.fs.is_dir(path) => None,
-            Visibility::ImplicitAncestor | Visibility::Hidden => Some(ENOENT),
+            Visibility::ImplicitAncestor {
+                blocked_action: Some(action),
+            } if ctx.fs.is_dir(path) => None,
+            Visibility::ImplicitAncestor {
+                blocked_action: Some(action),
+            } => action.access_errno(),
+            Visibility::ImplicitAncestor {
+                blocked_action: None,
+            } if ctx.fs.is_dir(path) => None,
+            Visibility::ImplicitAncestor {
+                blocked_action: None,
+            }
+            | Visibility::Hidden => Some(ENOENT),
         }
     }
 
@@ -670,8 +701,19 @@ impl Profile {
     pub fn mutation_errno(&self, path: &Path, ctx: &EvalContext<'_>) -> Option<i32> {
         match self.visibility(path, ctx) {
             Visibility::Action(action) => action.mutation_errno(),
-            Visibility::ImplicitAncestor if ctx.fs.is_dir(path) => None,
-            Visibility::ImplicitAncestor | Visibility::Hidden => Some(EPERM),
+            Visibility::ImplicitAncestor {
+                blocked_action: Some(action),
+            } if ctx.fs.is_dir(path) => None,
+            Visibility::ImplicitAncestor {
+                blocked_action: Some(action),
+            } => action.mutation_errno(),
+            Visibility::ImplicitAncestor {
+                blocked_action: None,
+            } if ctx.fs.is_dir(path) => None,
+            Visibility::ImplicitAncestor {
+                blocked_action: None,
+            }
+            | Visibility::Hidden => Some(EPERM),
         }
     }
 
@@ -1293,14 +1335,36 @@ impl<F: FsCheck> ProfileController<F> {
         let errno = if request.operation.is_write() {
             match profile.visibility_with_runtime(request.path, &mut ctx) {
                 Visibility::Action(action) => action.mutation_errno(),
-                Visibility::ImplicitAncestor if ctx.fs().is_dir(request.path) => None,
-                Visibility::ImplicitAncestor | Visibility::Hidden => Some(EPERM),
+                Visibility::ImplicitAncestor {
+                    blocked_action: Some(action),
+                } if ctx.fs().is_dir(request.path) => None,
+                Visibility::ImplicitAncestor {
+                    blocked_action: Some(action),
+                } => action.mutation_errno(),
+                Visibility::ImplicitAncestor {
+                    blocked_action: None,
+                } if ctx.fs().is_dir(request.path) => None,
+                Visibility::ImplicitAncestor {
+                    blocked_action: None,
+                }
+                | Visibility::Hidden => Some(EPERM),
             }
         } else {
             match profile.visibility_with_runtime(request.path, &mut ctx) {
                 Visibility::Action(action) => action.access_errno(),
-                Visibility::ImplicitAncestor if ctx.fs().is_dir(request.path) => None,
-                Visibility::ImplicitAncestor | Visibility::Hidden => Some(ENOENT),
+                Visibility::ImplicitAncestor {
+                    blocked_action: Some(action),
+                } if ctx.fs().is_dir(request.path) => None,
+                Visibility::ImplicitAncestor {
+                    blocked_action: Some(action),
+                } => action.access_errno(),
+                Visibility::ImplicitAncestor {
+                    blocked_action: None,
+                } if ctx.fs().is_dir(request.path) => None,
+                Visibility::ImplicitAncestor {
+                    blocked_action: None,
+                }
+                | Visibility::Hidden => Some(ENOENT),
             }
         };
         match errno {
@@ -1811,11 +1875,15 @@ mod tests {
 
         assert_eq!(
             p.visibility(Path::new("/workspace/project/foo"), &ctx),
-            Visibility::ImplicitAncestor
+            Visibility::ImplicitAncestor {
+                blocked_action: Some(Action::Hide),
+            }
         );
         assert_eq!(
             p.visibility(Path::new("/workspace/project/foo/bar"), &ctx),
-            Visibility::ImplicitAncestor
+            Visibility::ImplicitAncestor {
+                blocked_action: Some(Action::Hide),
+            }
         );
         assert_eq!(
             p.access_errno(Path::new("/workspace/project/foo"), &ctx),
@@ -1850,7 +1918,9 @@ mod tests {
 
         assert_eq!(
             p.visibility(Path::new("/home/user/repo/.git"), &ctx),
-            Visibility::ImplicitAncestor
+            Visibility::ImplicitAncestor {
+                blocked_action: Some(Action::Deny),
+            }
         );
         assert_eq!(
             p.access_errno(Path::new("/home/user/repo/.git"), &ctx),
@@ -1863,7 +1933,7 @@ mod tests {
     }
 
     #[test]
-    fn git_dir_deny_with_visible_descendant_hides_non_dir_children() {
+    fn git_dir_deny_with_visible_descendant_denies_non_dir_children() {
         let p = parse_simple(
             "/home/user/**/.git/COMMIT_EDITMSG rw\n/home/user/**/.git deny\n/home/user ro\n",
         );
@@ -1879,7 +1949,9 @@ mod tests {
 
         assert_eq!(
             p.visibility(Path::new("/home/user/repo/.git"), &ctx),
-            Visibility::ImplicitAncestor
+            Visibility::ImplicitAncestor {
+                blocked_action: Some(Action::Deny),
+            }
         );
         assert_eq!(
             p.access_errno(Path::new("/home/user/repo/.git"), &ctx),
@@ -1887,7 +1959,7 @@ mod tests {
         );
         assert_eq!(
             p.access_errno(Path::new("/home/user/repo/.git/config"), &ctx),
-            Some(ENOENT)
+            Some(EACCES)
         );
         assert_eq!(
             p.evaluate(Path::new("/home/user/repo/.git/COMMIT_EDITMSG"), &ctx),
@@ -1912,7 +1984,9 @@ mod tests {
         };
         assert_eq!(
             p.visibility(Path::new("/home/user/repo/.git"), &ctx_no_git),
-            Visibility::ImplicitAncestor
+            Visibility::ImplicitAncestor {
+                blocked_action: Some(Action::Deny),
+            }
         );
         assert_eq!(
             p.access_errno(Path::new("/home/user/repo/.git"), &ctx_no_git),
