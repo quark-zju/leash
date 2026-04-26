@@ -11,18 +11,6 @@ pub struct SparseBitset {
 }
 
 impl SparseBitset {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.words.is_empty()
-    }
-
-    pub fn reset(&mut self) {
-        self.words.clear();
-    }
-
     pub fn set(&mut self, bit: usize) {
         let (word_index, mask) = split_bit(bit);
         if self.words.len() <= word_index {
@@ -60,7 +48,7 @@ mod tests {
 
     #[test]
     fn set_and_test_inline_bits() {
-        let mut bits = SparseBitset::new();
+        let mut bits = SparseBitset::default();
         assert!(!bits.test(0));
         assert!(!bits.test(255));
 
@@ -74,7 +62,7 @@ mod tests {
 
     #[test]
     fn set_and_test_heap_spill_bits() {
-        let mut bits = SparseBitset::new();
+        let mut bits = SparseBitset::default();
         bits.set(700);
         assert!(bits.test(700));
         assert!(!bits.test(699));
@@ -82,27 +70,29 @@ mod tests {
 
     #[test]
     fn clear_unset_bit_is_noop() {
-        let mut bits = SparseBitset::new();
+        let mut bits = SparseBitset::default();
         bits.clear(42);
-        assert!(bits.is_empty());
+        assert!(!bits.test(42));
     }
 
     #[test]
     fn clear_removes_high_zero_words() {
-        let mut bits = SparseBitset::new();
+        let mut bits = SparseBitset::default();
         bits.set(700);
         bits.clear(700);
-        assert!(bits.is_empty());
+        assert!(!bits.test(700));
     }
 
     #[test]
-    fn reset_clears_all_bits() {
-        let mut bits = SparseBitset::new();
+    fn clear_selected_bits_preserves_others() {
+        let mut bits = SparseBitset::default();
         bits.set(5);
         bits.set(130);
-        bits.reset();
+        bits.clear(5);
+        assert!(!bits.test(5));
+        assert!(bits.test(130));
+        bits.clear(130);
         assert!(!bits.test(5));
         assert!(!bits.test(130));
-        assert!(bits.is_empty());
     }
 }

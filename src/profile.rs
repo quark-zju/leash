@@ -41,6 +41,7 @@ use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 
 use crate::access::{AccessController, AccessDecision, AccessRequest, CallerCondition};
 use crate::ancestor_has_cache::AncestorHasCache;
+use crate::sparse_bitset::SparseBitset;
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
@@ -440,6 +441,30 @@ pub struct RuleMatchReport {
     pub entries: Vec<RuleMatchReportEntry>,
 }
 
+#[derive(Default)]
+struct ConditionMatchCache {
+    seen: SparseBitset,
+    matched: SparseBitset,
+}
+
+impl ConditionMatchCache {
+    fn get(&self, rule_index: usize) -> Option<bool> {
+        if !self.seen.test(rule_index) {
+            return None;
+        }
+        Some(self.matched.test(rule_index))
+    }
+
+    fn set(&mut self, rule_index: usize, matched: bool) {
+        self.seen.set(rule_index);
+        if matched {
+            self.matched.set(rule_index);
+        } else {
+            self.matched.clear(rule_index);
+        }
+    }
+}
+
 impl Profile {
     pub fn rules(&self) -> &[Rule] {
         &self.rules
@@ -461,7 +486,7 @@ impl Profile {
         path: &Path,
         ctx: &mut dyn RuntimeEvalContext,
     ) -> Option<Action> {
-        let mut cached_conditions = vec![None; self.rules.len()];
+        let mut cached_conditions = ConditionMatchCache::default();
         for matched_idx in self.match_globset.matches(path) {
             let matched = &self.match_entries[matched_idx];
             if matched.kind != InternalRuleKind::Explicit {
@@ -488,7 +513,7 @@ impl Profile {
 
     fn visibility_with_runtime(&self, path: &Path, ctx: &mut dyn RuntimeEvalContext) -> Visibility {
         let mut implicit_ancestor_visible = false;
-        let mut cached_conditions = vec![None; self.rules.len()];
+        let mut cached_conditions = ConditionMatchCache::default();
 
         // Match entries are inserted in source order, with implicit entries
         // before explicit entries for each rule.
@@ -612,7 +637,7 @@ impl Profile {
     pub fn rule_match_report(&self, path: &Path, ctx: &EvalContext<'_>) -> RuleMatchReport {
         let mut runtime = StaticRuntimeEvalContext { ctx };
         let mut implicit_ancestor_visible = false;
-        let mut cached_conditions = vec![None; self.rules.len()];
+        let mut cached_conditions = ConditionMatchCache::default();
         let mut entries = Vec::new();
 
         for matched_idx in self.match_globset.matches(path) {
@@ -747,7 +772,7 @@ impl Profile {
         path: &Path,
         ctx: &mut dyn RuntimeEvalContext,
     ) -> bool {
-        let mut cached_conditions = vec![None; self.rules.len()];
+        let mut cached_conditions = ConditionMatchCache::default();
         for matched_idx in self.match_globset.matches(path) {
             let matched = &self.match_entries[matched_idx];
             if matched.kind != InternalRuleKind::ImplicitAncestor {
@@ -770,13 +795,13 @@ impl Profile {
         rule_index: usize,
         path: &Path,
         ctx: &mut dyn RuntimeEvalContext,
-        cache: &mut [Option<bool>],
+        cache: &mut ConditionMatchCache,
     ) -> bool {
-        if let Some(matched) = cache[rule_index] {
+        if let Some(matched) = cache.get(rule_index) {
             return matched;
         }
         let matched = self.rules[rule_index].conditions_match(path, ctx);
-        cache[rule_index] = Some(matched);
+        cache.set(rule_index, matched);
         matched
     }
 }

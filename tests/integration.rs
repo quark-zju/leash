@@ -12,6 +12,8 @@ mod mirrorfs;
 mod process_name;
 #[path = "../src/profile.rs"]
 mod profile;
+#[path = "../src/sparse_bitset.rs"]
+mod sparse_bitset;
 #[path = "../src/tail_ipc.rs"]
 mod tail_ipc;
 
