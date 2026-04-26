@@ -113,8 +113,7 @@ const HOME_HIDE: &str = "\
 
 const HOME_GIT_RW: &str = "\
 ~/**/.git/COMMIT_EDITMSG rw
-~/**/.git rw when exe=git
-~/**/.git rw when exe=/usr/lib/git-core/git,os.id=debian
+~/**/.git rw when exe=git|/usr/lib/git-core/* # note: debian /bin/git and git-core/git are two (same) files, not symlinked
 ~/**/.git deny
 ~ rw when ancestor-has=.git
 ~ ro
