@@ -9,7 +9,7 @@
 //! **action**: `ro` | `rw` | `deny` | `hide`
 //!
 //! **conditions** (all must be true — AND semantics):
-//! - `exe=name[,name...]`  — calling process's executable matches any listed
+//! - `exe=name[|name...]`  — calling process's executable matches any listed
 //!                           entry: bare names are resolved via PATH at parse
 //!                           time; absolute paths are used as-is. Globs are not
 //!                           supported.
@@ -307,12 +307,12 @@ impl RawCondition {
 /// - Absolute path (starts with `/`) — used as-is.
 /// - Bare name (no `/`) — looked up via `resolver`; missing names are omitted
 ///   (an empty set will never match at eval time).
-/// - Comma-separated lists of absolute paths and bare names, with OR semantics.
+/// - Pipe-separated lists of absolute paths and bare names, with OR semantics.
 ///
 /// Any other form (relative path, glob metacharacters) is a parse error.
 fn resolve_exes(value: &str, resolver: &dyn ExeResolver) -> Result<HashSet<PathBuf>, ParseError> {
     let mut resolved = HashSet::new();
-    for entry in value.split(',') {
+    for entry in value.split('|') {
         if entry.is_empty() {
             return Err(ParseError::InvalidExe(value.to_owned()));
         }
@@ -795,7 +795,7 @@ pub enum ParseError {
     #[error("bad glob '{0}': {1}")]
     BadGlob(String, String),
 
-    #[error("invalid exe= value '{0}': must be comma-separated bare names or absolute paths")]
+    #[error("invalid exe= value '{0}': must be pipe-separated bare names or absolute paths")]
     InvalidExe(String),
 
     #[error("invalid os.id= value '{0}': must be a non-empty ID")]
@@ -1015,7 +1015,10 @@ fn parse_rule_line(
                     "unexpected tokens after conditions",
                 ));
             }
-            parse_conditions(conds_str)?
+            conds_str
+                .split(',')
+                .map(RawCondition::parse)
+                .collect::<Result<Vec<_>, _>>()?
         }
         Some(other) => {
             return Err(ParseError::syntax(
@@ -1043,21 +1046,6 @@ fn parse_rule_line(
         conditions,
         raw_conditions,
     }))
-}
-
-fn parse_conditions(conds_str: &str) -> Result<Vec<RawCondition>, ParseError> {
-    let mut conditions = Vec::new();
-    for part in conds_str.split(',') {
-        if part.contains('=') {
-            conditions.push(RawCondition::parse(part)?);
-        } else if let Some(RawCondition::Exe(value)) = conditions.last_mut() {
-            value.push(',');
-            value.push_str(part);
-        } else {
-            return Err(ParseError::UnknownCondition(part.to_owned()));
-        }
-    }
-    Ok(conditions)
 }
 
 // ── Pattern normalisation ─────────────────────────────────────────────────────
@@ -1910,13 +1898,13 @@ mod tests {
     }
 
     #[test]
-    fn exe_comma_separated_names_match_any_resolved_path() {
+    fn exe_pipe_separated_names_match_any_resolved_path() {
         let resolver = MockExeResolver::new(&[
             ("claude", "/usr/bin/claude"),
             ("codex", "/usr/local/bin/codex"),
         ]);
         let p = parse_with_exe(
-            "~/.agent rw when exe=claude,codex\n~/.agent ro\n",
+            "~/.agent rw when exe=claude|codex\n~/.agent ro\n",
             &resolver,
         );
 
@@ -1936,13 +1924,13 @@ mod tests {
     }
 
     #[test]
-    fn exe_comma_separated_values_can_mix_with_other_conditions() {
+    fn exe_pipe_separated_values_can_mix_with_other_conditions() {
         let resolver = MockExeResolver::new(&[
             ("claude", "/usr/bin/claude"),
             ("codex", "/usr/local/bin/codex"),
         ]);
         let p = parse_with_exe(
-            "/secret rw when exe=claude,codex,env=TOKEN\n/secret deny\n",
+            "/secret rw when exe=claude|codex,env=TOKEN\n/secret deny\n",
             &resolver,
         );
 
@@ -1967,7 +1955,7 @@ mod tests {
             ("claude", "/usr/bin/claude"),
             ("codex", "/usr/local/bin/codex"),
         ]);
-        let p = parse_with_exe("/data rw when exe=claude,codex\n/data ro\n", &resolver);
+        let p = parse_with_exe("/data rw when exe=claude|codex\n/data ro\n", &resolver);
         let mut caller_condition = MockCallerCondition {
             exe: Some(PathBuf::from("/usr/local/bin/codex")),
             ..Default::default()
