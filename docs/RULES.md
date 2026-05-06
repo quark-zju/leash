@@ -96,6 +96,7 @@ Example:
 
 - `ro`: readable but not writable
 - `rw`: readable and writable
+- `tmpfs`: mount a private writable tmpfs at selected built-in paths
 - `deny`: visible, but access fails with `EACCES`
 - `hide`: behaves as non-existent for lookups/stat (`ENOENT`) and rejects
   same-name creation with a mutation error
@@ -171,7 +172,15 @@ Some profile rules are compiled into namespace mounts during `leash run`.
 ### `/tmp`
 
 - an exact unconditional `/tmp ro` or `/tmp rw` rule may become a bind mount
+- an exact unconditional `/tmp tmpfs` rule mounts a private tmpfs instead
 - this fast path is only allowed when no descendant rule conflicts with `/tmp`
 - rules that make `/tmp` an implicit visible ancestor also block the fast path
 - if the `/tmp` bind mount later fails at runtime, `leash` logs a warning and
   falls back to normal FUSE enforcement for `/tmp`
+
+### `tmpfs`
+
+- `tmpfs` is only supported for exact unconditional `/tmp` and `/run/user` rules
+- descendant rules under a `tmpfs` mount root are rejected
+- `/run/user tmpfs` provides an empty private runtime directory instead of
+  exposing host session sockets

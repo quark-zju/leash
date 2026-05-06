@@ -6,7 +6,7 @@
 //! pattern  action  [when condition[,condition...]]
 //! ```
 //!
-//! **action**: `ro` | `rw` | `deny` | `hide`
+//! **action**: `ro` | `rw` | `tmpfs` | `deny` | `hide`
 //!
 //! **conditions** (all must be true — AND semantics):
 //! - `exe=name[|pattern...]` — calling process executable matching:
@@ -51,6 +51,7 @@ use crate::sparse_bitset::SparseBitset;
 pub enum Action {
     ReadOnly,
     ReadWrite,
+    Tmpfs,
     Deny,
     Hide,
 }
@@ -67,6 +68,7 @@ impl Action {
         match s {
             "ro" => Some(Self::ReadOnly),
             "rw" => Some(Self::ReadWrite),
+            "tmpfs" => Some(Self::Tmpfs),
             "deny" => Some(Self::Deny),
             "hide" => Some(Self::Hide),
             _ => None,
@@ -75,7 +77,7 @@ impl Action {
 
     pub fn access_errno(self) -> Option<i32> {
         match self {
-            Self::ReadOnly | Self::ReadWrite => None,
+            Self::ReadOnly | Self::ReadWrite | Self::Tmpfs => None,
             Self::Deny => Some(EACCES),
             Self::Hide => Some(ENOENT),
         }
@@ -83,7 +85,7 @@ impl Action {
 
     pub fn mutation_errno(self) -> Option<i32> {
         match self {
-            Self::ReadWrite => None,
+            Self::ReadWrite | Self::Tmpfs => None,
             Self::ReadOnly | Self::Deny => Some(EACCES),
             Self::Hide => Some(EPERM),
         }
@@ -95,6 +97,7 @@ impl std::fmt::Display for Action {
         f.write_str(match self {
             Self::ReadOnly => "ro",
             Self::ReadWrite => "rw",
+            Self::Tmpfs => "tmpfs",
             Self::Deny => "deny",
             Self::Hide => "hide",
         })
@@ -800,7 +803,7 @@ impl Profile {
 
 impl Action {
     fn allows_visible_descendants(self) -> bool {
-        matches!(self, Self::ReadOnly | Self::ReadWrite)
+        matches!(self, Self::ReadOnly | Self::ReadWrite | Self::Tmpfs)
     }
 }
 

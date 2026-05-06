@@ -172,6 +172,7 @@ enum MountPhase {
 fn mount_phase_for_entry(entry: &MountPlanEntry) -> MountPhase {
     match entry {
         MountPlanEntry::Bind { .. }
+        | MountPlanEntry::Tmpfs { .. }
         | MountPlanEntry::DevPts { .. }
         | MountPlanEntry::DevPtmx { .. } => MountPhase::BeforePidNamespaceInit,
         MountPlanEntry::Proc { .. } => MountPhase::InPidNamespaceInit,
@@ -199,6 +200,10 @@ fn apply_mount_plan_entry(
                 remount_bind_read_only(&target)?;
             }
         }
+        MountPlanEntry::Tmpfs { .. } => {
+            ensure_mount_target_directory(&target)?;
+            mount_tmpfs(&target)?;
+        }
         MountPlanEntry::Proc { read_only } => {
             mount_virtual_fs("proc", "proc", &target)?;
             if *read_only {
@@ -219,6 +224,19 @@ fn apply_mount_plan_entry(
                 remount_bind_read_only(&target)?;
             }
         }
+    }
+    Ok(())
+}
+
+fn ensure_mount_target_directory(target: &Path) -> Result<()> {
+    let target_metadata = fs::metadata(target).with_context(|| {
+        format!(
+            "mount target does not exist in fuse mount: {}",
+            target.display()
+        )
+    })?;
+    if !target_metadata.is_dir() {
+        bail!("mount target is not a directory: {}", target.display());
     }
     Ok(())
 }
@@ -433,6 +451,10 @@ fn mount_devpts(target: &Path, gid: libc::gid_t) -> Result<()> {
     }
     let err = last_err.unwrap_or_else(|| std::io::Error::other("unknown devpts mount error"));
     Err(err).with_context(|| format!("mount devpts failed at {}", target.display()))
+}
+
+fn mount_tmpfs(target: &Path) -> Result<()> {
+    mount_virtual_fs("tmpfs", "tmpfs", target)
 }
 
 fn remount_read_only(target: &Path) -> Result<()> {
@@ -740,6 +762,16 @@ mod tests {
             )
             .expect("bind target"),
             mount_root.join("dev/null")
+        );
+        assert_eq!(
+            mount_target_for_entry(
+                mount_root,
+                &MountPlanEntry::Tmpfs {
+                    path: PathBuf::from("/run/user"),
+                },
+            )
+            .expect("tmpfs target"),
+            mount_root.join("run/user")
         );
         assert_eq!(
             mount_target_for_entry(

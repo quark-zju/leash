@@ -9,6 +9,7 @@ use crate::profile::{Action, Condition, Profile, Rule, pattern_matches_implicit_
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MountPlanEntry {
     Bind { path: PathBuf, read_only: bool },
+    Tmpfs { path: PathBuf },
     Proc { read_only: bool },
     DevPts { path: PathBuf, read_only: bool },
     DevPtmx { path: PathBuf, read_only: bool },
@@ -29,6 +30,7 @@ pub fn build_mount_plan(profile: &Profile) -> Result<Vec<MountPlanEntry>> {
         }
     }
     append_tmp_mount(rules, &mut plan)?;
+    append_tmpfs_mounts(rules, &mut plan)?;
 
     retain_existing_bind_sources(&mut plan)?;
     reorder_pty_mounts(&mut plan);
@@ -54,7 +56,16 @@ fn reorder_pty_mounts(plan: &mut Vec<MountPlanEntry>) {
 }
 
 fn append_tmp_mount(rules: &[Rule], plan: &mut Vec<MountPlanEntry>) -> Result<()> {
-    let Some(rule) = rules.iter().find(|rule| rule.pattern == "/tmp") else {
+    append_bind_fast_path(rules, plan, Path::new("/tmp"), "/tmp bind fast path")
+}
+
+fn append_bind_fast_path(
+    rules: &[Rule],
+    plan: &mut Vec<MountPlanEntry>,
+    root: &Path,
+    label: &str,
+) -> Result<()> {
+    let Some(rule) = rules.iter().find(|rule| Path::new(&rule.pattern) == root) else {
         return Ok(());
     };
     if !rule.conditions.is_empty() {
@@ -63,30 +74,92 @@ fn append_tmp_mount(rules: &[Rule], plan: &mut Vec<MountPlanEntry>) -> Result<()
     let read_only = match rule.action {
         Action::ReadOnly => true,
         Action::ReadWrite => false,
-        Action::Hide | Action::Deny => return Ok(()),
+        Action::Tmpfs | Action::Hide | Action::Deny => return Ok(()),
     };
-    let tmp = Path::new("/tmp");
     for rule in rules {
-        if rule.pattern == "/tmp" {
+        let path = Path::new(&rule.pattern);
+        if path == root {
             continue;
         }
-        let path = Path::new(&rule.pattern);
-        if path.starts_with(tmp) {
-            bail!("{}: rule conflicts with /tmp bind fast path", rule.pattern);
+        if path.starts_with(root) {
+            bail!("{}: rule conflicts with {label}", rule.pattern);
         }
-        if matches!(rule.action, Action::ReadOnly | Action::ReadWrite)
-            && pattern_matches_implicit_ancestor(&rule.pattern, tmp)
+        if matches!(
+            rule.action,
+            Action::ReadOnly | Action::ReadWrite | Action::Tmpfs
+        ) && pattern_matches_implicit_ancestor(&rule.pattern, root)
         {
             bail!(
-                "{}: implicit ancestor visibility conflicts with /tmp bind fast path",
+                "{}: implicit ancestor visibility conflicts with {label}",
                 rule.pattern
             );
         }
     }
     plan.push(MountPlanEntry::Bind {
-        path: tmp.to_path_buf(),
+        path: root.to_path_buf(),
         read_only,
     });
+    Ok(())
+}
+
+fn append_tmpfs_mounts(rules: &[Rule], plan: &mut Vec<MountPlanEntry>) -> Result<()> {
+    for rule in rules {
+        if rule.action != Action::Tmpfs {
+            continue;
+        }
+        reject_conditional_tmpfs_rule(rule)?;
+        reject_glob_mount_rule(rule, "tmpfs")?;
+        let path = Path::new(&rule.pattern);
+        if !tmpfs_path_is_allowed(path) {
+            bail!(
+                "{}: tmpfs is only supported for /tmp and /run/user",
+                rule.pattern
+            );
+        }
+        reject_descendant_rules_for_mount_root(rules, path, "tmpfs mount")?;
+        plan.push(MountPlanEntry::Tmpfs {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(())
+}
+
+fn reject_conditional_tmpfs_rule(rule: &Rule) -> Result<()> {
+    if !rule.conditions.is_empty() {
+        bail!("{}: tmpfs mount rules must be unconditional", rule.pattern);
+    }
+    Ok(())
+}
+
+fn tmpfs_path_is_allowed(path: &Path) -> bool {
+    path == Path::new("/tmp") || path == Path::new("/run/user")
+}
+
+fn reject_descendant_rules_for_mount_root(rules: &[Rule], root: &Path, label: &str) -> Result<()> {
+    for rule in rules {
+        let path = Path::new(&rule.pattern);
+        if path == root {
+            continue;
+        }
+        if path.starts_with(root) {
+            bail!(
+                "{}: rule conflicts with {label} {}",
+                rule.pattern,
+                root.display()
+            );
+        }
+        if matches!(
+            rule.action,
+            Action::ReadOnly | Action::ReadWrite | Action::Tmpfs
+        ) && pattern_matches_implicit_ancestor(&rule.pattern, root)
+        {
+            bail!(
+                "{}: implicit ancestor visibility conflicts with {label} {}",
+                rule.pattern,
+                root.display()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -100,7 +173,9 @@ fn append_proc_mount(rule: &Rule, plan: &mut Vec<MountPlanEntry>) -> Result<()> 
         Action::ReadOnly => plan.push(MountPlanEntry::Proc { read_only: true }),
         Action::ReadWrite => plan.push(MountPlanEntry::Proc { read_only: false }),
         Action::Hide => {}
-        Action::Deny => bail!("{}: /proc only supports ro/rw/hide", rule.pattern),
+        Action::Tmpfs | Action::Deny => {
+            bail!("{}: /proc only supports ro/rw/hide", rule.pattern)
+        }
     }
     Ok(())
 }
@@ -114,7 +189,7 @@ fn append_sys_mount(rule: &Rule, plan: &mut Vec<MountPlanEntry>) -> Result<()> {
     }
     match rule.action {
         Action::ReadOnly | Action::ReadWrite | Action::Hide => {}
-        Action::Deny => bail!("{}: /sys only supports ro/rw/hide", rule.pattern),
+        Action::Tmpfs | Action::Deny => bail!("{}: /sys only supports ro/rw/hide", rule.pattern),
     }
     Ok(())
 }
@@ -139,7 +214,9 @@ fn append_dev_mount(rule: &Rule, plan: &mut Vec<MountPlanEntry>) -> Result<()> {
     let read_only = match rule.action {
         Action::ReadOnly => true,
         Action::ReadWrite => false,
-        Action::Deny | Action::Hide => bail!("{}: /dev only supports ro/rw", rule.pattern),
+        Action::Tmpfs | Action::Deny | Action::Hide => {
+            bail!("{}: /dev only supports ro/rw", rule.pattern)
+        }
     };
 
     let path = PathBuf::from(&rule.pattern);
@@ -205,9 +282,8 @@ fn retain_existing_bind_sources(plan: &mut Vec<MountPlanEntry>) -> Result<()> {
                 continue;
             }
             Err(err) => {
-                return Err(err).with_context(|| {
-                    format!("{}: /dev bind source is not accessible", path.display())
-                });
+                return Err(err)
+                    .with_context(|| format!("{}: bind source is not accessible", path.display()));
             }
         };
         let file_type = metadata.file_type();
@@ -232,9 +308,10 @@ fn has_glob_syntax(value: &str) -> bool {
 impl MountPlanEntry {
     pub fn path(&self) -> Option<&Path> {
         match self {
-            Self::Bind { path, .. } | Self::DevPts { path, .. } | Self::DevPtmx { path, .. } => {
-                Some(path)
-            }
+            Self::Bind { path, .. }
+            | Self::Tmpfs { path }
+            | Self::DevPts { path, .. }
+            | Self::DevPtmx { path, .. } => Some(path),
             Self::Proc { .. } => Some(Path::new("/proc")),
         }
     }
@@ -334,6 +411,23 @@ mod tests {
     }
 
     #[test]
+    fn tmpfs_rules_become_tmpfs_mounts_when_unconditional_and_allowed() {
+        let profile = profile_from("/tmp tmpfs\n/run/user tmpfs\n/proc ro\n");
+        assert_eq!(
+            build_mount_plan(&profile).expect("plan"),
+            vec![
+                MountPlanEntry::Proc { read_only: true },
+                MountPlanEntry::Tmpfs {
+                    path: PathBuf::from("/tmp"),
+                },
+                MountPlanEntry::Tmpfs {
+                    path: PathBuf::from("/run/user"),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn dev_mounts_are_planned_before_tmp_fast_path() {
         let profile = profile_from("/tmp rw\n/dev/null rw\n");
         assert_eq!(
@@ -369,6 +463,36 @@ mod tests {
     #[test]
     fn tmp_bind_fast_path_rejects_implicit_ancestor_rules() {
         let err = build_mount_plan(&profile_from("/tmp rw\n/**/secret.txt ro\n")).unwrap_err();
+        assert!(
+            err.to_string().contains("implicit ancestor visibility"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn tmpfs_rules_reject_conditions() {
+        let err = build_mount_plan(&profile_from("/run/user tmpfs when env=LEASH_RUN_USER\n"))
+            .unwrap_err();
+        assert!(err.to_string().contains("must be unconditional"), "{err:#}");
+    }
+
+    #[test]
+    fn tmpfs_rules_reject_unsupported_paths() {
+        let err = build_mount_plan(&profile_from("/var/tmp tmpfs\n")).unwrap_err();
+        assert!(err.to_string().contains("only supported"), "{err:#}");
+    }
+
+    #[test]
+    fn tmpfs_rules_reject_descendant_rules() {
+        let err =
+            build_mount_plan(&profile_from("/run/user tmpfs\n/run/user/1000 ro\n")).unwrap_err();
+        assert!(err.to_string().contains("tmpfs mount /run/user"), "{err:#}");
+    }
+
+    #[test]
+    fn tmpfs_rules_reject_implicit_ancestor_rules() {
+        let err =
+            build_mount_plan(&profile_from("/run/user tmpfs\n/**/default.sock ro\n")).unwrap_err();
         assert!(
             err.to_string().contains("implicit ancestor visibility"),
             "{err:#}"
