@@ -76,6 +76,9 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 ~/.pyenv rw
 ~/.rustup rw
 
+# repl
+~/.ipython rw
+
 # bin
 ~/.local/bin ro
 
