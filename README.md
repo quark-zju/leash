@@ -40,11 +40,23 @@ Show, test, and edit rules:
 
 ```bash
 leash rules show                # show rules
-leash rules test ~/.ssh/config  # test a path against rules
 leash rules edit                # edit rules
+leash rules test ~/.ssh/config  # test a path against rules
 ```
 
 See [this doc](docs/RULES.md) for the syntax of rules.
+
+## Troubleshooting
+
+**Update rules to allow `my-program`**
+
+Use `tail` to see what leash will deny:
+
+```bash
+leash tail --kinds open-denied,mutation-denied
+```
+
+In another terminal, `leash run my-program`. The `tail` command should usually print the `/denied/path`. Then, run `leash rules edit` and add `/denied/path rw`.
 
 ## More docs
 
