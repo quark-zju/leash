@@ -2616,16 +2616,29 @@ fn is_access_denied_errno(errno: i32) -> bool {
 }
 
 fn is_stable_inode_path(path: &Path) -> bool {
-    path == Path::new("/proc") || path == Path::new("/sys") || path.starts_with("/dev")
+    is_virtual_empty_root(path) || path.starts_with("/dev")
 }
 
 fn is_virtual_empty_dir(path: &Path) -> bool {
-    path == Path::new("/proc") || path == Path::new("/sys")
+    is_virtual_empty_root(path)
 }
 
 fn is_virtual_empty_descendant(path: &Path) -> bool {
-    (path.starts_with("/proc") && path != Path::new("/proc"))
-        || (path.starts_with("/sys") && path != Path::new("/sys"))
+    virtual_empty_roots()
+        .iter()
+        .map(|root| Path::new(root))
+        .any(|root| path.starts_with(root) && path != root)
+}
+
+fn is_virtual_empty_root(path: &Path) -> bool {
+    virtual_empty_roots()
+        .iter()
+        .map(|root| Path::new(root))
+        .any(|root| path == root)
+}
+
+fn virtual_empty_roots() -> &'static [&'static str] {
+    &["/proc", "/sys", "/run/user"]
 }
 
 #[cfg(test)]
@@ -2634,15 +2647,15 @@ mod tests {
     use crate::access::{AccessDecision, AccessRequest, AllowAll, CallerCondition};
 
     #[derive(Debug, Default, Clone, Copy)]
-    struct HideProcSys;
+    struct HideVirtualRoots;
 
-    impl AccessController for HideProcSys {
+    impl AccessController for HideVirtualRoots {
         fn check(
             &self,
             request: &AccessRequest<'_>,
             _caller_condition: &mut dyn CallerCondition,
         ) -> AccessDecision {
-            if matches!(request.path.to_str(), Some("/proc" | "/sys")) {
+            if matches!(request.path.to_str(), Some("/proc" | "/sys" | "/run/user")) {
                 AccessDecision::Deny(ENOENT)
             } else {
                 AccessDecision::Allow
@@ -2690,7 +2703,7 @@ mod tests {
     #[test]
     fn forget_keeps_stable_mount_target_inodes() {
         let mut mirror = MirrorFs::new(PathBuf::from("/"), AllowAll);
-        for path in ["/proc", "/sys", "/dev", "/dev/null"] {
+        for path in ["/proc", "/sys", "/run/user", "/dev", "/dev/null"] {
             let path = Path::new(path);
             let ino = mirror.ensure_ino(path);
             mirror.note_lookup(ino, 1);
@@ -2704,10 +2717,14 @@ mod tests {
 
     #[test]
     fn hidden_proc_and_sys_roots_are_visible_as_empty_dirs() {
-        let mut mirror = MirrorFs::new(PathBuf::from("/"), HideProcSys);
-        let caller = MirrorFs::<HideProcSys>::caller_for_test("test");
+        let mut mirror = MirrorFs::new(PathBuf::from("/"), HideVirtualRoots);
+        let caller = MirrorFs::<HideVirtualRoots>::caller_for_test("test");
 
-        for path in [Path::new("/proc"), Path::new("/sys")] {
+        for path in [
+            Path::new("/proc"),
+            Path::new("/sys"),
+            Path::new("/run/user"),
+        ] {
             let attr = mirror
                 .getattr_path(&caller, path)
                 .expect("hidden virtual root should stat");
@@ -2724,7 +2741,11 @@ mod tests {
         let mut mirror = MirrorFs::new(PathBuf::from("/"), AllowAll);
         let caller = MirrorFs::<AllowAll>::caller_for_test("test");
 
-        for path in [Path::new("/proc"), Path::new("/sys")] {
+        for path in [
+            Path::new("/proc"),
+            Path::new("/sys"),
+            Path::new("/run/user"),
+        ] {
             let attr = mirror
                 .getattr_path(&caller, path)
                 .expect("virtual root should stat");
@@ -2741,7 +2762,11 @@ mod tests {
         let mut mirror = MirrorFs::new(PathBuf::from("/"), AllowAll);
         let caller = MirrorFs::<AllowAll>::caller_for_test("test");
 
-        for path in [Path::new("/proc/self"), Path::new("/sys/kernel")] {
+        for path in [
+            Path::new("/proc/self"),
+            Path::new("/sys/kernel"),
+            Path::new("/run/user/1000"),
+        ] {
             assert_eq!(
                 mirror.authorize_errno(&caller, path, Operation::Lookup),
                 Some(ENOENT)
