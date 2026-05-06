@@ -303,6 +303,13 @@ impl<P: AccessController> MirrorFs<P> {
         if self.handles.values().any(|handle| handle.ino == ino) {
             return;
         }
+        if self
+            .ino_to_paths
+            .get(&ino)
+            .is_some_and(|paths| paths.iter().any(|path| is_stable_inode_path(path)))
+        {
+            return;
+        }
         if self.lock_states.contains_key(&ino) {
             match self.broker.drop_inode(ino) {
                 Ok(()) => {
@@ -398,9 +405,41 @@ impl<P: AccessController> MirrorFs<P> {
         }
     }
 
+    fn virtual_dir_attr(&mut self, path: &Path) -> FileAttr {
+        FileAttr {
+            ino: INodeNo(self.ensure_ino(path)),
+            size: 0,
+            blocks: 0,
+            atime: SystemTime::UNIX_EPOCH,
+            mtime: SystemTime::UNIX_EPOCH,
+            ctime: SystemTime::UNIX_EPOCH,
+            crtime: SystemTime::UNIX_EPOCH,
+            kind: FileType::Directory,
+            perm: 0o555,
+            nlink: 2,
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        }
+    }
+
     pub(crate) fn getattr_path(&mut self, caller: &Caller, path: &Path) -> Result<FileAttr> {
-        self.authorize(caller, path, Operation::GetAttr)?;
-        let metadata = fs::symlink_metadata(path)?;
+        let hidden_virtual_dir = match self.authorize_errno(caller, path, Operation::GetAttr) {
+            Some(ENOENT) if is_virtual_empty_dir(path) => true,
+            Some(errno) => {
+                return Err(std::io::Error::from_raw_os_error(errno).into());
+            }
+            None => false,
+        };
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(err) if hidden_virtual_dir && err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(self.virtual_dir_attr(path));
+            }
+            Err(err) => return Err(err.into()),
+        };
         Ok(self.attr_for_path(path, &metadata))
     }
 
@@ -428,8 +467,20 @@ impl<P: AccessController> MirrorFs<P> {
         let path = self
             .resolve_child(parent, name)
             .ok_or_else(|| std::io::Error::from_raw_os_error(ENOENT))?;
-        self.authorize(caller, &path, Operation::Lookup)?;
-        let metadata = fs::symlink_metadata(&path)?;
+        let hidden_virtual_dir = match self.authorize_errno(caller, &path, Operation::Lookup) {
+            Some(ENOENT) if is_virtual_empty_dir(&path) => true,
+            Some(errno) => {
+                return Err(std::io::Error::from_raw_os_error(errno).into());
+            }
+            None => false,
+        };
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(err) if hidden_virtual_dir && err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(self.virtual_dir_attr(&path));
+            }
+            Err(err) => return Err(err.into()),
+        };
         Ok(self.attr_for_path(&path, &metadata))
     }
 
@@ -438,6 +489,12 @@ impl<P: AccessController> MirrorFs<P> {
         caller: &Caller,
         parent: &Path,
     ) -> Result<Vec<(u64, FileType, std::ffi::OsString)>> {
+        if self.authorize_errno(caller, parent, Operation::ReadDir) == Some(ENOENT)
+            && is_virtual_empty_dir(parent)
+        {
+            return Ok(Vec::new());
+        }
+
         let mut out = Vec::new();
         let entries = fs::read_dir(parent)?;
         for entry in entries {
@@ -1137,28 +1194,40 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             reply.error(Errno::ENOENT);
             return;
         };
-        if let Some(errno) = fs.authorize_errno(&caller, &path, Operation::ReadDir) {
-            if is_access_denied_errno(errno) {
-                fs.emit_tail_event(
-                    EventKind::OpenDenied,
-                    Some(path),
-                    Some(errno),
-                    Some("op=opendir".to_owned()),
-                );
-            }
-            reply.error(Errno::from_i32(errno));
-            return;
-        }
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(err) => {
-                reply.error(Errno::from(err));
+        let virtual_empty = match fs.authorize_errno(&caller, &path, Operation::ReadDir) {
+            Some(errno) if errno == ENOENT && is_virtual_empty_dir(&path) => true,
+            Some(errno) => {
+                if is_access_denied_errno(errno) {
+                    fs.emit_tail_event(
+                        EventKind::OpenDenied,
+                        Some(path),
+                        Some(errno),
+                        Some("op=opendir".to_owned()),
+                    );
+                }
+                reply.error(Errno::from_i32(errno));
                 return;
             }
+            None => false,
         };
-        if !metadata.file_type().is_dir() {
-            reply.error(Errno::ENOTDIR);
-            return;
+        if virtual_empty {
+            debug!(
+                "mirrorfs: exposing hidden {} as an empty directory",
+                path.display()
+            );
+        }
+        if !virtual_empty {
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    reply.error(Errno::from(err));
+                    return;
+                }
+            };
+            if !metadata.file_type().is_dir() {
+                reply.error(Errno::ENOTDIR);
+                return;
+            }
         }
 
         let mut entries = vec![
@@ -1169,11 +1238,13 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
                 std::ffi::OsString::from(".."),
             ),
         ];
-        match fs.list_children(&caller, &path) {
-            Ok(mut children) => entries.append(&mut children),
-            Err(err) => {
-                reply.error(Errno::from_i32(io_errno(&err)));
-                return;
+        if !virtual_empty {
+            match fs.list_children(&caller, &path) {
+                Ok(mut children) => entries.append(&mut children),
+                Err(err) => {
+                    reply.error(Errno::from_i32(io_errno(&err)));
+                    return;
+                }
             }
         }
 
@@ -1194,7 +1265,9 @@ impl<P: AccessController> Filesystem for FuseMirrorFs<P> {
             reply.error(Errno::ENOENT);
             return;
         };
-        if let Some(errno) = fs.authorize_errno(&caller, &path, Operation::ReadDir) {
+        if let Some(errno) = fs.authorize_errno(&caller, &path, Operation::ReadDir)
+            && !(errno == ENOENT && is_virtual_empty_dir(&path))
+        {
             if is_access_denied_errno(errno) {
                 fs.emit_tail_event(
                     EventKind::OpenDenied,
@@ -2550,10 +2623,35 @@ fn is_access_denied_errno(errno: i32) -> bool {
     matches!(errno, libc::EACCES | libc::EPERM)
 }
 
+fn is_stable_inode_path(path: &Path) -> bool {
+    path == Path::new("/proc") || path == Path::new("/sys") || path.starts_with("/dev")
+}
+
+fn is_virtual_empty_dir(path: &Path) -> bool {
+    path == Path::new("/proc") || path == Path::new("/sys")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::access::AllowAll;
+    use crate::access::{AccessDecision, AccessRequest, AllowAll, CallerCondition};
+
+    #[derive(Debug, Default, Clone, Copy)]
+    struct HideProcSys;
+
+    impl AccessController for HideProcSys {
+        fn check(
+            &self,
+            request: &AccessRequest<'_>,
+            _caller_condition: &mut dyn CallerCondition,
+        ) -> AccessDecision {
+            if matches!(request.path.to_str(), Some("/proc" | "/sys")) {
+                AccessDecision::Deny(ENOENT)
+            } else {
+                AccessDecision::Allow
+            }
+        }
+    }
 
     #[test]
     fn forget_drops_inode_path_mapping_when_no_longer_referenced() {
@@ -2590,5 +2688,37 @@ mod tests {
 
         mirror.release_for_test(fh);
         assert!(mirror.path_for_ino(ino).is_none());
+    }
+
+    #[test]
+    fn forget_keeps_stable_mount_target_inodes() {
+        let mut mirror = MirrorFs::new(PathBuf::from("/"), AllowAll);
+        for path in ["/proc", "/sys", "/dev", "/dev/null"] {
+            let path = Path::new(path);
+            let ino = mirror.ensure_ino(path);
+            mirror.note_lookup(ino, 1);
+
+            mirror.forget_ino(ino, 1);
+
+            assert_eq!(mirror.path_for_ino(ino), Some(path));
+            assert_eq!(mirror.ensure_ino(path), ino);
+        }
+    }
+
+    #[test]
+    fn hidden_proc_and_sys_roots_are_visible_as_empty_dirs() {
+        let mut mirror = MirrorFs::new(PathBuf::from("/"), HideProcSys);
+        let caller = MirrorFs::<HideProcSys>::caller_for_test("test");
+
+        for path in [Path::new("/proc"), Path::new("/sys")] {
+            let attr = mirror
+                .getattr_path(&caller, path)
+                .expect("hidden virtual root should stat");
+            assert_eq!(attr.kind, FileType::Directory);
+            assert_eq!(
+                mirror.list_children(&caller, path).expect("list children"),
+                vec![]
+            );
+        }
     }
 }
