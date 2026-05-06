@@ -26,7 +26,8 @@ const DENY_SENSITIVE_PROFILE_SOURCE: &str = "\
 
 const BASIC_PROFILE_SOURCE: &str = "\
 /tmp rw
-/proc rw
+/proc hide
+/sys hide
 
 /bin ro
 /etc ro
