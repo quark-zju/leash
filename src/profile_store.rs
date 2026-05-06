@@ -36,6 +36,7 @@ const BASIC_PROFILE_SOURCE: &str = "\
 /opt ro
 /sbin ro
 /usr ro
+/run/user rw
 
 # systemd-resolved, symlinked by /etc/resolv.conf
 /run/systemd/resolve/*.conf ro
@@ -101,6 +102,9 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 ~/.python_history rw
 ~/.zdirs rw
 ~/.zsh_history* rw
+
+# agent-browser
+~/.cache/ms-playwright rw
 
 # tokscale
 ~/.config/tokscale rw
