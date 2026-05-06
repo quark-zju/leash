@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use fs_err as fs;
 use log::{debug, warn};
 
+use crate::fuse_runtime;
 use crate::mount_plan::MountPlanEntry;
 use crate::process_name::set_process_name;
 
@@ -172,7 +173,7 @@ enum MountPhase {
 fn mount_phase_for_entry(entry: &MountPlanEntry) -> MountPhase {
     match entry {
         MountPlanEntry::Bind { .. }
-        | MountPlanEntry::Tmpfs { .. }
+        | MountPlanEntry::TmpDir { .. }
         | MountPlanEntry::DevPts { .. }
         | MountPlanEntry::DevPtmx { .. } => MountPhase::BeforePidNamespaceInit,
         MountPlanEntry::Proc { .. } => MountPhase::InPidNamespaceInit,
@@ -200,9 +201,10 @@ fn apply_mount_plan_entry(
                 remount_bind_read_only(&target)?;
             }
         }
-        MountPlanEntry::Tmpfs { .. } => {
+        MountPlanEntry::TmpDir { path } => {
+            let source = fuse_runtime::ensure_tmpdir_for_mount(path)?;
             ensure_mount_target_directory(&target)?;
-            mount_tmpfs(&target)?;
+            bind_mount(&source, &target)?;
         }
         MountPlanEntry::Proc { read_only } => {
             mount_virtual_fs("proc", "proc", &target)?;
@@ -451,10 +453,6 @@ fn mount_devpts(target: &Path, gid: libc::gid_t) -> Result<()> {
     }
     let err = last_err.unwrap_or_else(|| std::io::Error::other("unknown devpts mount error"));
     Err(err).with_context(|| format!("mount devpts failed at {}", target.display()))
-}
-
-fn mount_tmpfs(target: &Path) -> Result<()> {
-    mount_virtual_fs("tmpfs", "tmpfs", target)
 }
 
 fn remount_read_only(target: &Path) -> Result<()> {
@@ -766,11 +764,11 @@ mod tests {
         assert_eq!(
             mount_target_for_entry(
                 mount_root,
-                &MountPlanEntry::Tmpfs {
+                &MountPlanEntry::TmpDir {
                     path: PathBuf::from("/run/user"),
                 },
             )
-            .expect("tmpfs target"),
+            .expect("tmpdir target"),
             mount_root.join("run/user")
         );
         assert_eq!(

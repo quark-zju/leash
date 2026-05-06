@@ -9,7 +9,7 @@ use crate::profile::{Action, Condition, Profile, Rule, pattern_matches_implicit_
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MountPlanEntry {
     Bind { path: PathBuf, read_only: bool },
-    Tmpfs { path: PathBuf },
+    TmpDir { path: PathBuf },
     Proc { read_only: bool },
     DevPts { path: PathBuf, read_only: bool },
     DevPtmx { path: PathBuf, read_only: bool },
@@ -30,7 +30,7 @@ pub fn build_mount_plan(profile: &Profile) -> Result<Vec<MountPlanEntry>> {
         }
     }
     append_tmp_mount(rules, &mut plan)?;
-    append_tmpfs_mounts(rules, &mut plan)?;
+    append_tmpdir_mounts(rules, &mut plan)?;
 
     retain_existing_bind_sources(&mut plan)?;
     reorder_pty_mounts(&mut plan);
@@ -74,7 +74,7 @@ fn append_bind_fast_path(
     let read_only = match rule.action {
         Action::ReadOnly => true,
         Action::ReadWrite => false,
-        Action::Tmpfs | Action::Hide | Action::Deny => return Ok(()),
+        Action::TmpDir | Action::Hide | Action::Deny => return Ok(()),
     };
     for rule in rules {
         let path = Path::new(&rule.pattern);
@@ -86,7 +86,7 @@ fn append_bind_fast_path(
         }
         if matches!(
             rule.action,
-            Action::ReadOnly | Action::ReadWrite | Action::Tmpfs
+            Action::ReadOnly | Action::ReadWrite | Action::TmpDir
         ) && pattern_matches_implicit_ancestor(&rule.pattern, root)
         {
             bail!(
@@ -102,36 +102,36 @@ fn append_bind_fast_path(
     Ok(())
 }
 
-fn append_tmpfs_mounts(rules: &[Rule], plan: &mut Vec<MountPlanEntry>) -> Result<()> {
+fn append_tmpdir_mounts(rules: &[Rule], plan: &mut Vec<MountPlanEntry>) -> Result<()> {
     for rule in rules {
-        if rule.action != Action::Tmpfs {
+        if rule.action != Action::TmpDir {
             continue;
         }
-        reject_conditional_tmpfs_rule(rule)?;
-        reject_glob_mount_rule(rule, "tmpfs")?;
+        reject_conditional_tmpdir_rule(rule)?;
+        reject_glob_mount_rule(rule, "tmpdir")?;
         let path = Path::new(&rule.pattern);
-        if !tmpfs_path_is_allowed(path) {
+        if !tmpdir_path_is_allowed(path) {
             bail!(
-                "{}: tmpfs is only supported for /tmp and /run/user",
+                "{}: tmpdir is only supported for /tmp and /run/user",
                 rule.pattern
             );
         }
-        reject_descendant_rules_for_mount_root(rules, path, "tmpfs mount")?;
-        plan.push(MountPlanEntry::Tmpfs {
+        reject_descendant_rules_for_mount_root(rules, path, "tmpdir mount")?;
+        plan.push(MountPlanEntry::TmpDir {
             path: path.to_path_buf(),
         });
     }
     Ok(())
 }
 
-fn reject_conditional_tmpfs_rule(rule: &Rule) -> Result<()> {
+fn reject_conditional_tmpdir_rule(rule: &Rule) -> Result<()> {
     if !rule.conditions.is_empty() {
-        bail!("{}: tmpfs mount rules must be unconditional", rule.pattern);
+        bail!("{}: tmpdir mount rules must be unconditional", rule.pattern);
     }
     Ok(())
 }
 
-fn tmpfs_path_is_allowed(path: &Path) -> bool {
+fn tmpdir_path_is_allowed(path: &Path) -> bool {
     path == Path::new("/tmp") || path == Path::new("/run/user")
 }
 
@@ -150,7 +150,7 @@ fn reject_descendant_rules_for_mount_root(rules: &[Rule], root: &Path, label: &s
         }
         if matches!(
             rule.action,
-            Action::ReadOnly | Action::ReadWrite | Action::Tmpfs
+            Action::ReadOnly | Action::ReadWrite | Action::TmpDir
         ) && pattern_matches_implicit_ancestor(&rule.pattern, root)
         {
             bail!(
@@ -173,7 +173,7 @@ fn append_proc_mount(rule: &Rule, plan: &mut Vec<MountPlanEntry>) -> Result<()> 
         Action::ReadOnly => plan.push(MountPlanEntry::Proc { read_only: true }),
         Action::ReadWrite => plan.push(MountPlanEntry::Proc { read_only: false }),
         Action::Hide => {}
-        Action::Tmpfs | Action::Deny => {
+        Action::TmpDir | Action::Deny => {
             bail!("{}: /proc only supports ro/rw/hide", rule.pattern)
         }
     }
@@ -189,7 +189,7 @@ fn append_sys_mount(rule: &Rule, plan: &mut Vec<MountPlanEntry>) -> Result<()> {
     }
     match rule.action {
         Action::ReadOnly | Action::ReadWrite | Action::Hide => {}
-        Action::Tmpfs | Action::Deny => bail!("{}: /sys only supports ro/rw/hide", rule.pattern),
+        Action::TmpDir | Action::Deny => bail!("{}: /sys only supports ro/rw/hide", rule.pattern),
     }
     Ok(())
 }
@@ -214,7 +214,7 @@ fn append_dev_mount(rule: &Rule, plan: &mut Vec<MountPlanEntry>) -> Result<()> {
     let read_only = match rule.action {
         Action::ReadOnly => true,
         Action::ReadWrite => false,
-        Action::Tmpfs | Action::Deny | Action::Hide => {
+        Action::TmpDir | Action::Deny | Action::Hide => {
             bail!("{}: /dev only supports ro/rw", rule.pattern)
         }
     };
@@ -309,7 +309,7 @@ impl MountPlanEntry {
     pub fn path(&self) -> Option<&Path> {
         match self {
             Self::Bind { path, .. }
-            | Self::Tmpfs { path }
+            | Self::TmpDir { path }
             | Self::DevPts { path, .. }
             | Self::DevPtmx { path, .. } => Some(path),
             Self::Proc { .. } => Some(Path::new("/proc")),
@@ -411,16 +411,16 @@ mod tests {
     }
 
     #[test]
-    fn tmpfs_rules_become_tmpfs_mounts_when_unconditional_and_allowed() {
-        let profile = profile_from("/tmp tmpfs\n/run/user tmpfs\n/proc ro\n");
+    fn tmpdir_rules_become_tmpdir_mounts_when_unconditional_and_allowed() {
+        let profile = profile_from("/tmp tmpdir\n/run/user tmpdir\n/proc ro\n");
         assert_eq!(
             build_mount_plan(&profile).expect("plan"),
             vec![
                 MountPlanEntry::Proc { read_only: true },
-                MountPlanEntry::Tmpfs {
+                MountPlanEntry::TmpDir {
                     path: PathBuf::from("/tmp"),
                 },
-                MountPlanEntry::Tmpfs {
+                MountPlanEntry::TmpDir {
                     path: PathBuf::from("/run/user"),
                 },
             ]
@@ -470,29 +470,32 @@ mod tests {
     }
 
     #[test]
-    fn tmpfs_rules_reject_conditions() {
-        let err = build_mount_plan(&profile_from("/run/user tmpfs when env=LEASH_RUN_USER\n"))
+    fn tmpdir_rules_reject_conditions() {
+        let err = build_mount_plan(&profile_from("/run/user tmpdir when env=LEASH_RUN_USER\n"))
             .unwrap_err();
         assert!(err.to_string().contains("must be unconditional"), "{err:#}");
     }
 
     #[test]
-    fn tmpfs_rules_reject_unsupported_paths() {
-        let err = build_mount_plan(&profile_from("/var/tmp tmpfs\n")).unwrap_err();
+    fn tmpdir_rules_reject_unsupported_paths() {
+        let err = build_mount_plan(&profile_from("/var/tmp tmpdir\n")).unwrap_err();
         assert!(err.to_string().contains("only supported"), "{err:#}");
     }
 
     #[test]
-    fn tmpfs_rules_reject_descendant_rules() {
+    fn tmpdir_rules_reject_descendant_rules() {
         let err =
-            build_mount_plan(&profile_from("/run/user tmpfs\n/run/user/1000 ro\n")).unwrap_err();
-        assert!(err.to_string().contains("tmpfs mount /run/user"), "{err:#}");
+            build_mount_plan(&profile_from("/run/user tmpdir\n/run/user/1000 ro\n")).unwrap_err();
+        assert!(
+            err.to_string().contains("tmpdir mount /run/user"),
+            "{err:#}"
+        );
     }
 
     #[test]
-    fn tmpfs_rules_reject_implicit_ancestor_rules() {
+    fn tmpdir_rules_reject_implicit_ancestor_rules() {
         let err =
-            build_mount_plan(&profile_from("/run/user tmpfs\n/**/default.sock ro\n")).unwrap_err();
+            build_mount_plan(&profile_from("/run/user tmpdir\n/**/default.sock ro\n")).unwrap_err();
         assert!(
             err.to_string().contains("implicit ancestor visibility"),
             "{err:#}"

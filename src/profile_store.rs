@@ -35,7 +35,7 @@ const BASIC_PROFILE_SOURCE: &str = "\
 /opt ro
 /sbin ro
 /usr ro
-/run/user tmpfs
+/run/user tmpdir
 
 # systemd-resolved, symlinked by /etc/resolv.conf
 /run/systemd/resolve/*.conf ro

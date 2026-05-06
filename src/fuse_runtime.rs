@@ -1,3 +1,4 @@
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -8,6 +9,7 @@ use log::debug;
 
 const RUNTIME_DIR_NAME: &str = "leash";
 const MOUNT_DIR_NAME: &str = "mount";
+const TMPDIR_DIR_NAME: &str = "tmpdir";
 const FUSE_LOG_FILE_NAME: &str = "fuse.log";
 const TAIL_SOCKET_FILE_NAME: &str = "tail.sock";
 const PID_FILE_NAME: &str = "fuse.pid";
@@ -38,6 +40,23 @@ pub fn global_fuse_log_path() -> Result<PathBuf> {
 pub fn global_tail_socket_path() -> Result<PathBuf> {
     let runtime_dir = global_runtime_dir();
     global_tail_socket_path_under(&runtime_dir.path)
+}
+
+pub fn ensure_tmpdir_for_mount(path: &Path) -> Result<PathBuf> {
+    let runtime_dir = global_runtime_dir();
+    ensure_tmpdir_for_mount_under(&runtime_dir.path, path)
+}
+
+#[cfg(test)]
+fn ensure_tmpdir_for_mount_under(runtime_dir: &Path, path: &Path) -> Result<PathBuf> {
+    ensure_dir(runtime_dir)?;
+    let leash_dir = runtime_dir.join(RUNTIME_DIR_NAME);
+    ensure_private_dir(&leash_dir)?;
+    let tmpdir_root = leash_dir.join(TMPDIR_DIR_NAME);
+    ensure_private_dir(&tmpdir_root)?;
+    let tmpdir = tmpdir_root.join(encode_tmpdir_mount_path(path)?);
+    ensure_private_dir(&tmpdir)?;
+    Ok(tmpdir)
 }
 
 fn ensure_global_mountpoint_in(
@@ -180,6 +199,18 @@ fn global_tail_socket_path_under(runtime_dir: &Path) -> Result<PathBuf> {
     Ok(leash_dir.join(TAIL_SOCKET_FILE_NAME))
 }
 
+#[cfg(not(test))]
+fn ensure_tmpdir_for_mount_under(runtime_dir: &Path, path: &Path) -> Result<PathBuf> {
+    ensure_dir(runtime_dir)?;
+    let leash_dir = runtime_dir.join(RUNTIME_DIR_NAME);
+    ensure_private_dir(&leash_dir)?;
+    let tmpdir_root = leash_dir.join(TMPDIR_DIR_NAME);
+    ensure_private_dir(&tmpdir_root)?;
+    let tmpdir = tmpdir_root.join(encode_tmpdir_mount_path(path)?);
+    ensure_private_dir(&tmpdir)?;
+    Ok(tmpdir)
+}
+
 fn ensure_runtime_dir(path: &Path, chmod_on_create: bool) -> Result<()> {
     let created = ensure_dir(path)?;
     if created && chmod_on_create {
@@ -208,6 +239,51 @@ fn ensure_dir(path: &Path) -> Result<bool> {
         }
         Err(err) => Err(err).with_context(|| format!("failed to inspect {}", path.display())),
     }
+}
+
+fn ensure_private_dir(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                bail!("{} exists but is not a directory", path.display());
+            }
+            if metadata.uid() != unsafe { libc::getuid() } {
+                bail!("{} is not owned by the current user", path.display());
+            }
+            let mode = metadata.mode() & 0o777;
+            if mode != 0o700 {
+                fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                    .with_context(|| format!("failed to chmod 0700 {}", path.display()))?;
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path).with_context(|| format!("failed to create {}", path.display()))?;
+            fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("failed to chmod 0700 {}", path.display()))?;
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+fn encode_tmpdir_mount_path(path: &Path) -> Result<String> {
+    let raw = path
+        .to_str()
+        .with_context(|| format!("tmpdir path is not UTF-8: {}", path.display()))?;
+    if !raw.starts_with('/') {
+        bail!("tmpdir path must be absolute: {}", path.display());
+    }
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '/' => out.push('_'),
+            '_' => out.push_str("__"),
+            _ => out.push(ch),
+        }
+    }
+    Ok(out)
 }
 
 fn mountpoint_is_stale(path: &Path) -> Result<bool> {
@@ -388,6 +464,33 @@ mod tests {
             read_mount_state_from(Path::new("/tmp/other"), &mountinfo).expect("read mount state"),
             MountState::Unmounted
         );
+    }
+
+    #[test]
+    fn tmpdir_mount_paths_are_encoded_readably() {
+        assert_eq!(encode_tmpdir_mount_path(Path::new("/tmp")).unwrap(), "_tmp");
+        assert_eq!(
+            encode_tmpdir_mount_path(Path::new("/run/user")).unwrap(),
+            "_run_user"
+        );
+        assert_eq!(
+            encode_tmpdir_mount_path(Path::new("/foo_bar")).unwrap(),
+            "_foo__bar"
+        );
+    }
+
+    #[test]
+    fn ensure_tmpdir_for_mount_under_creates_private_shared_directory() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime_dir = tempdir.path().join("xdg-runtime");
+        fs::create_dir(&runtime_dir).expect("runtime");
+
+        let path =
+            ensure_tmpdir_for_mount_under(&runtime_dir, Path::new("/run/user")).expect("tmpdir");
+
+        assert_eq!(path, runtime_dir.join("leash/tmpdir/_run_user"));
+        assert!(path.is_dir());
+        assert_eq!(fs::metadata(&path).expect("metadata").mode() & 0o777, 0o700);
     }
 
     #[test]
