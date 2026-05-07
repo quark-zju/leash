@@ -79,8 +79,9 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 # repl
 ~/.ipython rw
 
-# bin
+# bin, lib (e.g. used by pip)
 ~/.local/bin ro
+~/.local/lib ro
 
 # git
 ~/.gitconfig* ro
