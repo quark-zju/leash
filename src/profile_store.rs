@@ -68,6 +68,9 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 ~/.local/share/opencode rw
 ~/.local/state/opencode rw
 
+# coding harness
+~/.kimi-code rw
+
 # programming language package, environment management
 ~/.bun rw
 ~/.cache/uv rw
