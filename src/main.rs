@@ -104,7 +104,7 @@ mod tests {
     fn command_verbose_tracks_run_and_fuse_flags() {
         assert!(command_verbose(&Command::Run(RunCommand {
             verbose: true,
-            landlock_network_restriction: true,
+            restrict_tcp_ports: None,
             program: OsString::from("true"),
             args: vec![],
         })));

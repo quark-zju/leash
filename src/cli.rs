@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use pico_args::Arguments;
 
 use crate::tail_ipc::EventKind;
@@ -29,7 +29,7 @@ pub enum HelpTopic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCommand {
     pub verbose: bool,
-    pub landlock_network_restriction: bool,
+    pub restrict_tcp_ports: Option<Vec<u16>>,
     pub program: OsString,
     pub args: Vec<OsString>,
 }
@@ -106,7 +106,7 @@ fn parse_help(mut args: Arguments) -> Result<Command> {
 
 fn parse_run(args: Arguments) -> Result<Command> {
     let mut verbose = false;
-    let mut landlock_network_restriction = true;
+    let mut restrict_tcp_ports: Option<Vec<u16>> = None;
     let mut trailing = args.finish();
     let mut command_index = 0;
     while let Some(arg) = trailing.get(command_index) {
@@ -122,9 +122,15 @@ fn parse_run(args: Arguments) -> Result<Command> {
             command_index += 1;
             continue;
         }
-        if arg == "-L" || arg == "--no-landlock-network-restriction" {
-            landlock_network_restriction = false;
-            command_index += 1;
+        if arg == "-R" || arg == "--restrict-tcp-ports" {
+            let Some(value) = trailing.get(command_index + 1) else {
+                bail!("--restrict-tcp-ports requires a comma-separated port list");
+            };
+            let ports = parse_tcp_port_list(value)?;
+            if restrict_tcp_ports.replace(ports).is_some() {
+                bail!("--restrict-tcp-ports specified more than once");
+            }
+            command_index += 2;
             continue;
         }
         break;
@@ -136,10 +142,31 @@ fn parse_run(args: Arguments) -> Result<Command> {
     let program = trailing.remove(0);
     Ok(Command::Run(RunCommand {
         verbose,
-        landlock_network_restriction,
+        restrict_tcp_ports,
         program,
         args: trailing,
     }))
+}
+
+fn parse_tcp_port_list(raw: &std::ffi::OsStr) -> Result<Vec<u16>> {
+    let raw = raw
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("port list must be valid UTF-8"))?;
+    if raw.is_empty() {
+        bail!("port list must not be empty");
+    }
+    let mut ports = Vec::new();
+    for token in raw.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            bail!("port list contains an empty entry");
+        }
+        let port: u16 = token
+            .parse()
+            .context(format!("invalid port number: {token}"))?;
+        ports.push(port);
+    }
+    Ok(ports)
 }
 
 fn parse_rules(mut args: Arguments) -> Result<Command> {
@@ -302,7 +329,7 @@ mod tests {
             parse_from(os(&["run", "-v", "--", "echo", "hello"])).expect("parse"),
             Command::Run(RunCommand {
                 verbose: true,
-                landlock_network_restriction: true,
+                restrict_tcp_ports: None,
                 program: OsString::from("echo"),
                 args: vec![OsString::from("hello")],
             })
@@ -310,23 +337,39 @@ mod tests {
     }
 
     #[test]
-    fn parse_run_without_landlock_network_restriction() {
+    fn parse_run_restrict_tcp_ports() {
         assert_eq!(
-            parse_from(os(&[
-                "run",
-                "-L",
-                "--",
-                "echo",
-                "--no-landlock-network-restriction",
-            ]))
+            parse_from(os(&["run", "-R", "53,443,4000", "--", "echo", "hello"])).expect("parse"),
+            Command::Run(RunCommand {
+                verbose: false,
+                restrict_tcp_ports: Some(vec![53, 443, 4000]),
+                program: OsString::from("echo"),
+                args: vec![OsString::from("hello")],
+            })
+        );
+    }
+
+    #[test]
+    fn parse_run_restrict_tcp_ports_long_form() {
+        assert_eq!(
+            parse_from(os(
+                &["run", "--restrict-tcp-ports", "80,443", "--", "echo",]
+            ))
             .expect("parse"),
             Command::Run(RunCommand {
                 verbose: false,
-                landlock_network_restriction: false,
+                restrict_tcp_ports: Some(vec![80, 443]),
                 program: OsString::from("echo"),
-                args: vec![OsString::from("--no-landlock-network-restriction")],
+                args: vec![],
             })
         );
+    }
+
+    #[test]
+    fn parse_run_restrict_tcp_ports_rejects_invalid() {
+        let err = parse_from(os(&["run", "-R", "abc", "--", "echo"]))
+            .expect_err("invalid port should fail");
+        assert!(err.to_string().contains("invalid port number"), "{err:#}");
     }
 
     #[test]
@@ -335,7 +378,7 @@ mod tests {
             parse_from(os(&["run", "echo", "-L", "-v", "--help"])).expect("parse"),
             Command::Run(RunCommand {
                 verbose: false,
-                landlock_network_restriction: true,
+                restrict_tcp_ports: None,
                 program: OsString::from("echo"),
                 args: os(&["-L", "-v", "--help"]),
             })
@@ -348,7 +391,7 @@ mod tests {
             parse_from(os(&["run", "--", "echo", "-L"])).expect("parse"),
             Command::Run(RunCommand {
                 verbose: false,
-                landlock_network_restriction: true,
+                restrict_tcp_ports: None,
                 program: OsString::from("echo"),
                 args: os(&["-L"]),
             })

@@ -23,10 +23,12 @@ cargo install --path .
 leash run bash  # or codex, opencode, etc
 ```
 
-By default, `leash run` uses Landlock to allow outbound TCP connections only
-to ports 53 and 443. This requires Landlock ABI 4 (Linux 6.7) or newer. UDP
-connections and socket binding are not restricted. Use
-`leash run -L command ...` to disable the TCP connection restriction.
+By default, `leash run` does not restrict TCP connections. To enable Landlock
+network restrictions, use `-R` with a comma-separated port list to specify which
+TCP ports the sandboxed process may connect to. This requires Landlock ABI 4
+(Linux 6.7) or newer. UDP connections and socket binding are not restricted.
+For example:
+`leash run -R 53,443,4000 command ...`
 
 ### Symlink Shims
 

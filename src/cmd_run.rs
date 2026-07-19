@@ -35,7 +35,7 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         program,
         run.args.clone(),
         mount_plan,
-        run.landlock_network_restriction,
+        run.restrict_tcp_ports,
     );
     userns_run::run_in_user_namespace(&config)
 }
