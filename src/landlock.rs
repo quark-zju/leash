@@ -1,23 +1,30 @@
 use anyhow::{Context, Result};
 use landlock::{
     AccessNet, CompatLevel, Compatible, NetPort, Ruleset, RulesetAttr, RulesetCreated,
-    RulesetCreatedAttr,
+    RulesetCreatedAttr, RulesetStatus,
 };
 
 const ALLOWED_TCP_CONNECT_PORTS: [u16; 2] = [53, 443];
 
 pub(crate) fn restrict_network() -> Result<()> {
-    tcp_connect_ruleset(Ruleset::default())?
+    let ruleset = tcp_connect_ruleset(Ruleset::default())
+        .context("failed to create Landlock network ruleset")?;
+    let status = ruleset
         .restrict_self()
         .context("failed to enforce Landlock network rules")?;
+    if status.ruleset != RulesetStatus::FullyEnforced {
+        eprintln!(
+            "leash: warning: Landlock network restrictions are not enforced by the kernel \
+             (kernel may be too old or Landlock not enabled)"
+        );
+    }
     Ok(())
 }
 
 fn tcp_connect_ruleset(ruleset: Ruleset) -> Result<RulesetCreated> {
     let mut ruleset = ruleset
-        .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(AccessNet::ConnectTcp)
-        .context("TCP connect restrictions require Landlock ABI 4 or newer")?
+        .set_compatibility(CompatLevel::BestEffort)
+        .handle_access(AccessNet::ConnectTcp)?
         .create()
         .context("failed to create Landlock network ruleset")?;
 
@@ -32,6 +39,7 @@ fn tcp_connect_ruleset(ruleset: Ruleset) -> Result<RulesetCreated> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::io::OwnedFd;
 
     #[test]
     fn policy_matches_kernel_tcp_network_support() {
@@ -43,11 +51,19 @@ mod tests {
                 1,
             )
         };
-        let result = tcp_connect_ruleset(Ruleset::default());
+        let ruleset =
+            tcp_connect_ruleset(Ruleset::default()).expect("create ruleset should always succeed");
+        let fd: Option<OwnedFd> = ruleset.into();
         if abi >= 4 {
-            result.expect("ABI 4 or newer supports TCP connect rules");
+            assert!(
+                fd.is_some(),
+                "ABI 4 or newer should create a real Landlock ruleset"
+            );
         } else {
-            assert!(result.is_err());
+            assert!(
+                fd.is_none(),
+                "ABI < 4 should produce a dummy ruleset (kernel does not support TCP connect)"
+            );
         }
     }
 
