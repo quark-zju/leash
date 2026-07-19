@@ -33,6 +33,7 @@ pub fn try_handle_arg0(args: &[OsString]) -> Result<Option<i32>> {
     let remaining: Vec<OsString> = args[1..].to_vec();
     crate::cmd_run::run_command(RunCommand {
         verbose: false,
+        landlock_network_restriction: true,
         program: found.into(),
         args: remaining,
     })

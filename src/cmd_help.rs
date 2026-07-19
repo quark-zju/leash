@@ -24,9 +24,10 @@ pub(crate) fn help_text(topic: HelpTopic, verbose: bool) -> String {
         HelpTopic::Run => concat!(
             "leash run\n\n",
             "USAGE:\n",
-            "  leash run [-v|--verbose] command ...\n\n",
+            "  leash run [-v|--verbose] [-L|--no-landlock-network-restriction] command ...\n\n",
             "OPTIONS:\n",
-            "  -v, --verbose         Print debug logs from run setup and spawned FUSE daemon\n",
+            "  -v, --verbose                           Print debug logs from run setup and spawned FUSE daemon\n",
+            "  -L, --no-landlock-network-restriction  Allow TCP connections to ports other than 53 and 443\n",
         )
         .to_string(),
         HelpTopic::Tail => concat!(
@@ -72,7 +73,7 @@ fn root_help_text(verbose: bool) -> String {
         "USAGE:\n",
         "  leash <subcommand> [options]\n\n",
         "COMMON:\n",
-        "  leash run [-v|--verbose] command ...\n\n",
+        "  leash run [-v|--verbose] [-L|--no-landlock-network-restriction] command ...\n\n",
         "RULES:\n",
         "  leash rules edit\n",
         "  leash rules show\n",

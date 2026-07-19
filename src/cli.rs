@@ -29,6 +29,7 @@ pub enum HelpTopic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCommand {
     pub verbose: bool,
+    pub landlock_network_restriction: bool,
     pub program: OsString,
     pub args: Vec<OsString>,
 }
@@ -108,6 +109,7 @@ fn parse_run(mut args: Arguments) -> Result<Command> {
         return Ok(help_command(HelpTopic::Run, false));
     }
     let verbose = args.contains(["-v", "--verbose"]);
+    let landlock_network_restriction = !args.contains(["-L", "--no-landlock-network-restriction"]);
     let mut trailing = args.finish();
     if trailing.first().is_some_and(|arg| arg == "--") {
         trailing.remove(0);
@@ -118,6 +120,7 @@ fn parse_run(mut args: Arguments) -> Result<Command> {
     let program = trailing.remove(0);
     Ok(Command::Run(RunCommand {
         verbose,
+        landlock_network_restriction,
         program,
         args: trailing,
     }))
@@ -283,8 +286,29 @@ mod tests {
             parse_from(os(&["run", "-v", "--", "echo", "hello"])).expect("parse"),
             Command::Run(RunCommand {
                 verbose: true,
+                landlock_network_restriction: true,
                 program: OsString::from("echo"),
                 args: vec![OsString::from("hello")],
+            })
+        );
+    }
+
+    #[test]
+    fn parse_run_without_landlock_network_restriction() {
+        assert_eq!(
+            parse_from(os(&[
+                "run",
+                "-L",
+                "--",
+                "echo",
+                "--no-landlock-network-restriction",
+            ]))
+            .expect("parse"),
+            Command::Run(RunCommand {
+                verbose: false,
+                landlock_network_restriction: false,
+                program: OsString::from("echo"),
+                args: vec![OsString::from("--no-landlock-network-restriction")],
             })
         );
     }

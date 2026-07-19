@@ -29,7 +29,14 @@ pub(crate) fn run_command(run: RunCommand) -> Result<i32> {
         mount_plan::build_mount_plan(&profile).context("failed to build mount plan")?;
     let fuse_mount_root = ensure_fuse_daemon_running(run.verbose)?;
 
-    let config = UsernsRunConfig::new(fuse_mount_root, cwd, program, run.args.clone(), mount_plan);
+    let config = UsernsRunConfig::new(
+        fuse_mount_root,
+        cwd,
+        program,
+        run.args.clone(),
+        mount_plan,
+        run.landlock_network_restriction,
+    );
     userns_run::run_in_user_namespace(&config)
 }
 

@@ -11,6 +11,7 @@ use fs_err as fs;
 use log::{debug, warn};
 
 use crate::fuse_runtime;
+use crate::landlock;
 use crate::mount_plan::MountPlanEntry;
 use crate::process_name::set_process_name;
 
@@ -23,6 +24,7 @@ pub struct UsernsRunConfig {
     pub program: OsString,
     pub args: Vec<OsString>,
     pub mount_plan: Vec<MountPlanEntry>,
+    pub landlock_network_restriction: bool,
 }
 
 impl UsernsRunConfig {
@@ -32,6 +34,7 @@ impl UsernsRunConfig {
         program: OsString,
         args: Vec<OsString>,
         mount_plan: Vec<MountPlanEntry>,
+        landlock_network_restriction: bool,
     ) -> Self {
         Self {
             fuse_mount_root,
@@ -39,6 +42,7 @@ impl UsernsRunConfig {
             program,
             args,
             mount_plan,
+            landlock_network_restriction,
         }
     }
 }
@@ -575,6 +579,9 @@ fn run_pid_namespace_init_and_exec(
     let worker_pid = fork_process("pidns-worker")?;
     if worker_pid == 0 {
         set_no_new_privs("pidns worker")?;
+        if config.landlock_network_restriction {
+            landlock::restrict_network()?;
+        }
         close_fds_best_effort_from(3);
         let err = ProcessCommand::new(&config.program)
             .args(&config.args)
