@@ -104,16 +104,32 @@ fn parse_help(mut args: Arguments) -> Result<Command> {
     Ok(help_command(topic, verbose))
 }
 
-fn parse_run(mut args: Arguments) -> Result<Command> {
-    if args.contains(["-h", "--help"]) {
-        return Ok(help_command(HelpTopic::Run, false));
-    }
-    let verbose = args.contains(["-v", "--verbose"]);
-    let landlock_network_restriction = !args.contains(["-L", "--no-landlock-network-restriction"]);
+fn parse_run(args: Arguments) -> Result<Command> {
+    let mut verbose = false;
+    let mut landlock_network_restriction = true;
     let mut trailing = args.finish();
-    if trailing.first().is_some_and(|arg| arg == "--") {
-        trailing.remove(0);
+    let mut command_index = 0;
+    while let Some(arg) = trailing.get(command_index) {
+        if arg == "--" {
+            command_index += 1;
+            break;
+        }
+        if arg == "-h" || arg == "--help" {
+            return Ok(help_command(HelpTopic::Run, false));
+        }
+        if arg == "-v" || arg == "--verbose" {
+            verbose = true;
+            command_index += 1;
+            continue;
+        }
+        if arg == "-L" || arg == "--no-landlock-network-restriction" {
+            landlock_network_restriction = false;
+            command_index += 1;
+            continue;
+        }
+        break;
     }
+    trailing.drain(..command_index);
     if trailing.is_empty() {
         bail!("run requires a command to execute");
     }
@@ -309,6 +325,32 @@ mod tests {
                 landlock_network_restriction: false,
                 program: OsString::from("echo"),
                 args: vec![OsString::from("--no-landlock-network-restriction")],
+            })
+        );
+    }
+
+    #[test]
+    fn parse_run_preserves_command_flags_without_separator() {
+        assert_eq!(
+            parse_from(os(&["run", "echo", "-L", "-v", "--help"])).expect("parse"),
+            Command::Run(RunCommand {
+                verbose: false,
+                landlock_network_restriction: true,
+                program: OsString::from("echo"),
+                args: os(&["-L", "-v", "--help"]),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_run_separator_ends_leash_options() {
+        assert_eq!(
+            parse_from(os(&["run", "--", "echo", "-L"])).expect("parse"),
+            Command::Run(RunCommand {
+                verbose: false,
+                landlock_network_restriction: true,
+                program: OsString::from("echo"),
+                args: os(&["-L"]),
             })
         );
     }
