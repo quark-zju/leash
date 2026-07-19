@@ -8,6 +8,7 @@ mod cmd_profile;
 mod cmd_run;
 mod cmd_tail;
 mod fuse_runtime;
+mod landlock;
 mod mirrorfs;
 mod mount_plan;
 mod path_search;
