@@ -67,14 +67,19 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 ~/.config/opencode rw
 ~/.local/share/opencode rw
 ~/.local/state/opencode rw
+~/**/.git/opencode rw
 
 # coding harness
 ~/.kimi-code rw
+~/.dsh rw
 
 # programming language package, environment management
 ~/.bun rw
+~/.cache/pnpm rw
 ~/.cache/uv rw
 ~/.cargo rw
+~/.local/share/pnpm rw
+~/.local/state/pnpm rw
 ~/.npm rw
 ~/.pyenv rw
 ~/.rustup rw
@@ -90,6 +95,7 @@ const AGENTS_PROFILE_SOURCE: &str = "\
 ~/.gitconfig* ro
 ~/.gitignore* ro
 ~/.config/git-hooks ro
+~/.config/git ro
 
 # nvim
 ~/.cache/nvim rw
